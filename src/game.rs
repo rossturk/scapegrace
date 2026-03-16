@@ -113,6 +113,30 @@ pub struct Trap {
     pub triggered: bool,
 }
 
+#[derive(Clone)]
+pub struct Overworld {
+    pub name: String,
+    pub font: String,
+    pub description: String,
+    pub nodes: Vec<OverworldNode>,
+    pub connections: Vec<(usize, usize)>,
+    pub current_node: usize,
+}
+
+#[derive(Clone)]
+pub struct OverworldNode {
+    pub name: String,
+    pub font: String,
+    pub description: String,
+    pub theme: String,
+    pub budget: i32,
+    pub x: f32,
+    pub y: f32,
+    pub completed: bool,
+    pub unlocked: bool,
+    pub is_final: bool,
+}
+
 pub struct GameState {
     pub player: Player,
     pub level: Level,
@@ -120,7 +144,6 @@ pub struct GameState {
     pub game_over: bool,
     pub victory: bool,
     pub vision_radius: i32,
-    pub budget: i32,
 }
 
 impl GameState {
@@ -138,7 +161,6 @@ impl GameState {
             game_over: false,
             victory: false,
             vision_radius: 5,
-            budget: 100,
         }
     }
 

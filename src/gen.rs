@@ -25,6 +25,7 @@ pub struct TileDefRaw {
 
 #[derive(Deserialize)]
 pub struct Phase2Result {
+    pub tile_defs: HashMap<String, TileDefRaw>,
     pub boss: MonsterRaw,
     pub monster_types: Vec<MonsterTemplateRaw>,
     pub weapon: ItemTemplateRaw,
@@ -81,6 +82,39 @@ pub struct Phase3Result {
     pub boss_position: [i32; 2],
 }
 
+// ── Overworld result ──
+
+#[derive(Deserialize)]
+pub struct OverworldNodeRaw {
+    pub name: String,
+    pub font: Option<String>,
+    pub description: String,
+    pub theme: String,
+    pub budget: i32,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Deserialize)]
+pub struct OverworldResult {
+    pub name: String,
+    pub font: Option<String>,
+    pub description: String,
+    pub levels: Vec<OverworldNodeRaw>,
+    pub connections: Vec<(usize, usize)>,
+    pub final_level: Option<usize>,
+}
+
+/// Config passed from overworld node to level generation
+pub struct LevelConfig {
+    pub title: String,
+    pub font: String,
+    pub description: String,
+    pub theme: String,
+    pub budget: i32,
+    pub floor: i32,
+}
+
 // ── Phase status (sent to client) ──
 
 #[derive(Clone, serde::Serialize)]
@@ -89,33 +123,9 @@ pub struct PhaseUpdate {
     pub detail: String,
 }
 
-// ── Theme picker ──
-
-fn pick_theme() -> &'static str {
-    use rand::Rng;
-    let themes = [
-        "pirate ship at sea", "space station orbiting Jupiter", "wild west frontier town",
-        "coral reef underwater kingdom", "enchanted fairy forest", "volcano interior with lava flows",
-        "frozen ice planet outpost", "steampunk clockwork factory", "haunted carnival at midnight",
-        "alien jungle on a distant moon", "desert oasis with ancient ruins", "floating sky islands",
-        "sunken submarine wreck", "giant clockwork tower interior", "mushroom kingdom caverns",
-        "crystal caverns glowing with light", "viking longhouse under siege", "samurai castle at night",
-        "cyberpunk neon-lit streets", "train heist on a moving locomotive", "arctic research base",
-        "dragon's volcanic lair", "wizard's tower full of magic", "underground river system",
-        "ancient library of forbidden knowledge", "gladiator arena in a colosseum",
-        "ghost ship in fog", "overgrown greenhouse", "dwarven mine with gem veins",
-        "Egyptian pyramid tomb", "medieval castle dungeon", "bamboo forest temple",
-        "post-apocalyptic wasteland bunker", "cloud giant's sky palace",
-        "insect hive tunnels", "witch's swamp cottage", "aztec temple of the sun",
-        "orbital space debris field", "underground mushroom farm",
-        "haunted Victorian mansion", "Norse realm of the dead",
-    ];
-    themes[rand::thread_rng().gen_range(0..themes.len())]
-}
-
 // ── LLM caller ──
 
-async fn call_llm(client: &reqwest::Client, api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
+fn call_llm(client: &reqwest::blocking::Client, api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
     let resp = client.post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
@@ -126,10 +136,9 @@ async fn call_llm(client: &reqwest::Client, api_key: &str, model: &str, prompt: 
         }))
         .timeout(std::time::Duration::from_secs(60))
         .send()
-        .await
         .map_err(|e| format!("HTTP error: {}", e))?;
 
-    let body: serde_json::Value = resp.json().await
+    let body: serde_json::Value = resp.json()
         .map_err(|e| format!("JSON parse error: {}", e))?;
     let mut content = body["choices"][0]["message"]["content"]
         .as_str()
@@ -157,47 +166,100 @@ async fn call_llm(client: &reqwest::Client, api_key: &str, model: &str, prompt: 
     Ok(content)
 }
 
+// ── Overworld generation ──
+
+pub fn generate_overworld<F>(
+    mut on_phase: F,
+) -> Result<crate::game::Overworld, String>
+where F: FnMut(PhaseUpdate) + Send
+{
+    let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+    let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
+    let client = reqwest::blocking::Client::new();
+
+    on_phase(PhaseUpdate { phase: "designing overworld".into(), detail: String::new() });
+
+    let prompt = build_overworld_prompt();
+    let content = call_llm(&client, &api_key, &model, &prompt)?;
+    let result: OverworldResult = serde_json::from_str(&content)
+        .map_err(|e| format!("Overworld parse error: {}\n\nRaw: {}", e, &content[..content.len().min(500)]))?;
+
+    if result.levels.len() < 5 || result.levels.len() > 8 {
+        return Err(format!("Expected 5-8 levels, got {}", result.levels.len()));
+    }
+
+    let ow_font = result.font.ok_or("LLM did not provide an overworld font")?;
+
+    let final_level = result.final_level.unwrap_or(result.levels.len() - 1);
+    let nodes: Vec<crate::game::OverworldNode> = result.levels.into_iter().enumerate().map(|(i, n)| {
+        crate::game::OverworldNode {
+            name: n.name,
+            font: n.font.unwrap_or_else(|| ow_font.clone()),
+            description: n.description,
+            theme: n.theme,
+            budget: n.budget,
+            x: n.x.clamp(0.0, 1.0),
+            y: n.y.clamp(0.0, 1.0),
+            completed: false,
+            unlocked: i == 0,
+            is_final: i == final_level,
+        }
+    }).collect();
+
+    let overworld = crate::game::Overworld {
+        name: result.name,
+        font: ow_font,
+        description: result.description,
+        connections: result.connections,
+        current_node: 0,
+        nodes,
+    };
+
+    on_phase(PhaseUpdate {
+        phase: "overworld designed".into(),
+        detail: format!("{} — {} levels", overworld.name, overworld.nodes.len()),
+    });
+
+    Ok(overworld)
+}
+
 // ── Three-phase generation ──
 
-pub async fn generate_level<F>(
-    floor: i32, player: &Player, budget: i32,
+pub fn generate_level<F>(
+    config: &LevelConfig, player: &Player,
     mut on_phase: F,
 ) -> Result<(Level, [i32; 2], i32), String>
 where F: FnMut(PhaseUpdate) + Send
 {
     let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
     let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
-    let client = reqwest::Client::new();
-    let theme = pick_theme();
+    let client = reqwest::blocking::Client::new();
+    let theme = &config.theme;
+    let floor = config.floor;
+    let budget = config.budget;
 
-    // ── Phase 1: Universe ──
-    on_phase(PhaseUpdate { phase: "creating universe".into(), detail: theme.into() });
+    // ── Phase 1: Objects + tile_defs (single LLM call) ──
+    on_phase(PhaseUpdate { phase: "designing level".into(), detail: String::new() });
 
-    let p1_prompt = build_phase1_prompt(floor, theme);
-    let p1_content = call_llm(&client, &api_key, &model, &p1_prompt).await?;
-    let p1: Phase1Result = serde_json::from_str(&p1_content)
+    let p2_prompt = build_phase2_prompt(floor, player, budget, theme, &config.title, &config.description);
+    let p2_content = call_llm(&client, &api_key, &model, &p2_prompt)?;
+    let p2: Phase2Result = serde_json::from_str(&p2_content)
         .map_err(|e| format!("Phase 1 parse error: {}", e))?;
 
-    eprintln!("Phase 1: '{}' — {}", p1.title, p1.description);
-    on_phase(PhaseUpdate {
-        phase: "universe created".into(),
-        detail: format!("{} — {}", p1.title, p1.description),
-    });
-
-    // ── Phase 2: Objects ──
-    on_phase(PhaseUpdate { phase: "making objects".into(), detail: String::new() });
-
-    let p2_prompt = build_phase2_prompt(floor, player, budget, theme, &p1);
-    let p2_content = call_llm(&client, &api_key, &model, &p2_prompt).await?;
-    let p2: Phase2Result = serde_json::from_str(&p2_content)
-        .map_err(|e| format!("Phase 2 parse error: {}", e))?;
+    // Build Phase1Result from config + Phase 2 tile_defs
+    let p1 = Phase1Result {
+        title: config.title.clone(),
+        description: config.description.clone(),
+        font: Some(config.font.clone()),
+        tile_defs: p2.tile_defs.clone(),
+    };
 
     let trap_count = p2.traps.as_ref().map_or(0, |t| t.len());
     let mon_count = p2.monster_types.len();
-    eprintln!("Phase 2: boss '{}', {} monster types, {} traps, weapon '{}', armor '{}'",
-        p2.boss.name, mon_count, trap_count, p2.weapon.name, p2.armor.name);
+    eprintln!("Phase 1: '{}' — boss '{}', {} monster types, {} traps, weapon '{}', armor '{}'",
+        p1.title, p2.boss.name, mon_count, trap_count, p2.weapon.name, p2.armor.name);
     on_phase(PhaseUpdate {
-        phase: "objects created".into(),
+        phase: "level designed".into(),
         detail: format!("boss: {} · {} monster types · {} traps · {} · {}",
             p2.boss.name, mon_count, trap_count, p2.weapon.name, p2.armor.name),
     });
@@ -213,7 +275,7 @@ where F: FnMut(PhaseUpdate) + Send
         });
 
         let p3_prompt = build_phase3_prompt(floor, theme, &p1, &p2, &tile_chars);
-        let p3_content = match call_llm(&client, &api_key, &model, &p3_prompt).await {
+        let p3_content = match call_llm(&client, &api_key, &model, &p3_prompt) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Phase 3 LLM error (attempt {}): {}", attempt, e);
@@ -245,24 +307,11 @@ where F: FnMut(PhaseUpdate) + Send
 
 // ── Prompt builders ──
 
-fn build_phase1_prompt(floor: i32, theme: &str) -> String {
+fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, title: &str, description: &str) -> String {
     let mut p = String::new();
-    p.push_str(&format!("Generate the UNIVERSE for level {} of a roguelike game.\n\n", floor));
-    p.push_str(&format!("Theme: {}\n\n", theme));
-    p.push_str("Return a JSON object with:\n");
-    p.push_str("- title: short evocative name (2-4 words)\n");
-    p.push_str("- description: one atmospheric sentence\n");
-    p.push_str("- font: a Google Fonts font family (e.g. Cinzel, Creepster, MedievalSharp, Pirata One, Nosifer, Eater, Almendra, IM Fell English SC)\n");
-    p.push_str("- tile_defs: object mapping single chars to {name, color (hex), walkable (bool), char (display char or empty)}. Must include a wall char (not walkable) and a floor char (walkable). Add 1-3 thematic tiles. Be creative and bold with colors.\n\n");
-    p.push_str("Return ONLY valid JSON.");
-    p
-}
-
-fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, p1: &Phase1Result) -> String {
-    let mut p = String::new();
-    p.push_str(&format!("Generate the OBJECTS for level {} of a roguelike game.\n\n", floor));
-    p.push_str(&format!("Theme: {} — \"{}\"\n", theme, p1.title));
-    p.push_str(&format!("{}\n\n", p1.description));
+    p.push_str(&format!("Generate the TILE DEFINITIONS and OBJECTS for level {} of a roguelike game.\n\n", floor));
+    p.push_str(&format!("Theme: {} — \"{}\"\n", theme, title));
+    p.push_str(&format!("{}\n\n", description));
 
     p.push_str("You are ADVERSARIAL — your goal is to kill the player.\n");
     p.push_str(&format!("Player: level {}, {}/{} HP, ATK {}, DEF {}, weapon '{}' (+{}), armor '{}' (+{}), {} potions.\n\n",
@@ -276,6 +325,7 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, p1
     p.push_str("  Unspent carries over to the next level.\n\n");
 
     p.push_str("Return a JSON object with:\n");
+    p.push_str("- tile_defs: object mapping single chars to {name, color (hex), walkable (bool), char (display char or empty)}. Must include a wall char (not walkable) and a floor char (walkable). Add 1-3 thematic tiles. Be creative and bold with colors.\n");
     p.push_str(&format!("- boss: {{name, sprite (emoji), hp (~{}), attack (~{}), defense (~{}), xp_value (~{}), description}}\n",
         15 + floor * 8, 3 + floor * 2, floor * 2, 20 + floor * 5));
     p.push_str(&format!("- monster_types: array of 2-3 templates {{name, sprite, hp (~{}), attack (~{}), defense (~{}), xp_value (~{}), description}}\n",
@@ -327,6 +377,36 @@ fn build_phase3_prompt(floor: i32, theme: &str, p1: &Phase1Result, p2: &Phase2Re
     p
 }
 
+fn build_overworld_prompt() -> String {
+    let mut p = String::new();
+    p.push_str("Design a CAMPAIGN OVERWORLD for a roguelike game (like a Super Mario World map).\n\n");
+    p.push_str("Be wildly creative with the setting. DON'T default to generic fantasy. Consider: space opera, cyberpunk megacity, underwater civilization, wild west, noir detective, post-apocalyptic road trip, insect colony, deep sea research station, time-traveling heist, interdimensional food war, haunted theme park, arctic expedition, kaiju invasion, sentient fungal network — or something entirely original.\n\n");
+    p.push_str("Return a JSON object with:\n");
+    p.push_str("- name: campaign name (2-4 words, evocative)\n");
+    p.push_str("- font: a Google Fonts font family for the overworld title\n");
+    p.push_str("- description: one atmospheric sentence about the campaign\n");
+    p.push_str("- levels: array of 5-8 level nodes, each with:\n");
+    p.push_str("  - name: level title (2-4 words)\n");
+    p.push_str("  - font: a Google Fonts font family for the level\n");
+    p.push_str("  - description: one atmospheric sentence\n");
+    p.push_str("  - theme: detailed theme string for the level (e.g. 'neon-drenched hacker den', 'abandoned orbital station', 'fungal spore cathedral')\n");
+    p.push_str("  - budget: scapebux budget for the level (integer)\n");
+    p.push_str("  - x: horizontal position 0.0-1.0 (left to right)\n");
+    p.push_str("  - y: vertical position 0.0-1.0 (top to bottom)\n");
+    p.push_str("- connections: array of [i, j] pairs (0-indexed) defining paths between levels\n");
+    p.push_str("- final_level: index (0-based) of the FINAL BOSS level. Beating this level wins the game.\n\n");
+    p.push_str("RULES:\n");
+    p.push_str("- Total budget across ALL levels must be approximately 600 scapebux\n");
+    p.push_str("- Early levels should have lower budgets (~60-80), the final level should be the hardest (~120-150)\n");
+    p.push_str("- Create BRANCHING paths — not just a linear chain. The player should have choices.\n");
+    p.push_str("- Level 0 is the starting level. The final level should be at the END of the path, requiring multiple levels to reach.\n");
+    p.push_str("- Make sure all levels are reachable from level 0 via connections.\n");
+    p.push_str("- Positions should create a visually interesting map layout (spread them out, use branching paths)\n");
+    p.push_str("- Each level theme should be distinct but all should feel part of the same campaign\n\n");
+    p.push_str("Return ONLY valid JSON.");
+    p
+}
+
 // ── Assembly ──
 
 fn assemble_level(
@@ -374,13 +454,12 @@ fn assemble_level(
 
     // Validate player start
     let ps = p3.player_start;
-    let ps_y = ps[1].clamp(0, height - 1) as usize;
     let ps_x = ps[0].clamp(0, width - 1) as usize;
-    let player_start = if tile_defs.get(&tiles[ps_y][ps_x]).map_or(false, |t| t.walkable) {
-        ps
-    } else {
-        find_walkable_tile(&tiles, &tile_defs, width, height).unwrap_or([1, 1])
-    };
+    let ps_y = ps[1].clamp(0, height - 1) as usize;
+    if !tile_defs.get(&tiles[ps_y][ps_x]).map_or(false, |t| t.walkable) {
+        return Err(format!("Player start ({},{}) is on a non-walkable tile", ps[0], ps[1]));
+    }
+    let player_start = ps;
 
     // Flood fill
     let reachable = flood_fill(&tiles, &tile_defs, player_start[0], player_start[1], width, height);
@@ -518,7 +597,7 @@ fn assemble_level(
         width, height, tiles, tile_defs, monsters, items, traps,
         title: p1.title.clone(),
         description: p1.description.clone(),
-        font: p1.font.clone().unwrap_or_else(|| "Cinzel".into()),
+        font: p1.font.clone().expect("font was set from overworld config"),
         revealed: HashSet::new(),
     };
 
@@ -526,13 +605,6 @@ fn assemble_level(
 }
 
 // ── Helpers ──
-
-pub fn reachable_from(
-    tiles: &[Vec<String>], tile_defs: &std::collections::HashMap<String, TileDef>,
-    x: i32, y: i32, width: i32, height: i32,
-) -> usize {
-    flood_fill(tiles, tile_defs, x, y, width, height).len()
-}
 
 fn flood_fill(
     tiles: &[Vec<String>], tile_defs: &HashMap<String, TileDef>,
@@ -554,20 +626,6 @@ fn flood_fill(
         stack.push((x, y - 1));
     }
     visited
-}
-
-fn find_walkable_tile(
-    tiles: &[Vec<String>], tile_defs: &HashMap<String, TileDef>,
-    width: i32, height: i32,
-) -> Option<[i32; 2]> {
-    for y in 0..height {
-        for x in 0..width {
-            if tile_defs.get(&tiles[y as usize][x as usize]).map_or(false, |t| t.walkable) {
-                return Some([x, y]);
-            }
-        }
-    }
-    None
 }
 
 fn pick_random_reachable<'a>(
