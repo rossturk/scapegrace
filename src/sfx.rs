@@ -34,13 +34,6 @@ fn pick_ascending(scale: &[f32], n: usize, rng: &mut impl ::rand::Rng) -> Vec<f3
     scale[start..start + n.min(scale.len() - start)].to_vec()
 }
 
-/// Pick N descending notes from the scale
-fn pick_descending(scale: &[f32], n: usize, rng: &mut impl ::rand::Rng) -> Vec<f32> {
-    let mut notes = pick_ascending(scale, n, rng);
-    notes.reverse();
-    notes
-}
-
 /// Notes per octave in the scale (7 for modal, 5 for pentatonic, etc.)
 fn notes_per_octave(scale: &[f32]) -> usize {
     (scale.len() / 2).max(1)
@@ -420,8 +413,6 @@ impl Osc {
         Self { freq, sample_rate: 44100, phase: 0.0, waveform }
     }
     fn sine(freq: f32) -> Self { Self::new(freq, Waveform::Sine) }
-    fn square(freq: f32) -> Self { Self::new(freq, Waveform::Square) }
-    fn saw(freq: f32) -> Self { Self::new(freq, Waveform::Saw) }
 }
 
 impl Iterator for Osc {

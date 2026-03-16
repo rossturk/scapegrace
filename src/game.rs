@@ -65,6 +65,7 @@ pub struct Player {
     pub armor_defense: i32,
     pub potions: i32,
     pub floor: i32,
+    pub facing: f32, // radians, 0 = right, PI/2 = down
 }
 
 impl Default for Player {
@@ -77,7 +78,7 @@ impl Default for Player {
             gold: 0,
             weapon: "Fists".into(), weapon_damage: 0,
             armor: "None".into(), armor_defense: 0,
-            potions: 1, floor: 1,
+            potions: 1, floor: 1, facing: -std::f32::consts::FRAC_PI_2,
         }
     }
 }

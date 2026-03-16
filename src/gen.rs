@@ -332,7 +332,7 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, ti
     p.push_str("  Unspent carries over to the next level.\n\n");
 
     p.push_str("Return a JSON object with:\n");
-    p.push_str("- tile_defs: object mapping single chars to {name, color (hex), walkable (bool), char (display char or empty)}. Must include a wall char (not walkable) and a floor char (walkable). Add 1-3 thematic tiles. Be creative and bold with colors.\n");
+    p.push_str("- tile_defs: object mapping single chars to {name, color (hex), walkable (bool), char (display char or empty)}. Must include a wall char (not walkable) and a floor char (walkable). Add 1-3 thematic tiles. Be creative and bold with colors. IMPORTANT: Do NOT use these colors for tiles, they are reserved for game entities: green (#66bb6a), red/crimson (#e64545), gold/yellow (#ffd700), cyan/teal (#4dd0e1), orange (#ffa726). Avoid any color that would be close to these.\n");
     p.push_str(&format!("- boss: {{name, sprite (emoji), hp (~{}), attack (~{}), defense (~{}), xp_value (~{}), description}}\n",
         15 + floor * 8, 3 + floor * 2, floor * 2, 20 + floor * 5));
     p.push_str(&format!("- monster_types: array of 2-3 templates {{name, sprite, hp (~{}), attack (~{}), defense (~{}), xp_value (~{}), description}}\n",
@@ -388,7 +388,7 @@ fn build_phase3_prompt(floor: i32, theme: &str, p1: &Phase1Result, p2: &Phase2Re
 fn build_overworld_prompt() -> String {
     let mut p = String::new();
     p.push_str("Design a CAMPAIGN OVERWORLD for a roguelike game (like a Super Mario World map).\n\n");
-    p.push_str("Be wildly creative with the setting. DON'T default to generic fantasy. Consider: space opera, cyberpunk megacity, underwater civilization, wild west, noir detective, post-apocalyptic road trip, insect colony, deep sea research station, time-traveling heist, interdimensional food war, haunted theme park, arctic expedition, kaiju invasion, sentient fungal network — or something entirely original.\n\n");
+    p.push_str("Be wildly creative with the setting. DON'T default to generic fantasy. Invent something original and unexpected — the weirder the better. Do NOT use common tropes like fungal networks, cyberpunk, or space stations. Surprise me.\n\n");
     p.push_str("Return a JSON object with:\n");
     p.push_str("- name: campaign name (2-4 words, evocative)\n");
     p.push_str("- font: a Google Fonts font family for the overworld title\n");

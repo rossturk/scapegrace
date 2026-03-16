@@ -524,6 +524,9 @@ fn handle_playing_input(
     };
 
     if fire {
+        // Update facing direction
+        state.player.facing = (dy as f32).atan2(dx as f32);
+
         let log_before = state.log.len();
         let gold_before = state.player.gold;
         let potions_before = state.player.potions;
@@ -1031,7 +1034,7 @@ fn draw_death_overlay(font: &Font, bold: &Font, state: &GameState) {
 fn draw_victory_overlay(font: &Font, bold: &Font, state: &GameState) {
     let sw = screen_width();
     let sh = screen_height();
-    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.7));
+    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.88));
 
     let title = "VICTORY";
     let ts = 52u16;
@@ -1243,19 +1246,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
                 );
             }
 
-            if in_vision {
-                // Quadratic light falloff from player center to tile center
-                let tile_cx = screen_x + TILE / 2.0;
-                let tile_cy = screen_y + TILE / 2.0;
-                let dx = tile_cx - player_screen_x;
-                let dy = tile_cy - player_screen_y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                let t = (dist / light_radius).min(1.0);
-                let darkness = t * t; // quadratic falloff
-                if darkness > 0.01 {
-                    draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.0, 0.0, 0.0, darkness * 0.6));
-                }
-            } else {
+            if !in_vision {
                 draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.0, 0.0, 0.0, 0.5));
             }
         }
@@ -1273,15 +1264,20 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         let r = TILE * 0.38;
         let color = item_color(&item.item_type);
 
+        let shadow = Color::new(0.0, 0.0, 0.0, 0.4);
+        let so = 2.0; // shadow offset
         match item.item_type.as_str() {
             "weapon" => {
+                draw_poly(cx + so, cy + so, 3, r, 0.0, shadow);
                 draw_poly(cx, cy, 3, r, 0.0, color);
             }
             "armor" => {
+                draw_circle(cx + so, cy + so, r, shadow);
                 draw_circle(cx, cy, r, color);
             }
             _ => {
                 let half = r * 0.85;
+                draw_rectangle(cx - half + so, cy - half + so, half * 2.0, half * 2.0, shadow);
                 draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, color);
             }
         }
@@ -1323,6 +1319,11 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         let sy = mid_top + (mon.y - camera_y) as f32 * TILE;
         if sy + TILE < mid_top || sy > mid_top + mid_height || sx + TILE > map_width { continue; }
 
+        // Monsters face toward the player
+        let mon_facing = ((state.player.y - mon.y) as f32).atan2((state.player.x - mon.x) as f32);
+
+        let shadow = Color::new(0.0, 0.0, 0.0, 0.4);
+        let so = 2.0;
         if mon.is_boss {
             let cx = sx + TILE;
             let cy = sy + TILE;
@@ -1332,10 +1333,11 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
             // Glow
             draw_circle(cx, cy, r + 6.0, Color::new(1.0, 0.84, 0.0, 0.06));
             draw_circle(cx, cy, r + 3.0, Color::new(1.0, 0.84, 0.0, 0.12));
-            // Pie chart
+            // Shadow + Pie chart
+            draw_circle(cx + so, cy + so, r, shadow);
             draw_circle(cx, cy, r, Color::new(0.15, 0.15, 0.15, 1.0));
             if pct > 0.0 {
-                draw_pie(cx, cy, r, pct, base_color);
+                draw_pie(cx, cy, r, pct, base_color, mon_facing);
             }
         } else {
             let cx = sx + TILE / 2.0;
@@ -1343,26 +1345,98 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
             let r = TILE * 0.4;
             let pct = mon.hp as f32 / mon.max_hp as f32;
             let base_color = Color::new(0.9, 0.25, 0.25, 1.0);
-            // Pie chart
+            // Shadow + Pie chart
+            draw_circle(cx + so, cy + so, r, shadow);
             draw_circle(cx, cy, r, Color::new(0.15, 0.15, 0.15, 1.0));
             if pct > 0.0 {
-                draw_pie(cx, cy, r, pct, base_color);
+                draw_pie(cx, cy, r, pct, base_color, mon_facing);
             }
         }
     }
 
-    // Player — HP pie chart
+    // Player — shield ring + HP pie + sword triangle, all within one tile
     let px = map_left + (state.player.x - camera_x) as f32 * TILE + TILE / 2.0;
     let py = mid_top + (state.player.y - camera_y) as f32 * TILE + TILE / 2.0;
-    let r = TILE * 0.35;
+    let has_shield = state.player.armor != "None";
+    let has_sword = state.player.weapon != "Fists";
+    let shield_color = Color::new(0.45, 0.55, 0.75, 0.9);
+    let shadow = Color::new(0.0, 0.0, 0.0, 0.4);
+    let so = 2.0;
+
+    // Size everything to fit in one tile
+    let outer_r = TILE * 0.42; // shield ring outer radius
+    let ring_w = 3.0;          // shield ring thickness
+    let inner_r = outer_r - ring_w - 1.0; // HP pie radius
+    let r = if has_shield { inner_r } else { TILE * 0.35 };
+    let shield_outer = if has_shield { outer_r } else { r };
+
     let hp_pct = if state.player.max_hp > 0 {
         state.player.hp as f32 / state.player.max_hp as f32
     } else {
         0.0
     };
+
+    // Shadow for entire player composite
+    draw_circle(px + so, py + so, shield_outer, shadow);
+
+    // Shield ring (drawn as outer circle, inner circle punches it visually)
+    if has_shield {
+        draw_circle(px, py, outer_r, shield_color);
+    }
+
+    // Dark background + HP pie
     draw_circle(px, py, r, Color::new(0.15, 0.15, 0.15, 1.0));
     if hp_pct > 0.0 {
-        draw_pie(px, py, r, hp_pct, hp_bar_color(hp_pct));
+        draw_pie(px, py, r, hp_pct, hp_bar_color(hp_pct), state.player.facing);
+    }
+
+    // Sword triangle sticking out from the edge in facing direction
+    if has_sword {
+        let sword_r = r * 0.4;
+        let sword_base = shield_outer; // base of triangle sits at the outer edge
+        let sx = px + state.player.facing.cos() * sword_base;
+        let sy = py + state.player.facing.sin() * sword_base;
+        let tip_x = sx + state.player.facing.cos() * sword_r;
+        let tip_y = sy + state.player.facing.sin() * sword_r;
+        let perp = state.player.facing + std::f32::consts::FRAC_PI_2;
+        let base1_x = sx + perp.cos() * sword_r * 0.4;
+        let base1_y = sy + perp.sin() * sword_r * 0.4;
+        let base2_x = sx - perp.cos() * sword_r * 0.4;
+        let base2_y = sy - perp.sin() * sword_r * 0.4;
+        draw_triangle(
+            Vec2::new(tip_x + so, tip_y + so),
+            Vec2::new(base1_x + so, base1_y + so),
+            Vec2::new(base2_x + so, base2_y + so),
+            shadow,
+        );
+        draw_triangle(
+            Vec2::new(tip_x, tip_y),
+            Vec2::new(base1_x, base1_y),
+            Vec2::new(base2_x, base2_y),
+            Color::new(0.8, 0.8, 0.8, 0.9),
+        );
+    }
+
+    // ── Smooth radial light falloff (sub-tile grid, not aligned to tiles) ──
+    let cell = 6.0_f32; // sub-tile cell size for smooth gradient
+    let light_max_alpha = 0.5; // match fog-of-war darkness at edges
+    let cx_count = (map_width / cell) as i32 + 1;
+    let cy_count = (mid_height / cell) as i32 + 1;
+    for cy in 0..cy_count {
+        let y = mid_top + cy as f32 * cell;
+        if y + cell < mid_top || y > mid_top + mid_height { continue; }
+        let dy = y + cell / 2.0 - player_screen_y;
+        for cx in 0..cx_count {
+            let x = map_left + cx as f32 * cell;
+            if x > map_width { continue; }
+            let dx = x + cell / 2.0 - player_screen_x;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let t = (dist / light_radius).min(1.0);
+            let darkness = t * t; // quadratic
+            if darkness > 0.01 {
+                draw_rectangle(x, y, cell, cell, Color::new(0.0, 0.0, 0.0, darkness * light_max_alpha));
+            }
+        }
     }
 
     // ── Log panel (right side) ──
@@ -1373,12 +1447,48 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     let log_font_size = 13u16;
     let line_h = 18.0;
     let log_text_top = mid_top + 14.0;
-    let max_log_lines = ((mid_height - 20.0) / line_h) as usize;
-    let log_start = state.log.len().saturating_sub(max_log_lines);
-    for (i, entry) in state.log[log_start..].iter().enumerate() {
-        draw_text_ex(&entry.text, log_left + 12.0, log_text_top + i as f32 * line_h, TextParams {
-            font: Some(ui_font), font_size: log_font_size, color: hex_to_color(&entry.color), ..Default::default()
+    let log_pad = 12.0;
+    let log_max_w = log_width - log_pad * 2.0;
+    // Word-wrap log entries into visual lines
+    let entry_gap = 4.0_f32; // small gap between log entries
+    let mut wrapped: Vec<(String, String, bool)> = Vec::new(); // (text, color, is_last_line_of_entry)
+    for entry in &state.log {
+        let mut current = String::new();
+        for word in entry.text.split_whitespace() {
+            let candidate = if current.is_empty() {
+                word.to_string()
+            } else {
+                format!("{} {}", current, word)
+            };
+            if measure_text(&candidate, Some(ui_font), log_font_size, 1.0).width > log_max_w && !current.is_empty() {
+                wrapped.push((current, entry.color.clone(), false));
+                current = word.to_string();
+            } else {
+                current = candidate;
+            }
+        }
+        if !current.is_empty() {
+            wrapped.push((current, entry.color.clone(), true));
+        }
+    }
+
+    // Calculate visible lines from the bottom, accounting for entry gaps
+    let mut y_cursor = mid_top + mid_height - 8.0;
+    let mut vis_start = wrapped.len();
+    for i in (0..wrapped.len()).rev() {
+        y_cursor -= line_h;
+        if wrapped[i].2 { y_cursor -= entry_gap; }
+        if y_cursor < log_text_top { break; }
+        vis_start = i;
+    }
+
+    let mut y = log_text_top;
+    for (text, color, last) in &wrapped[vis_start..] {
+        draw_text_ex(text, log_left + log_pad, y, TextParams {
+            font: Some(ui_font), font_size: log_font_size, color: hex_to_color(color), ..Default::default()
         });
+        y += line_h;
+        if *last { y += entry_gap; }
     }
 
     // ── BOTTOM ROW: Stats + keymap ──
@@ -1410,10 +1520,10 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     });
 }
 
-fn draw_pie(cx: f32, cy: f32, r: f32, pct: f32, color: Color) {
+fn draw_pie(cx: f32, cy: f32, r: f32, pct: f32, color: Color, facing: f32) {
     let segments = 32;
     let angle_span = pct.clamp(0.0, 1.0) * std::f32::consts::TAU;
-    let start_angle = -std::f32::consts::FRAC_PI_2; // 12 o'clock
+    let start_angle = facing - angle_span / 2.0; // center the filled arc on facing direction
     for i in 0..segments {
         let a1 = start_angle + (i as f32 / segments as f32) * angle_span;
         let a2 = start_angle + ((i + 1) as f32 / segments as f32) * angle_span;
