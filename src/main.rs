@@ -1,6 +1,7 @@
 mod game;
 mod gen;
 mod maps;
+mod sfx;
 
 use game::*;
 use macroquad::prelude::*;
@@ -8,8 +9,13 @@ use ::rand::Rng;
 use std::sync::mpsc;
 
 const TILE: f32 = 24.0;
+const NAV_INITIAL_DELAY: f64 = 0.3;
+const NAV_REPEAT_RATE: f64 = 0.15;
+const GAME_INITIAL_DELAY: f64 = 0.18;
+const GAME_REPEAT_RATE: f64 = 0.10;
 
 enum Screen {
+    KeyEntry,
     Start,
     GenOverworld,
     Overworld,
@@ -74,8 +80,15 @@ async fn main() {
     let ui_font_bold = load_ttf_font_from_bytes(include_bytes!("../assets/JetBrainsMono-Bold.ttf"))
         .expect("Failed to load embedded UI bold font");
 
+    let sfx = sfx::Sfx::new();
+
     let mut state = GameState::new();
-    let mut screen = Screen::Start;
+    let has_key = !std::env::var("OPENROUTER_API_KEY").unwrap_or_default().is_empty();
+    let mut screen = if has_key { Screen::Start } else { Screen::KeyEntry };
+    let mut key_input = String::new();
+    let mut key_error: Option<String> = None;
+    let mut key_validating = false;
+    let mut key_rx: Option<mpsc::Receiver<Result<(), String>>> = None;
     let mut gen_rx: Option<mpsc::Receiver<GenMsg>> = None;
     let mut phase_text = String::new();
     let mut phase_detail = String::new();
@@ -88,16 +101,100 @@ async fn main() {
     let mut player_snapshot: Option<Player> = None;
     let mut level_snapshot: Option<(usize, Level, [i32; 2])> = None; // (node_index, level, start) for retry
 
-    // Key repeat for overworld navigation
+    // Key repeat
     let mut nav_hold_time: f64 = 0.0;
     let mut nav_last_fire: f64 = 0.0;
-    const NAV_INITIAL_DELAY: f64 = 0.3;
-    const NAV_REPEAT_RATE: f64 = 0.15;
+    let mut game_hold_time: f64 = 0.0;
+    let mut game_last_fire: f64 = 0.0;
 
     loop {
         clear_background(Color::new(0.04, 0.04, 0.04, 1.0));
 
         match screen {
+            Screen::KeyEntry => {
+                draw_key_entry_screen(&ui_font, &ui_font_bold, &key_input, &key_error, key_validating);
+
+                // Check validation result
+                if let Some(rx) = &key_rx {
+                    if let Ok(result) = rx.try_recv() {
+                        key_validating = false;
+                        match result {
+                            Ok(()) => {
+                                std::env::set_var("OPENROUTER_API_KEY", key_input.trim());
+                                screen = Screen::Start;
+                            }
+                            Err(e) => {
+                                key_error = Some(e);
+                            }
+                        }
+                        key_rx = None;
+                    }
+                }
+
+                if !key_validating {
+                    let cmd = is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper)
+                        || is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+
+                    // Paste (Cmd+V)
+                    if cmd && is_key_pressed(KeyCode::V) {
+                        if let Ok(mut clip) = arboard::Clipboard::new() {
+                            if let Ok(text) = clip.get_text() {
+                                let clean: String = text.chars().filter(|c| c.is_ascii_graphic()).collect();
+                                key_input.push_str(&clean);
+                                key_error = None;
+                            }
+                        }
+                        while get_char_pressed().is_some() {}
+                    } else {
+                        // Normal text input
+                        while let Some(ch) = get_char_pressed() {
+                            if ch.is_ascii_graphic() {
+                                key_input.push(ch);
+                                key_error = None;
+                            }
+                        }
+                    }
+                    // Backspace with key repeat
+                    if is_key_down(KeyCode::Backspace) {
+                        let now = get_time();
+                        if is_key_pressed(KeyCode::Backspace) {
+                            key_input.pop();
+                            key_error = None;
+                            nav_hold_time = now;
+                            nav_last_fire = now;
+                        } else if nav_hold_time > 0.0
+                            && now - nav_hold_time >= NAV_INITIAL_DELAY
+                            && now - nav_last_fire >= GAME_REPEAT_RATE
+                        {
+                            key_input.pop();
+                            key_error = None;
+                            nav_last_fire = now;
+                        }
+                    } else if !is_key_down(KeyCode::Left) && !is_key_down(KeyCode::Right)
+                        && !is_key_down(KeyCode::Up) && !is_key_down(KeyCode::Down)
+                        && !is_key_down(KeyCode::A) && !is_key_down(KeyCode::W)
+                        && !is_key_down(KeyCode::S) && !is_key_down(KeyCode::D) {
+                        nav_hold_time = 0.0;
+                    }
+                    if is_key_pressed(KeyCode::Enter) {
+                        let trimmed = key_input.trim().to_string();
+                        if trimmed.is_empty() {
+                            key_error = Some("The passphrase cannot be empty.".into());
+                        } else {
+                            // Validate the key in background
+                            key_validating = true;
+                            key_error = None;
+                            let (tx, rx) = mpsc::channel();
+                            key_rx = Some(rx);
+                            let key = trimmed.clone();
+                            std::thread::spawn(move || {
+                                let _ = tx.send(validate_api_key(&key));
+                            });
+                        }
+                    }
+                }
+            }
+
             Screen::Start => {
                 draw_start_screen(&ui_font, &ui_font_bold);
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
@@ -192,12 +289,14 @@ async fn main() {
                         }
                         if let Some(next) = best {
                             ow.current_node = next;
+                            if let Some(s) = &sfx { s.navigate(); }
                         }
                     }
 
                     if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
                         let node = &ow.nodes[ow.current_node];
                         if node.unlocked && !node.completed {
+                            if let Some(s) = &sfx { s.confirm(); }
                             player_snapshot = Some(state.player.clone());
                             // Reuse saved level if retrying after death on same node
                             if let Some((snap_node, _, _)) = &level_snapshot {
@@ -288,7 +387,8 @@ async fn main() {
             }
 
             Screen::Playing => {
-                handle_playing_input(&mut state, &mut screen, &mut confetti);
+                handle_playing_input(&mut state, &mut screen, &mut confetti, &sfx,
+                    &mut game_hold_time, &mut game_last_fire);
                 render_game(&state, &ui_font, title_font.as_ref());
             }
 
@@ -389,27 +489,47 @@ fn handle_playing_input(
     state: &mut GameState,
     screen: &mut Screen,
     confetti: &mut Vec<Confetti>,
+    sfx: &Option<sfx::Sfx>,
+    hold_time: &mut f64,
+    last_fire: &mut f64,
 ) {
+    let sc = state.level.scale.clone();
     if is_key_pressed(KeyCode::P) {
         use_potion(state);
+        if let Some(s) = sfx { s.pickup_potion(&sc); }
     }
 
     let mut dx = 0i32;
     let mut dy = 0i32;
-    if is_key_pressed(KeyCode::W) || is_key_pressed(KeyCode::Up) {
-        dy = -1;
-    }
-    if is_key_pressed(KeyCode::S) || is_key_pressed(KeyCode::Down) {
-        dy = 1;
-    }
-    if is_key_pressed(KeyCode::A) || is_key_pressed(KeyCode::Left) {
-        dx = -1;
-    }
-    if is_key_pressed(KeyCode::D) || is_key_pressed(KeyCode::Right) {
-        dx = 1;
-    }
+    if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) { dy = -1; }
+    if is_key_down(KeyCode::S) || is_key_down(KeyCode::Down) { dy = 1; }
+    if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) { dx = -1; }
+    if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) { dx = 1; }
 
-    if dx != 0 || dy != 0 {
+    let now = get_time();
+    let fire = if dx != 0 || dy != 0 {
+        if *hold_time == 0.0 {
+            *hold_time = now;
+            *last_fire = now;
+            true
+        } else if now - *hold_time >= GAME_INITIAL_DELAY && now - *last_fire >= GAME_REPEAT_RATE {
+            *last_fire = now;
+            true
+        } else {
+            false
+        }
+    } else {
+        *hold_time = 0.0;
+        false
+    };
+
+    if fire {
+        let log_before = state.log.len();
+        let gold_before = state.player.gold;
+        let potions_before = state.player.potions;
+        let weapon_before = state.player.weapon.clone();
+        let armor_before = state.player.armor.clone();
+
         let result = try_move(state, dx, dy);
         let moved = result["moved"].as_bool().unwrap_or(false);
         let combat = result["combat"].as_bool().unwrap_or(false);
@@ -417,10 +537,35 @@ fn handle_playing_input(
             monster_turns(state);
         }
 
+        // Trigger sounds based on what happened
+        if let Some(s) = sfx {
+            if moved && !combat {
+                s.footstep(&sc);
+            }
+            // Scan new log entries for combat/pickup events
+            for entry in &state.log[log_before..] {
+                let t = &entry.text;
+                if t.contains("CRITICAL") { s.crit(&sc); }
+                else if t.contains("You hit") { s.hit(&sc); }
+                else if t.contains("You miss") { s.miss(&sc); }
+                else if t.contains("hits you") || t.contains("CRITS you") { s.player_hurt(&sc); }
+                else if t.contains("TRAP!") { s.trap(&sc); }
+                else if t.contains("THE BOSS IS SLAIN") { s.boss_kill(&sc); }
+                else if t.contains("defeated the") { s.kill(&sc); }
+                else if t.contains("LEVEL UP") { s.level_up(&sc); }
+            }
+            if state.player.gold > gold_before { s.pickup_gold(&sc); }
+            if state.player.potions > potions_before { s.pickup_potion(&sc); }
+            if state.player.weapon != weapon_before { s.pickup_weapon(&sc); }
+            if state.player.armor != armor_before { s.pickup_armor(&sc); }
+        }
+
         if state.victory {
             spawn_confetti(confetti);
+            if let Some(s) = sfx { s.victory(&sc); }
             *screen = Screen::Victory;
         } else if state.game_over {
+            if let Some(s) = sfx { s.death(&sc); }
             *screen = Screen::Dead;
         }
     }
@@ -526,7 +671,133 @@ fn fetch_google_font(font_name: &str) -> Option<Vec<u8>> {
     Some(bytes.to_vec())
 }
 
+fn validate_api_key(key: &str) -> Result<(), String> {
+    let client = reqwest::blocking::Client::new();
+    // /auth/key actually checks if the key is valid
+    let resp = client.get("https://openrouter.ai/api/v1/auth/key")
+        .header("Authorization", format!("Bearer {}", key))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|e| format!("Could not reach the gate: {}", e))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
+        Err("The passphrase was not recognized.".into())
+    } else {
+        Err(format!("The gate refused entry. ({})", resp.status()))
+    }
+}
+
 // ── Screens ──
+
+fn draw_key_entry_screen(font: &Font, bold: &Font, input: &str, error: &Option<String>, validating: bool) {
+    let sw = screen_width();
+    let sh = screen_height();
+
+    // Title
+    let title = "SCAPEGRACE";
+    let ts = 52u16;
+    let tw = measure_text(title, Some(bold), ts, 1.0).width;
+    draw_text_ex(title, (sw - tw) / 2.0, sh * 0.28, TextParams {
+        font: Some(bold), font_size: ts, color: hex_to_color("#e94560"), ..Default::default()
+    });
+
+    // Flavor text
+    let lines = [
+        "Every scape needs a grace.",
+        "Every grace needs a key.",
+        "",
+        "Speak the passphrase, and the gate opens.",
+    ];
+    let ls = 17u16;
+    let mut y = sh * 0.40;
+    for line in &lines {
+        if line.is_empty() { y += 10.0; continue; }
+        let lw = measure_text(line, Some(font), ls, 1.0).width;
+        draw_text_ex(line, (sw - lw) / 2.0, y, TextParams {
+            font: Some(font), font_size: ls, color: Color::new(0.55, 0.55, 0.55, 1.0), ..Default::default()
+        });
+        y += 24.0;
+    }
+
+    // Input field
+    let field_w = 440.0;
+    let field_h = 36.0;
+    let field_x = (sw - field_w) / 2.0;
+    let field_y = sh * 0.58;
+    let border_color = if error.is_some() { hex_to_color("#e94560") } else { Color::new(0.3, 0.3, 0.3, 1.0) };
+    draw_rectangle(field_x, field_y, field_w, field_h, Color::new(0.08, 0.08, 0.08, 1.0));
+    draw_rectangle_lines(field_x, field_y, field_w, field_h, 1.5, border_color);
+
+    let fs = 16u16;
+    let max_inner = field_w - 24.0; // padding on both sides
+    if input.is_empty() {
+        draw_text_ex("sk-or-...", field_x + 12.0, field_y + 24.0, TextParams {
+            font: Some(font), font_size: fs, color: Color::new(0.3, 0.3, 0.3, 1.0), ..Default::default()
+        });
+    } else {
+        // Show: ••••••••last4  — but cap dots to fit the field
+        let tail: String = input.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail_w = measure_text(&tail, Some(font), fs, 1.0).width;
+        let dot = "\u{2022}";
+        let dot_w = measure_text(dot, Some(font), fs, 1.0).width;
+        let available = max_inner - tail_w;
+        let dot_count = if input.len() > 4 {
+            ((available / dot_w) as usize).min(input.len() - 4)
+        } else {
+            0
+        };
+        let display = format!("{}{}", dot.repeat(dot_count), tail);
+        draw_text_ex(&display, field_x + 12.0, field_y + 24.0, TextParams {
+            font: Some(font), font_size: fs, color: hex_to_color("#e0d5c0"), ..Default::default()
+        });
+    }
+
+    // Blinking cursor — always at the right edge of displayed text
+    let cursor_x = if input.is_empty() {
+        field_x + 12.0
+    } else {
+        let tail: String = input.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail_w = measure_text(&tail, Some(font), fs, 1.0).width;
+        let dot = "\u{2022}";
+        let dot_w = measure_text(dot, Some(font), fs, 1.0).width;
+        let available = max_inner - tail_w;
+        let dot_count = if input.len() > 4 {
+            ((available / dot_w) as usize).min(input.len() - 4)
+        } else {
+            0
+        };
+        field_x + 12.0 + dot_count as f32 * dot_w + tail_w
+    };
+    if (get_time() * 2.0) as i32 % 2 == 0 {
+        draw_line(cursor_x, field_y + 8.0, cursor_x, field_y + field_h - 8.0, 1.5, hex_to_color("#e94560"));
+    }
+
+    // Submit hint or status
+    let hs = 14u16;
+    if validating {
+        let hint = "Verifying...";
+        let hw = measure_text(hint, Some(font), hs, 1.0).width;
+        draw_text_ex(hint, (sw - hw) / 2.0, field_y + field_h + 30.0, TextParams {
+            font: Some(font), font_size: hs, color: GRAY, ..Default::default()
+        });
+    } else {
+        let hint = "Press ENTER to begin";
+        let hw = measure_text(hint, Some(font), hs, 1.0).width;
+        draw_text_ex(hint, (sw - hw) / 2.0, field_y + field_h + 30.0, TextParams {
+            font: Some(font), font_size: hs, color: DARKGRAY, ..Default::default()
+        });
+    }
+
+    if let Some(err) = error {
+        let es = 14u16;
+        let ew = measure_text(err, Some(font), es, 1.0).width;
+        draw_text_ex(err, (sw - ew) / 2.0, field_y + field_h + 55.0, TextParams {
+            font: Some(font), font_size: es, color: hex_to_color("#e94560"), ..Default::default()
+        });
+    }
+}
 
 fn draw_start_screen(font: &Font, bold: &Font) {
     let sw = screen_width();
@@ -895,8 +1166,6 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     let tiles_y = (mid_height / TILE) as i32;
     let camera_x = state.player.x - tiles_x / 2;
     let camera_y = state.player.y - tiles_y / 2;
-    let vision_r = state.vision_radius as f32;
-
     // Tiles
     for sy in 0..=tiles_y {
         for sx in 0..=tiles_x {
@@ -925,10 +1194,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
                 continue;
             }
 
-            let dist = (((tx - state.player.x) as f32).powi(2)
-                + ((ty - state.player.y) as f32).powi(2))
-            .sqrt();
-            let in_vision = dist <= vision_r;
+            let in_vision = state.level.visible.contains(&(tx, ty));
 
             draw_rectangle(screen_x, screen_y, TILE, TILE, hex_to_color(&def.color));
 
@@ -956,10 +1222,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
 
     // Items
     for item in &state.level.items {
-        if !state.level.revealed.contains(&(item.x, item.y)) { continue; }
-        let dist = (((item.x - state.player.x) as f32).powi(2)
-            + ((item.y - state.player.y) as f32).powi(2)).sqrt();
-        if dist > vision_r { continue; }
+        if !state.level.visible.contains(&(item.x, item.y)) { continue; }
         let sx = map_left + (item.x - camera_x) as f32 * TILE;
         let sy = mid_top + (item.y - camera_y) as f32 * TILE;
         if sy + TILE < mid_top || sy > mid_top + mid_height || sx + TILE > map_width { continue; }
@@ -1004,11 +1267,16 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     // Monsters — hexagons
     for mon in &state.level.monsters {
         if !mon.is_alive() { continue; }
-        if !state.level.revealed.contains(&(mon.x, mon.y)) { continue; }
-        let dist = (((mon.x - state.player.x) as f32).powi(2)
-            + ((mon.y - state.player.y) as f32).powi(2)).sqrt();
-        let extra = if mon.is_boss { 1.0 } else { 0.0 };
-        if dist > vision_r + extra { continue; }
+        // Boss is 2x2 — visible if any of its tiles are visible
+        let mon_visible = if mon.is_boss {
+            state.level.visible.contains(&(mon.x, mon.y))
+                || state.level.visible.contains(&(mon.x + 1, mon.y))
+                || state.level.visible.contains(&(mon.x, mon.y + 1))
+                || state.level.visible.contains(&(mon.x + 1, mon.y + 1))
+        } else {
+            state.level.visible.contains(&(mon.x, mon.y))
+        };
+        if !mon_visible { continue; }
 
         let sx = map_left + (mon.x - camera_x) as f32 * TILE;
         let sy = mid_top + (mon.y - camera_y) as f32 * TILE;

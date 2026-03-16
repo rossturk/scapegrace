@@ -32,6 +32,13 @@ pub struct Phase2Result {
     pub armor: ItemTemplateRaw,
     pub traps: Option<Vec<TrapRaw>>,
     pub budget_spent: Option<serde_json::Value>,
+    pub mode: Option<ModeRaw>,
+}
+
+#[derive(Deserialize)]
+pub struct ModeRaw {
+    pub root: String,
+    pub scale: String,
 }
 
 #[derive(Deserialize)]
@@ -333,7 +340,8 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, ti
     p.push_str("- weapon: {name, sprite (emoji), description}\n");
     p.push_str("- armor: {name, sprite (emoji), description}\n");
     p.push_str("- traps: array of {damage (5-12), name}. Number based on your budget. These are hidden floor tiles that hurt the player.\n");
-    p.push_str("- budget_spent: {boss, monsters, traps, weapon, armor, potions, gold, total, remaining}\n\n");
+    p.push_str("- budget_spent: {boss, monsters, traps, weapon, armor, potions, gold, total, remaining}\n");
+    p.push_str("- mode: {root, scale} — a musical mode for the level's ambient sound. root is a note name (e.g. \"C\", \"F#\", \"Bb\"), scale is one of: \"ionian\", \"dorian\", \"phrygian\", \"lydian\", \"mixolydian\", \"aeolian\", \"locrian\", \"pentatonic_major\", \"pentatonic_minor\", \"blues\", \"whole_tone\", \"chromatic\". Choose a mode that fits the level's mood.\n\n");
     p.push_str("Return ONLY valid JSON.");
     p
 }
@@ -593,12 +601,22 @@ fn assemble_level(
         eprintln!("LLM's accounting: {}", bs);
     }
 
+    let scale = p2.mode.as_ref()
+        .map(|m| build_scale(&m.root, &m.scale))
+        .unwrap_or_else(|| build_scale("C", "pentatonic_minor"));
+
+    if let Some(m) = &p2.mode {
+        eprintln!("Mode: {} {}", m.root, m.scale);
+    }
+
     let level = Level {
         width, height, tiles, tile_defs, monsters, items, traps,
         title: p1.title.clone(),
         description: p1.description.clone(),
         font: p1.font.clone().expect("font was set from overworld config"),
+        scale,
         revealed: HashSet::new(),
+        visible: HashSet::new(),
     };
 
     Ok((level, player_start, remaining))
@@ -645,4 +663,46 @@ fn pick_random_reachable<'a>(
     } else {
         Some(candidates[rng.gen_range(0..candidates.len())])
     }
+}
+
+/// Build a scale of frequencies from a root note name and scale type.
+/// Returns frequencies spanning 2 octaves in a comfortable range (C4-C6 area).
+fn build_scale(root: &str, scale_name: &str) -> Vec<f32> {
+    // Parse root note to semitone offset from C
+    let root_semitone = match root.to_uppercase().trim_end_matches(|c: char| c.is_ascii_digit()).to_string().as_str() {
+        "C" => 0, "C#" | "DB" => 1, "D" => 2, "D#" | "EB" => 3,
+        "E" => 4, "F" => 5, "F#" | "GB" => 6, "G" => 7,
+        "G#" | "AB" => 8, "A" => 9, "A#" | "BB" => 10, "B" => 11,
+        _ => 0, // default to C
+    };
+
+    // Scale intervals (semitones from root)
+    let intervals: Vec<i32> = match scale_name.to_lowercase().as_str() {
+        "ionian" | "major" => vec![0, 2, 4, 5, 7, 9, 11],
+        "dorian" => vec![0, 2, 3, 5, 7, 9, 10],
+        "phrygian" => vec![0, 1, 3, 5, 7, 8, 10],
+        "lydian" => vec![0, 2, 4, 6, 7, 9, 11],
+        "mixolydian" => vec![0, 2, 4, 5, 7, 9, 10],
+        "aeolian" | "minor" => vec![0, 2, 3, 5, 7, 8, 10],
+        "locrian" => vec![0, 1, 3, 5, 6, 8, 10],
+        "pentatonic_major" => vec![0, 2, 4, 7, 9],
+        "pentatonic_minor" => vec![0, 3, 5, 7, 10],
+        "blues" => vec![0, 3, 5, 6, 7, 10],
+        "whole_tone" => vec![0, 2, 4, 6, 8, 10],
+        "chromatic" => vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        _ => vec![0, 3, 5, 7, 10], // default pentatonic minor
+    };
+
+    // Generate frequencies across 2 octaves starting from octave 4
+    // C4 = MIDI 60 = 261.63 Hz, A4 = MIDI 69 = 440 Hz
+    let base_midi = 60 + root_semitone; // root in octave 4
+    let mut freqs = Vec::new();
+    for octave_offset in 0..2 {
+        for &interval in &intervals {
+            let midi = base_midi + octave_offset * 12 + interval;
+            let freq = 440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0);
+            freqs.push(freq);
+        }
+    }
+    freqs
 }

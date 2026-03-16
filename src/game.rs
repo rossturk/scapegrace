@@ -100,8 +100,11 @@ pub struct Level {
     pub title: String,
     pub description: String,
     pub font: String,
+    pub scale: Vec<f32>,  // frequencies for footstep notes
     #[serde(skip)]
     pub revealed: HashSet<(i32, i32)>,
+    #[serde(skip)]
+    pub visible: HashSet<(i32, i32)>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -155,7 +158,7 @@ impl GameState {
                 tiles: vec![], tile_defs: Default::default(),
                 monsters: vec![], items: vec![], traps: vec![],
                 title: String::new(), description: String::new(), font: String::new(),
-                revealed: HashSet::new(),
+                scale: vec![], revealed: HashSet::new(), visible: HashSet::new(),
             },
             log: vec![],
             game_over: false,
@@ -486,19 +489,50 @@ pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
 
 pub fn reveal_around(level: &mut Level, px: i32, py: i32, radius: i32) -> Vec<[i32; 2]> {
     let mut newly = vec![];
+
+    // Clear current visibility
+    level.visible.clear();
+
+    // Cast rays to perimeter of vision circle
     let r2 = radius * radius;
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            if dx * dx + dy * dy <= r2 {
-                let tx = px + dx;
-                let ty = py + dy;
-                if tx >= 0 && ty >= 0 && tx < level.width && ty < level.height {
-                    if level.revealed.insert((tx, ty)) {
-                        newly.push([tx, ty]);
-                    }
-                }
+    let steps = (radius * 8).max(32); // number of rays around the circle
+    for i in 0..steps {
+        let angle = (i as f32 / steps as f32) * std::f32::consts::TAU;
+        let dx = angle.cos();
+        let dy = angle.sin();
+
+        // March along the ray
+        let mut x = px as f32 + 0.5;
+        let mut y = py as f32 + 0.5;
+        for _ in 0..=(radius + 1) {
+            let tx = x as i32;
+            let ty = y as i32;
+
+            if tx < 0 || ty < 0 || tx >= level.width || ty >= level.height { break; }
+
+            let dist2 = (tx - px) * (tx - px) + (ty - py) * (ty - py);
+            if dist2 > r2 { break; }
+
+            // Mark visible and revealed
+            level.visible.insert((tx, ty));
+            if level.revealed.insert((tx, ty)) {
+                newly.push([tx, ty]);
             }
+
+            // Stop ray after hitting a wall (but the wall tile itself is visible)
+            let tile = &level.tiles[ty as usize][tx as usize];
+            if !level.tile_defs.get(tile).map_or(false, |t| t.walkable) {
+                break;
+            }
+
+            x += dx;
+            y += dy;
         }
     }
+
+    // Always see own tile
+    level.visible.insert((px, py));
+    level.revealed.insert((px, py));
+
     newly
 }
