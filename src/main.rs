@@ -705,8 +705,8 @@ fn draw_key_entry_screen(font: &Font, bold: &Font, input: &str, error: &Option<S
 
     // Flavor text
     let lines = [
-        "Every scape needs a grace.",
-        "Every grace needs a key.",
+        "You were warned.",
+        "You came anyway.",
         "",
         "Speak the passphrase, and the gate opens.",
     ];
@@ -866,10 +866,8 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
     let bottom_bar = 60.0;
     let map_left = margin;
     let map_right = sw - margin;
-    let map_top = top_bar + 20.0;
     let map_bottom = sh - bottom_bar;
     let map_w = map_right - map_left;
-    let map_h = map_bottom - map_top;
 
     // Title
     let tfont = ow_font.unwrap_or(ui_bold);
@@ -879,12 +877,40 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         font: Some(tfont), font_size: ts, color: hex_to_color("#e0d5c0"), ..Default::default()
     });
 
-    // Description
+    // Description (word-wrapped)
     let ds = 16u16;
-    let dw = measure_text(&ow.description, Some(ui_font), ds, 1.0).width;
-    draw_text_ex(&ow.description, (sw - dw) / 2.0, 78.0, TextParams {
-        font: Some(ui_font), font_size: ds, color: DARKGRAY, ..Default::default()
-    });
+    let max_desc_w = sw - margin * 2.0;
+    let mut desc_lines: Vec<String> = Vec::new();
+    let mut current_line = String::new();
+    for word in ow.description.split_whitespace() {
+        let candidate = if current_line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{} {}", current_line, word)
+        };
+        if measure_text(&candidate, Some(ui_font), ds, 1.0).width > max_desc_w && !current_line.is_empty() {
+            desc_lines.push(current_line);
+            current_line = word.to_string();
+        } else {
+            current_line = candidate;
+        }
+    }
+    if !current_line.is_empty() {
+        desc_lines.push(current_line);
+    }
+    let line_h = ds as f32 + 4.0;
+    let desc_height = desc_lines.len() as f32 * line_h;
+    for (i, line) in desc_lines.iter().enumerate() {
+        let lw = measure_text(line, Some(ui_font), ds, 1.0).width;
+        draw_text_ex(line, (sw - lw) / 2.0, 78.0 + i as f32 * line_h, TextParams {
+            font: Some(ui_font), font_size: ds, color: DARKGRAY, ..Default::default()
+        });
+    }
+
+    // Adjust top_bar to account for wrapped description
+    let top_bar = top_bar + (desc_height - line_h).max(0.0);
+    let map_top = top_bar + 20.0;
+    let map_h = map_bottom - map_top;
 
     // Helper to convert node coords to screen coords
     let node_screen = |n: &OverworldNode| -> (f32, f32) {
@@ -1166,6 +1192,11 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     let tiles_y = (mid_height / TILE) as i32;
     let camera_x = state.player.x - tiles_x / 2;
     let camera_y = state.player.y - tiles_y / 2;
+    // Player center in screen coords (for light falloff)
+    let player_screen_x = map_left + (state.player.x - camera_x) as f32 * TILE + TILE / 2.0;
+    let player_screen_y = mid_top + (state.player.y - camera_y) as f32 * TILE + TILE / 2.0;
+    let light_radius = state.vision_radius as f32 * TILE;
+
     // Tiles
     for sy in 0..=tiles_y {
         for sx in 0..=tiles_x {
@@ -1212,11 +1243,21 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
                 );
             }
 
-            if !in_vision {
+            if in_vision {
+                // Quadratic light falloff from player center to tile center
+                let tile_cx = screen_x + TILE / 2.0;
+                let tile_cy = screen_y + TILE / 2.0;
+                let dx = tile_cx - player_screen_x;
+                let dy = tile_cy - player_screen_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let t = (dist / light_radius).min(1.0);
+                let darkness = t * t; // quadratic falloff
+                if darkness > 0.01 {
+                    draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.0, 0.0, 0.0, darkness * 0.6));
+                }
+            } else {
                 draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.0, 0.0, 0.0, 0.5));
             }
-
-            draw_rectangle_lines(screen_x, screen_y, TILE, TILE, 1.0, Color::new(1.0, 1.0, 1.0, 0.024));
         }
     }
 

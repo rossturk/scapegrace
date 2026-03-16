@@ -41,6 +41,56 @@ fn pick_descending(scale: &[f32], n: usize, rng: &mut impl ::rand::Rng) -> Vec<f
     notes
 }
 
+/// Notes per octave in the scale (7 for modal, 5 for pentatonic, etc.)
+fn notes_per_octave(scale: &[f32]) -> usize {
+    (scale.len() / 2).max(1)
+}
+
+/// Pick a bass note biased toward root and fifth (scale degrees 1 and 5)
+fn pick_bass(scale: &[f32], rng: &mut impl ::rand::Rng) -> f32 {
+    if scale.is_empty() { return 220.0; }
+    let npo = notes_per_octave(scale);
+    // Strong bass tones: root(0), fifth(4 in 7-note, 3 in 5-note), octave root
+    let fifth_idx = (npo * 4 / 7).min(npo - 1); // approximate fifth
+    let candidates = [0, fifth_idx, npo]; // root, fifth, octave root
+    let idx = candidates[rng.gen_range(0..candidates.len())];
+    scale[idx.min(scale.len() - 1)] * 0.5 // one octave down for bass weight
+}
+
+/// Pick a dyad: root + third (2 scale degrees up)
+fn pick_dyad(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
+    if scale.len() < 3 { return vec![pick(scale, rng)]; }
+    let max_root = scale.len() - 3;
+    let root = rng.gen_range(0..=max_root);
+    vec![scale[root], scale[root + 2]]
+}
+
+/// Pick a dyad from the low end of the scale
+fn pick_dyad_low(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
+    if scale.len() < 3 { return vec![pick_low(scale, rng)]; }
+    let end = (scale.len() / 3).max(3);
+    let max_root = end.saturating_sub(3);
+    let root = rng.gen_range(0..=max_root);
+    vec![scale[root], scale[root + 2]]
+}
+
+/// Pick a dyad from the high end of the scale
+fn pick_dyad_high(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
+    if scale.len() < 3 { return vec![pick_high(scale, rng)]; }
+    let start = (scale.len() * 2 / 3).min(scale.len() - 3);
+    let max_root = scale.len() - 3;
+    let root = rng.gen_range(start..=max_root);
+    vec![scale[root], scale[root + 2]]
+}
+
+/// Pick a triad: root + third + fifth (0, 2, 4 scale degrees up)
+fn pick_triad(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
+    if scale.len() < 5 { return pick_dyad(scale, rng); }
+    let max_root = scale.len() - 5;
+    let root = rng.gen_range(0..=max_root);
+    vec![scale[root], scale[root + 2], scale[root + 4]]
+}
+
 impl Sfx {
     pub fn new() -> Option<Self> {
         let (stream, handle) = OutputStream::try_default().ok()?;
@@ -57,10 +107,11 @@ impl Sfx {
     // ── Game sounds — all in the level's musical mode ──
 
     pub fn footstep(&self, scale: &[f32]) {
+        // Bassline — root/fifth biased, low single notes
         let mut rng = ::rand::thread_rng();
-        let dur = rng.gen_range(20..40);
-        let vol = rng.gen_range(0.03..0.07);
-        let freq = pick(scale, &mut rng);
+        let dur = rng.gen_range(25..45);
+        let vol = rng.gen_range(0.04..0.08);
+        let freq = pick_bass(scale, &mut rng);
         self.play(
             Osc::sine(freq)
                 .take_duration(Duration::from_millis(dur))
@@ -70,11 +121,11 @@ impl Sfx {
     }
 
     pub fn hit(&self, scale: &[f32]) {
-        // Punch — low note, square wave
+        // Punch — low dyad, square wave
         let mut rng = ::rand::thread_rng();
-        let freq = pick_low(scale, &mut rng) * 0.5; // one octave below low range
+        let freqs: Vec<f32> = pick_dyad_low(scale, &mut rng).iter().map(|f| f * 0.5).collect();
         self.play(
-            Osc::square(freq)
+            Chord::square(&freqs)
                 .take_duration(Duration::from_millis(80))
                 .amplify(0.15)
                 .fade_out(Duration::from_millis(80))
@@ -82,11 +133,11 @@ impl Sfx {
     }
 
     pub fn crit(&self, scale: &[f32]) {
-        // Hard slam — lowest note, saw wave
+        // Hard slam — low triad, saw wave
         let mut rng = ::rand::thread_rng();
-        let freq = pick_low(scale, &mut rng) * 0.25;
+        let freqs: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
         self.play(
-            Osc::saw(freq)
+            Chord::saw(&freqs)
                 .take_duration(Duration::from_millis(120))
                 .amplify(0.25)
                 .fade_out(Duration::from_millis(120))
@@ -94,24 +145,32 @@ impl Sfx {
     }
 
     pub fn player_hurt(&self, scale: &[f32]) {
-        // Descending two notes
+        // Descending dyad sweep
         let mut rng = ::rand::thread_rng();
-        let notes = pick_descending(scale, 2, &mut rng);
-        let hi = notes.first().copied().unwrap_or(400.0);
-        let lo = notes.last().copied().unwrap_or(200.0);
+        let hi = pick_dyad_high(scale, &mut rng);
+        let lo = pick_dyad_low(scale, &mut rng);
+        let hi_avg = hi.iter().sum::<f32>() / hi.len() as f32;
+        let lo_avg = lo.iter().sum::<f32>() / lo.len() as f32;
+        // Sweep the root, chord the destination
         self.play(
-            Sweep::new(hi, lo, Duration::from_millis(150), Waveform::Square)
-                .amplify(0.12)
-                .fade_out(Duration::from_millis(150))
+            Sweep::new(hi_avg, lo_avg, Duration::from_millis(100), Waveform::Square)
+                .amplify(0.10)
+                .fade_out(Duration::from_millis(100))
+                .then(
+                    Chord::square(&lo)
+                        .take_duration(Duration::from_millis(60))
+                        .amplify(0.12)
+                        .fade_out(Duration::from_millis(60))
+                )
         );
     }
 
     pub fn miss(&self, scale: &[f32]) {
-        // Quick high note, very quiet
+        // Quick high dyad, very quiet
         let mut rng = ::rand::thread_rng();
-        let freq = pick_high(scale, &mut rng);
+        let freqs = pick_dyad_high(scale, &mut rng);
         self.play(
-            Osc::sine(freq)
+            Chord::sine(&freqs)
                 .take_duration(Duration::from_millis(40))
                 .amplify(0.03)
                 .fade_out(Duration::from_millis(40))
@@ -119,53 +178,65 @@ impl Sfx {
     }
 
     pub fn kill(&self, scale: &[f32]) {
-        // Rising two-note pop
+        // Rising sweep into a triumphant dyad
         let mut rng = ::rand::thread_rng();
-        let notes = pick_ascending(scale, 2, &mut rng);
-        let lo = notes.first().copied().unwrap_or(300.0);
-        let hi = notes.last().copied().unwrap_or(600.0);
+        let lo = pick_low(scale, &mut rng);
+        let hi_chord = pick_dyad_high(scale, &mut rng);
+        let hi_avg = hi_chord.iter().sum::<f32>() / hi_chord.len() as f32;
         self.play(
-            Sweep::new(lo, hi, Duration::from_millis(100), Waveform::Sine)
-                .amplify(0.12)
-                .fade_out(Duration::from_millis(100))
+            Sweep::new(lo, hi_avg, Duration::from_millis(60), Waveform::Sine)
+                .amplify(0.10)
+                .then(
+                    Chord::sine(&hi_chord)
+                        .take_duration(Duration::from_millis(50))
+                        .amplify(0.12)
+                        .fade_out(Duration::from_millis(50))
+                )
         );
     }
 
     pub fn death(&self, scale: &[f32]) {
-        // Long descending from high to lowest note
+        // Long descending crash into sustained low triad
         let mut rng = ::rand::thread_rng();
         let hi = pick_high(scale, &mut rng);
-        let lo = pick_low(scale, &mut rng) * 0.25;
+        let lo_chord: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
+        let lo_avg = lo_chord.iter().sum::<f32>() / lo_chord.len() as f32;
         self.play(
-            Sweep::new(hi, lo, Duration::from_millis(800), Waveform::Saw)
+            Sweep::new(hi, lo_avg, Duration::from_millis(800), Waveform::Saw)
                 .amplify(0.15)
                 .fade_out(Duration::from_millis(800))
+                .then(
+                    Chord::saw(&lo_chord)
+                        .take_duration(Duration::from_millis(1200))
+                        .amplify(0.12)
+                        .fade_out(Duration::from_millis(1200))
+                )
         );
     }
 
     pub fn victory(&self, scale: &[f32]) {
-        // Ascending 3-note fanfare from the scale
+        // Ascending 3-chord fanfare — each note becomes a dyad
         let mut rng = ::rand::thread_rng();
-        let notes = pick_ascending(scale, 3, &mut rng);
-        let n0 = notes.first().copied().unwrap_or(440.0);
-        let n1 = notes.get(1).copied().unwrap_or(554.0);
-        let n2 = notes.last().copied().unwrap_or(659.0);
+        let notes = pick_ascending(scale, 5, &mut rng);
+        let c0 = [notes[0], notes.get(2).copied().unwrap_or(notes[0])];
+        let c1 = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])];
+        let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
         self.play(
-            Osc::sine(n0).take_duration(Duration::from_millis(100)).amplify(0.12)
+            Chord::sine(&c0).take_duration(Duration::from_millis(100)).amplify(0.12)
                 .then(silence(Duration::from_millis(30)))
-                .then(Osc::sine(n1).take_duration(Duration::from_millis(100)).amplify(0.12))
+                .then(Chord::sine(&c1).take_duration(Duration::from_millis(100)).amplify(0.12))
                 .then(silence(Duration::from_millis(30)))
-                .then(Osc::sine(n2).take_duration(Duration::from_millis(200)).amplify(0.15)
+                .then(Chord::sine(&c2).take_duration(Duration::from_millis(200)).amplify(0.15)
                     .fade_out(Duration::from_millis(200)))
         );
     }
 
     pub fn pickup_gold(&self, scale: &[f32]) {
-        // High ding — highest note in scale
+        // High sparkle dyad
         let mut rng = ::rand::thread_rng();
-        let freq = pick_high(scale, &mut rng) * 2.0; // octave up for sparkle
+        let freqs: Vec<f32> = pick_dyad_high(scale, &mut rng).iter().map(|f| f * 2.0).collect();
         self.play(
-            Osc::sine(freq)
+            Chord::sine(&freqs)
                 .take_duration(Duration::from_millis(60))
                 .amplify(0.10)
                 .fade_out(Duration::from_millis(60))
@@ -173,36 +244,46 @@ impl Sfx {
     }
 
     pub fn pickup_potion(&self, scale: &[f32]) {
-        // Rising blip — two ascending notes
+        // Rising sweep into a dyad
         let mut rng = ::rand::thread_rng();
-        let notes = pick_ascending(scale, 2, &mut rng);
-        let lo = notes.first().copied().unwrap_or(400.0);
-        let hi = notes.last().copied().unwrap_or(800.0);
+        let lo = pick_low(scale, &mut rng);
+        let hi_chord = pick_dyad(scale, &mut rng);
+        let hi_avg = hi_chord.iter().sum::<f32>() / hi_chord.len() as f32;
         self.play(
-            Sweep::new(lo, hi, Duration::from_millis(80), Waveform::Sine)
-                .amplify(0.10)
-                .fade_out(Duration::from_millis(80))
+            Sweep::new(lo, hi_avg, Duration::from_millis(50), Waveform::Sine)
+                .amplify(0.08)
+                .then(
+                    Chord::sine(&hi_chord)
+                        .take_duration(Duration::from_millis(40))
+                        .amplify(0.10)
+                        .fade_out(Duration::from_millis(40))
+                )
         );
     }
 
     pub fn pickup_weapon(&self, scale: &[f32]) {
-        // Metallic ring — mid note, saw wave
+        // Ascending 3-chord metallic fanfare
         let mut rng = ::rand::thread_rng();
-        let freq = pick(scale, &mut rng);
+        let notes = pick_ascending(scale, 5, &mut rng);
+        let c0 = [notes[0], notes.get(2).copied().unwrap_or(notes[0])];
+        let c1 = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])];
+        let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
         self.play(
-            Osc::saw(freq)
-                .take_duration(Duration::from_millis(120))
-                .amplify(0.10)
-                .fade_out(Duration::from_millis(120))
+            Chord::saw(&c0).take_duration(Duration::from_millis(100)).amplify(0.10)
+                .then(silence(Duration::from_millis(20)))
+                .then(Chord::saw(&c1).take_duration(Duration::from_millis(100)).amplify(0.10))
+                .then(silence(Duration::from_millis(20)))
+                .then(Chord::saw(&c2).take_duration(Duration::from_millis(180)).amplify(0.12)
+                    .fade_out(Duration::from_millis(180)))
         );
     }
 
     pub fn pickup_armor(&self, scale: &[f32]) {
-        // Lower metallic — low note, saw wave
+        // Lower metallic dyad — saw wave
         let mut rng = ::rand::thread_rng();
-        let freq = pick_low(scale, &mut rng);
+        let freqs = pick_dyad_low(scale, &mut rng);
         self.play(
-            Osc::saw(freq)
+            Chord::saw(&freqs)
                 .take_duration(Duration::from_millis(150))
                 .amplify(0.10)
                 .fade_out(Duration::from_millis(150))
@@ -210,32 +291,33 @@ impl Sfx {
     }
 
     pub fn level_up(&self, scale: &[f32]) {
-        // Ascending 4-note arpeggio
+        // Ascending 4-chord arpeggio — each step is a dyad
         let mut rng = ::rand::thread_rng();
-        let notes = pick_ascending(scale, 4, &mut rng);
-        let n0 = notes.first().copied().unwrap_or(330.0);
-        let n1 = notes.get(1).copied().unwrap_or(440.0);
-        let n2 = notes.get(2).copied().unwrap_or(550.0);
-        let n3 = notes.last().copied().unwrap_or(660.0);
+        let notes = pick_ascending(scale, 6, &mut rng);
+        let c0 = [notes[0], notes.get(2).copied().unwrap_or(notes[0])];
+        let c1 = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])];
+        let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
+        let c3 = [notes.get(3).copied().unwrap_or(notes[0]), notes.get(5).copied().unwrap_or(notes[0])];
         self.play(
-            Osc::sine(n0).take_duration(Duration::from_millis(80)).amplify(0.10)
-                .then(Osc::sine(n1).take_duration(Duration::from_millis(80)).amplify(0.10))
-                .then(Osc::sine(n2).take_duration(Duration::from_millis(80)).amplify(0.10))
-                .then(Osc::sine(n3).take_duration(Duration::from_millis(160)).amplify(0.13)
+            Chord::sine(&c0).take_duration(Duration::from_millis(80)).amplify(0.10)
+                .then(Chord::sine(&c1).take_duration(Duration::from_millis(80)).amplify(0.10))
+                .then(Chord::sine(&c2).take_duration(Duration::from_millis(80)).amplify(0.10))
+                .then(Chord::sine(&c3).take_duration(Duration::from_millis(160)).amplify(0.13)
                     .fade_out(Duration::from_millis(160)))
         );
     }
 
     pub fn trap(&self, scale: &[f32]) {
-        // Dissonant low stab
+        // Dissonant low chord stab
         let mut rng = ::rand::thread_rng();
-        let freq = pick_low(scale, &mut rng) * 0.5;
+        let freqs: Vec<f32> = pick_dyad_low(scale, &mut rng).iter().map(|f| f * 0.5).collect();
+        let detuned: Vec<f32> = freqs.iter().map(|f| f * 0.9).collect();
         self.play(
-            Osc::square(freq)
+            Chord::square(&freqs)
                 .take_duration(Duration::from_millis(30))
                 .amplify(0.15)
                 .then(
-                    Osc::square(freq * 0.9) // slightly detuned for nastiness
+                    Chord::square(&detuned)
                         .take_duration(Duration::from_millis(100))
                         .amplify(0.12)
                         .fade_out(Duration::from_millis(100))
@@ -244,24 +326,24 @@ impl Sfx {
     }
 
     pub fn boss_kill(&self, scale: &[f32]) {
-        // Descending crash + ascending 4-note fanfare
+        // Descending crash + ascending 4-chord fanfare
         let mut rng = ::rand::thread_rng();
         let lo = pick_low(scale, &mut rng) * 0.25;
         let hi = pick_high(scale, &mut rng);
-        let fanfare = pick_ascending(scale, 4, &mut rng);
-        let f0 = fanfare.first().copied().unwrap_or(440.0);
-        let f1 = fanfare.get(1).copied().unwrap_or(554.0);
-        let f2 = fanfare.get(2).copied().unwrap_or(659.0);
-        let f3 = fanfare.last().copied().unwrap_or(880.0);
+        let notes = pick_ascending(scale, 6, &mut rng);
+        let c0 = [notes[0], notes.get(2).copied().unwrap_or(notes[0])];
+        let c1 = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])];
+        let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
+        let c3 = [notes.get(3).copied().unwrap_or(notes[0]), notes.get(5).copied().unwrap_or(notes[0])];
         self.play(
             Sweep::new(hi, lo, Duration::from_millis(300), Waveform::Saw)
                 .amplify(0.18)
                 .fade_out(Duration::from_millis(300))
                 .then(silence(Duration::from_millis(100)))
-                .then(Osc::sine(f0).take_duration(Duration::from_millis(120)).amplify(0.12))
-                .then(Osc::sine(f1).take_duration(Duration::from_millis(120)).amplify(0.12))
-                .then(Osc::sine(f2).take_duration(Duration::from_millis(120)).amplify(0.12))
-                .then(Osc::sine(f3).take_duration(Duration::from_millis(300)).amplify(0.15)
+                .then(Chord::sine(&c0).take_duration(Duration::from_millis(120)).amplify(0.12))
+                .then(Chord::sine(&c1).take_duration(Duration::from_millis(120)).amplify(0.12))
+                .then(Chord::sine(&c2).take_duration(Duration::from_millis(120)).amplify(0.12))
+                .then(Chord::sine(&c3).take_duration(Duration::from_millis(300)).amplify(0.15)
                     .fade_out(Duration::from_millis(300)))
         );
     }
@@ -290,6 +372,41 @@ impl Sfx {
 
 #[derive(Clone, Copy)]
 enum Waveform { Sine, Square, Saw }
+
+/// Multiple oscillators mixed together (chord/dyad)
+struct Chord {
+    oscs: Vec<Osc>,
+    sample_rate: u32,
+}
+
+impl Chord {
+    fn new(freqs: &[f32], waveform: Waveform) -> Self {
+        Self {
+            oscs: freqs.iter().map(|&f| Osc::new(f, waveform)).collect(),
+            sample_rate: 44100,
+        }
+    }
+    fn sine(freqs: &[f32]) -> Self { Self::new(freqs, Waveform::Sine) }
+    fn square(freqs: &[f32]) -> Self { Self::new(freqs, Waveform::Square) }
+    fn saw(freqs: &[f32]) -> Self { Self::new(freqs, Waveform::Saw) }
+}
+
+impl Iterator for Chord {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        if self.oscs.is_empty() { return Some(0.0); }
+        let n = self.oscs.len() as f32;
+        let sum: f32 = self.oscs.iter_mut().filter_map(|o| o.next()).sum();
+        Some(sum / n)
+    }
+}
+
+impl Source for Chord {
+    fn current_frame_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> u16 { 1 }
+    fn sample_rate(&self) -> u32 { self.sample_rate }
+    fn total_duration(&self) -> Option<Duration> { None }
+}
 
 struct Osc {
     freq: f32,
