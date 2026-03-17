@@ -97,6 +97,8 @@ pub struct OverworldNodeRaw {
     pub font: Option<String>,
     pub description: String,
     pub theme: String,
+    pub color: Option<String>,
+    pub palette: Option<Vec<String>>,
     pub budget: i32,
     pub x: f32,
     pub y: f32,
@@ -133,6 +135,17 @@ pub struct PhaseUpdate {
 // ── LLM caller ──
 
 fn call_llm(client: &reqwest::blocking::Client, api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
+    call_llm_streaming(client, api_key, model, prompt, None::<fn()>)
+}
+
+fn call_llm_streaming<F>(
+    client: &reqwest::blocking::Client, api_key: &str, model: &str, prompt: &str,
+    on_token: Option<F>,
+) -> Result<String, String>
+where F: Fn()
+{
+    use std::io::BufRead;
+
     let resp = client.post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
@@ -140,19 +153,46 @@ fn call_llm(client: &reqwest::blocking::Client, api_key: &str, model: &str, prom
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 1.0,
+            "stream": on_token.is_some(),
         }))
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(120))
         .send()
         .map_err(|e| format!("HTTP error: {}", e))?;
 
-    let body: serde_json::Value = resp.json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-    let mut content = body["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or("No content in response")?
-        .trim()
-        .to_string();
+    if on_token.is_none() {
+        // Non-streaming path
+        let body: serde_json::Value = resp.json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+        let content = body["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or("No content in response")?
+            .trim()
+            .to_string();
+        return Ok(clean_llm_content(content));
+    }
 
+    // Streaming SSE path
+    let on_token = on_token.unwrap();
+    let reader = std::io::BufReader::new(resp);
+    let mut content = String::new();
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Stream read error: {}", e))?;
+        if !line.starts_with("data: ") { continue; }
+        let data = &line[6..];
+        if data == "[DONE]" { break; }
+        if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) {
+            if let Some(delta) = chunk["choices"][0]["delta"]["content"].as_str() {
+                content.push_str(delta);
+                on_token();
+            }
+        }
+    }
+
+    Ok(clean_llm_content(content))
+}
+
+fn clean_llm_content(mut content: String) -> String {
     if content.starts_with("```") {
         if let Some(rest) = content.split_once('\n') {
             content = rest.1.to_string();
@@ -170,24 +210,23 @@ fn call_llm(client: &reqwest::blocking::Client, api_key: &str, model: &str, prom
             }
         }
     }
-    Ok(content)
+    content
 }
 
 // ── Overworld generation ──
 
-pub fn generate_overworld<F>(
+pub fn generate_overworld<F, T>(
     mut on_phase: F,
+    on_token: T,
 ) -> Result<crate::game::Overworld, String>
-where F: FnMut(PhaseUpdate) + Send
+where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
 {
     let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
     let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
     let client = reqwest::blocking::Client::new();
 
-    on_phase(PhaseUpdate { phase: "designing overworld".into(), detail: String::new() });
-
     let prompt = build_overworld_prompt();
-    let content = call_llm(&client, &api_key, &model, &prompt)?;
+    let content = call_llm_streaming(&client, &api_key, &model, &prompt, Some(on_token))?;
     let result: OverworldResult = serde_json::from_str(&content)
         .map_err(|e| format!("Overworld parse error: {}\n\nRaw: {}", e, &content[..content.len().min(500)]))?;
 
@@ -204,6 +243,7 @@ where F: FnMut(PhaseUpdate) + Send
             font: n.font.unwrap_or_else(|| ow_font.clone()),
             description: n.description,
             theme: n.theme,
+            palette: n.palette.or_else(|| n.color.map(|c| vec![c])).unwrap_or_else(|| vec!["#888888".into()]),
             budget: n.budget,
             x: n.x.clamp(0.0, 1.0),
             y: n.y.clamp(0.0, 1.0),
@@ -232,11 +272,12 @@ where F: FnMut(PhaseUpdate) + Send
 
 // ── Three-phase generation ──
 
-pub fn generate_level<F>(
+pub fn generate_level<F, T>(
     config: &LevelConfig, player: &Player,
     mut on_phase: F,
+    on_token: T,
 ) -> Result<(Level, [i32; 2], i32), String>
-where F: FnMut(PhaseUpdate) + Send
+where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
 {
     let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
     let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
@@ -249,7 +290,7 @@ where F: FnMut(PhaseUpdate) + Send
     on_phase(PhaseUpdate { phase: "designing level".into(), detail: String::new() });
 
     let p2_prompt = build_phase2_prompt(floor, player, budget, theme, &config.title, &config.description);
-    let p2_content = call_llm(&client, &api_key, &model, &p2_prompt)?;
+    let p2_content = call_llm_streaming(&client, &api_key, &model, &p2_prompt, Some(&on_token))?;
     let p2: Phase2Result = serde_json::from_str(&p2_content)
         .map_err(|e| format!("Phase 1 parse error: {}", e))?;
 
@@ -282,7 +323,7 @@ where F: FnMut(PhaseUpdate) + Send
         });
 
         let p3_prompt = build_phase3_prompt(floor, theme, &p1, &p2, &tile_chars);
-        let p3_content = match call_llm(&client, &api_key, &model, &p3_prompt) {
+        let p3_content = match call_llm_streaming(&client, &api_key, &model, &p3_prompt, Some(&on_token)) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Phase 3 LLM error (attempt {}): {}", attempt, e);
@@ -388,7 +429,8 @@ fn build_phase3_prompt(floor: i32, theme: &str, p1: &Phase1Result, p2: &Phase2Re
 fn build_overworld_prompt() -> String {
     let mut p = String::new();
     p.push_str("Design a CAMPAIGN OVERWORLD for a roguelike game (like a Super Mario World map).\n\n");
-    p.push_str("Be wildly creative with the setting. DON'T default to generic fantasy. Invent something original and unexpected — the weirder the better. Do NOT use common tropes like fungal networks, cyberpunk, or space stations. Surprise me.\n\n");
+    p.push_str("Be wildly creative with the setting. Invent something original and unexpected — the weirder the better.\n");
+    p.push_str("Think more like: a sentient library that reshelves itself, a civilization built inside frozen music, a war between rival paint colors, a detective agency run by ghosts, an opera house where the architecture argues with the performers, a postal service that delivers to parallel dimensions, a courtroom where gravity is on trial.\n\n");
     p.push_str("Return a JSON object with:\n");
     p.push_str("- name: campaign name (2-4 words, evocative)\n");
     p.push_str("- font: a Google Fonts font family for the overworld title\n");
@@ -397,7 +439,9 @@ fn build_overworld_prompt() -> String {
     p.push_str("  - name: level title (2-4 words)\n");
     p.push_str("  - font: a Google Fonts font family for the level\n");
     p.push_str("  - description: one atmospheric sentence\n");
-    p.push_str("  - theme: detailed theme string for the level (e.g. 'neon-drenched hacker den', 'abandoned orbital station', 'fungal spore cathedral')\n");
+    p.push_str("  - theme: detailed theme string for the level (e.g. 'collapsing origami palace', 'library where books rewrite themselves', 'volcanic glassblowing workshop')\n");
+    p.push_str("  - color: a hex color (e.g. '#e94560') representing the level's primary color/mood. Each level should have a distinct color.\n");
+    p.push_str("  - palette: array of 4-6 hex colors representing the level's tile colors (floor, wall, accent, etc). These should be thematically cohesive and distinct per level. The overworld will render a mini tile grid preview from these colors.\n");
     p.push_str("  - budget: scapebux budget for the level (integer)\n");
     p.push_str("  - x: horizontal position 0.0-1.0 (left to right)\n");
     p.push_str("  - y: vertical position 0.0-1.0 (top to bottom)\n");

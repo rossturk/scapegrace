@@ -28,6 +28,7 @@ enum Screen {
 
 enum GenMsg {
     Phase(String, String),
+    Token,
     OverworldReady(game::Overworld, Option<Vec<u8>>),
     LevelDone(Level, [i32; 2], Option<Vec<u8>>),
     Error(String),
@@ -39,6 +40,7 @@ fn window_conf() -> Conf {
         window_width: 1200,
         window_height: 800,
         window_resizable: true,
+        high_dpi: true,
         icon: Some(miniquad::conf::Icon {
             small: *include_bytes!("../assets/icon_16.rgba"),
             medium: *include_bytes!("../assets/icon_32.rgba"),
@@ -46,6 +48,48 @@ fn window_conf() -> Conf {
         }),
         ..Default::default()
     }
+}
+
+fn overworld_loading_phrase() -> String {
+    let phrases = [
+        "dreaming up a world",
+        "conjuring the unknown",
+        "charting strange lands",
+        "summoning the cartographer",
+        "unfolding the map",
+        "sketching impossible geography",
+        "weaving a new reality",
+        "opening forbidden atlases",
+        "stitching dimensions together",
+        "brewing a fresh cosmos",
+        "waking the sleeping world",
+        "rearranging the constellations",
+        "inventing new horizons",
+        "invoking the mapmaker",
+        "painting the void",
+        "sculpting the firmament",
+        "raising continents",
+        "naming forgotten places",
+        "filling in the blank spaces",
+        "drawing borders in the dust",
+        "imagining what lies beyond",
+        "populating the emptiness",
+        "laying the foundations",
+        "choosing which stars to keep",
+        "assembling the geography",
+    ];
+    let idx = ::rand::random::<usize>() % phrases.len();
+    phrases[idx].into()
+}
+
+fn desaturate(c: Color, amount: f32) -> Color {
+    let lum = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+    Color::new(
+        c.r + (lum - c.r) * amount,
+        c.g + (lum - c.g) * amount,
+        c.b + (lum - c.b) * amount,
+        c.a,
+    )
 }
 
 fn hex_to_color(hex: &str) -> Color {
@@ -97,6 +141,7 @@ async fn main() {
     let mut gen_rx: Option<mpsc::Receiver<GenMsg>> = None;
     let mut phase_text = String::new();
     let mut phase_detail = String::new();
+    let mut loading_tiles: usize = 0;
     let mut confetti: Vec<Confetti> = vec![];
     let mut title_font: Option<Font> = None;
     let mut overworld_font: Option<Font> = None;
@@ -109,6 +154,8 @@ async fn main() {
     // Key repeat
     let mut nav_hold_time: f64 = 0.0;
     let mut nav_last_fire: f64 = 0.0;
+    let mut nav_last_dir: (f32, f32) = (0.0, 0.0);
+    let mut nav_cycle_idx: usize = 0;
     let mut game_hold_time: f64 = 0.0;
     let mut game_last_fire: f64 = 0.0;
 
@@ -205,20 +252,24 @@ async fn main() {
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
                     start_overworld_generation(&mut gen_rx);
                     screen = Screen::GenOverworld;
-                    phase_text = "designing overworld".into();
+                    phase_text = overworld_loading_phrase();
                     phase_detail.clear();
+                    loading_tiles = 0;
                 }
             }
 
             Screen::GenOverworld => {
-                draw_loading_screen(&ui_font, &phase_text, &phase_detail);
+                draw_loading_screen(&ui_font, &phase_text, &phase_detail, loading_tiles);
 
                 if let Some(rx) = &gen_rx {
                     while let Ok(msg) = rx.try_recv() {
                         match msg {
-                            GenMsg::Phase(p, d) => {
-                                phase_text = p;
-                                phase_detail = d;
+                            GenMsg::Token => {
+                                loading_tiles += 1;
+                            }
+                            GenMsg::Phase(_p, _d) => {
+                                // Don't update text — keep the loading phrase
+                                // and tile blob visible until overworld is fully ready
                             }
                             GenMsg::OverworldReady(ow, font_bytes) => {
                                 if let Some(bytes) = font_bytes {
@@ -241,8 +292,9 @@ async fn main() {
 
                 if phase_detail == "Press ENTER to retry" && is_key_pressed(KeyCode::Enter) {
                     start_overworld_generation(&mut gen_rx);
-                    phase_text = "designing overworld".into();
+                    phase_text = overworld_loading_phrase();
                     phase_detail.clear();
+                    loading_tiles = 0;
                 }
             }
 
@@ -273,11 +325,11 @@ async fn main() {
                         false
                     };
                     if nav_fire {
-                        let mut best: Option<usize> = None;
-                        let mut best_cosine = -1.0_f32;
                         let cur_x = ow.nodes[cur].x;
                         let cur_y = ow.nodes[cur].y;
                         let dir_len = (dx * dx + dy * dy).sqrt();
+                        // Collect all candidates in this direction, sorted by cosine
+                        let mut candidates: Vec<(usize, f32)> = Vec::new();
                         for &(a, b) in &ow.connections {
                             let neighbor = if a == cur { b } else if b == cur { a } else { continue };
                             if !ow.nodes[neighbor].unlocked { continue; }
@@ -285,13 +337,23 @@ async fn main() {
                             let ny = ow.nodes[neighbor].y - cur_y;
                             let node_len = (nx * nx + ny * ny).sqrt();
                             if node_len < 0.001 { continue; }
-                            // Cosine similarity: how aligned is this node with the pressed direction
                             let cosine = (nx * dx + ny * dy) / (node_len * dir_len);
-                            if cosine > 0.0 && cosine > best_cosine {
-                                best_cosine = cosine;
-                                best = Some(neighbor);
+                            if cosine > 0.3 {
+                                candidates.push((neighbor, cosine));
                             }
                         }
+                        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+                        // If same direction as last press, cycle; otherwise reset
+                        let same_dir = (dx - nav_last_dir.0).abs() < 0.01 && (dy - nav_last_dir.1).abs() < 0.01;
+                        if same_dir && candidates.len() > 1 {
+                            nav_cycle_idx = (nav_cycle_idx + 1) % candidates.len();
+                        } else {
+                            nav_cycle_idx = 0;
+                        }
+                        nav_last_dir = (dx, dy);
+
+                        let best = candidates.get(nav_cycle_idx).map(|c| c.0);
                         if let Some(next) = best {
                             ow.current_node = next;
                             if let Some(s) = &sfx { s.navigate(); }
@@ -323,13 +385,15 @@ async fn main() {
                                     state.player.y,
                                     state.vision_radius,
                                 );
-                                state.log("Welcome. Your task: find and defeat the boss.", "#666");
+                                state.log(&state.level.description.clone(), "#888");
+                                state.log("Your task: find and defeat the boss.", "#666");
                                 screen = Screen::Playing;
                             } else {
                                 start_level_generation(&state, ow, &mut gen_rx);
                                 screen = Screen::GenLevel;
-                                phase_text = "designing level".into();
+                                phase_text = overworld_loading_phrase();
                                 phase_detail.clear();
+                                loading_tiles = 0;
                             }
                         }
                     }
@@ -337,14 +401,16 @@ async fn main() {
             }
 
             Screen::GenLevel => {
-                draw_loading_screen(&ui_font, &phase_text, &phase_detail);
+                draw_loading_screen(&ui_font, &phase_text, &phase_detail, loading_tiles);
 
                 if let Some(rx) = &gen_rx {
                     while let Ok(msg) = rx.try_recv() {
                         match msg {
-                            GenMsg::Phase(p, d) => {
-                                phase_text = p;
-                                phase_detail = d;
+                            GenMsg::Token => {
+                                loading_tiles += 1;
+                            }
+                            GenMsg::Phase(_p, _d) => {
+                                // Keep loading phrase and blob visible
                             }
                             GenMsg::LevelDone(level, start, font_bytes) => {
                                 // Snapshot for death retry (clean level state)
@@ -362,7 +428,8 @@ async fn main() {
                                     state.player.y,
                                     state.vision_radius,
                                 );
-                                state.log("Welcome. Your task: find and defeat the boss.", "#666");
+                                state.log(&state.level.description.clone(), "#888");
+                                state.log("Your task: find and defeat the boss.", "#666");
                                 if let Some(bytes) = font_bytes {
                                     match load_ttf_font_from_bytes(&bytes) {
                                         Ok(f) => title_font = Some(f),
@@ -597,9 +664,11 @@ fn start_overworld_generation(gen_rx: &mut Option<mpsc::Receiver<GenMsg>>) {
     *gen_rx = Some(rx);
 
     std::thread::spawn(move || {
-        match gen::generate_overworld(|phase| {
-            let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail));
-        }) {
+        let tx2 = tx.clone();
+        match gen::generate_overworld(
+            |phase| { let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail)); },
+            move || { let _ = tx2.send(GenMsg::Token); },
+        ) {
             Ok(ow) => {
                 let font_bytes = fetch_google_font(&ow.font);
                 let _ = tx.send(GenMsg::OverworldReady(ow, font_bytes));
@@ -630,9 +699,11 @@ fn start_level_generation(
     };
 
     std::thread::spawn(move || {
-        match gen::generate_level(&config, &player, |phase| {
-            let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail));
-        }) {
+        let tx2 = tx.clone();
+        match gen::generate_level(&config, &player,
+            |phase| { let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail)); },
+            move || { let _ = tx2.send(GenMsg::Token); },
+        ) {
             Ok((level, start, _remaining)) => {
                 let font_bytes = fetch_google_font(&level.font);
                 let _ = tx.send(GenMsg::LevelDone(level, start, font_bytes));
@@ -818,7 +889,7 @@ fn draw_start_screen(font: &Font, bold: &Font) {
         font: Some(bold), font_size: title_size, color: hex_to_color("#e94560"), ..Default::default()
     });
 
-    let prompt = "Press ENTER to start";
+    let prompt = "Press ENTER to generate overworld";
     let ps = 18u16;
     let pw = measure_text(prompt, Some(font), ps, 1.0).width;
     draw_text_ex(prompt, (sw - pw) / 2.0, sh / 2.0 + 30.0, TextParams {
@@ -826,22 +897,22 @@ fn draw_start_screen(font: &Font, bold: &Font) {
     });
 }
 
-fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str) {
+fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_count: usize) {
     let sw = screen_width();
     let sh = screen_height();
 
     // Spinner
     let time = get_time() as f32;
-    let cx = sw / 2.0;
-    let cy = sh / 2.0 - 30.0;
+    let spinner_cx = sw / 2.0;
+    let spinner_cy = sh / 2.0 - 30.0;
     let angle = time * 5.0;
     let r = 16.0;
     for i in 0..8 {
         let a = angle + i as f32 * std::f32::consts::TAU / 8.0;
         let alpha = 1.0 - i as f32 * 0.12;
         draw_circle(
-            cx + a.cos() * r,
-            cy + a.sin() * r,
+            spinner_cx + a.cos() * r,
+            spinner_cy + a.sin() * r,
             3.5,
             Color::new(0.91, 0.27, 0.37, alpha),
         );
@@ -859,6 +930,78 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str) {
         draw_text_ex(phase_detail, (sw - pdw) / 2.0, sh / 2.0 + 48.0, TextParams {
             font: Some(font), font_size: ds, color: DARKGRAY, ..Default::default()
         });
+    }
+
+    // Draw tile blob ON TOP — slowly covers spinner and text
+    if tile_count > 0 {
+        let tile_sz = 12.0;
+        let grid_w = (sw / tile_sz) as i32 + 1;
+        let grid_h = (sh / tile_sz) as i32 + 1;
+
+        let mut filled: Vec<(i32, i32)> = Vec::new();
+        let mut is_filled = std::collections::HashSet::new();
+
+        // Seed: single tile behind the text center
+        let cx = (sw / 2.0 / tile_sz) as i32;
+        let cy = ((sh / 2.0 + 15.0) / tile_sz) as i32;
+        is_filled.insert((cx, cy));
+        filled.push((cx, cy));
+
+        // Grow organically upward/outward
+        let mut seed: u32 = 42;
+        let next = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            (*s >> 16) & 0x7FFF
+        };
+        let target = tile_count + filled.len();
+        let mut attempts = 0;
+        while filled.len() < target && attempts < target * 30 {
+            attempts += 1;
+            let base_idx = next(&mut seed) as usize % filled.len();
+            let (bx, by) = filled[base_idx];
+            let dir = next(&mut seed) % 4;
+            let (nx, ny) = match dir {
+                0 => (bx + 1, by),
+                1 => (bx - 1, by),
+                2 => (bx, by + 1),
+                _ => (bx, by - 1),
+            };
+            if nx < 0 || ny < 0 || nx >= grid_w || ny >= grid_h { continue; }
+            let p = (nx, ny);
+            if is_filled.contains(&p) { continue; }
+            is_filled.insert(p);
+            filled.push(p);
+        }
+
+        // Draw: shadows first, then tiles
+        let shadow_off = 3.0;
+        let vibrant_colors = [
+            Color::new(0.91, 0.27, 0.37, 1.0), // rose
+            Color::new(0.20, 0.60, 0.85, 1.0), // blue
+            Color::new(0.95, 0.65, 0.15, 1.0), // amber
+            Color::new(0.30, 0.75, 0.45, 1.0), // green
+            Color::new(0.70, 0.35, 0.85, 1.0), // purple
+            Color::new(0.85, 0.45, 0.20, 1.0), // burnt orange
+            Color::new(0.25, 0.80, 0.75, 1.0), // teal
+            Color::new(0.90, 0.40, 0.60, 1.0), // pink
+        ];
+
+        // Shadows pass — only draw shadow where there's no tile behind it
+        for &(tx, ty) in &filled {
+            let sx = tx as f32 * tile_sz + shadow_off;
+            let sy = ty as f32 * tile_sz + shadow_off;
+            draw_rectangle(sx, sy, tile_sz, tile_sz, Color::new(0.0, 0.0, 0.0, 0.3));
+        }
+
+        // Tiles pass
+        let mut color_seed: u32 = 7;
+        for &(tx, ty) in &filled {
+            let ci = next(&mut color_seed) as usize % vibrant_colors.len();
+            let base = vibrant_colors[ci];
+            let v = 0.7 + (next(&mut color_seed) % 60) as f32 * 0.005;
+            let c = Color::new(base.r * v, base.g * v, base.b * v, 1.0);
+            draw_rectangle(tx as f32 * tile_sz, ty as f32 * tile_sz, tile_sz, tile_sz, c);
+        }
     }
 }
 
@@ -920,65 +1063,197 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
     let map_top = top_bar + 20.0;
     let map_h = map_bottom - map_top;
 
-    // Helper to convert node coords to screen coords
-    let node_screen = |n: &OverworldNode| -> (f32, f32) {
-        (map_left + n.x * map_w, map_top + n.y * map_h)
+    // Helper to convert node coords to screen coords with bobbing
+    let time = get_time(); // f64 for smooth precision
+    let node_screen = |i: usize, n: &OverworldNode| -> (f32, f32) {
+        let base_x = map_left + n.x * map_w;
+        let base_y = map_top + n.y * map_h;
+        let phase = i as f64 * 1.7;
+        let bob_x = (time * 0.5 + phase).sin() * 8.0;
+        let bob_y = (time * 0.7 + phase * 1.3).cos() * 6.0;
+        (base_x + bob_x as f32, base_y + bob_y as f32)
     };
 
-    // Draw connections (thick lines)
+    // Draw connections as tile trails
+    let conn_tile = 5.0;
     for &(a, b) in &ow.connections {
         if a >= ow.nodes.len() || b >= ow.nodes.len() { continue; }
-        let (ax, ay) = node_screen(&ow.nodes[a]);
-        let (bx, by) = node_screen(&ow.nodes[b]);
-        let line_color = if ow.nodes[a].unlocked && ow.nodes[b].unlocked {
-            Color::new(0.5, 0.5, 0.5, 0.8)
-        } else {
-            Color::new(0.25, 0.25, 0.25, 0.5)
+        let (ax, ay) = node_screen(a, &ow.nodes[a]);
+        let (bx, by) = node_screen(b, &ow.nodes[b]);
+        let dx = bx - ax;
+        let dy = by - ay;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let steps = (dist / (conn_tile * 2.0)).ceil() as usize;
+        if steps == 0 { continue; }
+
+        let a_playable = ow.nodes[a].unlocked;
+        let b_playable = ow.nodes[b].unlocked;
+        let pal_a: Vec<Color> = ow.nodes[a].palette.iter().map(|c| {
+            let c = hex_to_color(c);
+            if a_playable { c } else { desaturate(c, 0.85) }
+        }).collect();
+        let pal_b: Vec<Color> = ow.nodes[b].palette.iter().map(|c| {
+            let c = hex_to_color(c);
+            if b_playable { c } else { desaturate(c, 0.85) }
+        }).collect();
+        let dim = if ow.nodes[a].unlocked && ow.nodes[b].unlocked { 0.6f32 } else { 0.25 };
+
+        let mut seed = (a as u32 * 7919 + b as u32 * 104729).wrapping_mul(2654435761);
+        let next = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            (*s >> 16) & 0x7FFF
         };
-        draw_line(ax, ay, bx, by, 3.0, line_color);
+
+        for s in 0..steps {
+            let t = s as f32 / steps as f32;
+            let tx = ax + dx * t;
+            let ty = ay + dy * t;
+
+            let ci = next(&mut seed) as usize % pal_a.len();
+            let bi = next(&mut seed) as usize % pal_b.len();
+            let ca = pal_a[ci];
+            let cb = pal_b[bi];
+            let c = Color::new(
+                (ca.r * (1.0 - t) + cb.r * t) * dim,
+                (ca.g * (1.0 - t) + cb.g * t) * dim,
+                (ca.b * (1.0 - t) + cb.b * t) * dim,
+                1.0,
+            );
+            draw_rectangle(tx - conn_tile / 2.0, ty - conn_tile / 2.0, conn_tile, conn_tile, c);
+        }
     }
 
-    // Draw nodes
-    let time = get_time() as f32;
+    // Draw nodes as organic tile blobs
+    let tile_px = 15.0;
+    let grid_w: i32 = 8;
+    let grid_h: i32 = 8;
     for (i, node) in ow.nodes.iter().enumerate() {
-        let (nx, ny) = node_screen(node);
-        let r = 18.0;
+        let (nx, ny) = node_screen(i, node);
+        let playable = node.unlocked;
+        let palette: Vec<Color> = node.palette.iter().map(|c| {
+            let c = hex_to_color(c);
+            if playable { c } else { desaturate(c, 0.85) }
+        }).collect();
 
-        if node.completed {
-            // Green filled
-            draw_circle(nx, ny, r, hex_to_color("#44ff44"));
-            draw_circle_lines(nx, ny, r, 2.5, hex_to_color("#228822"));
-        } else if node.unlocked {
-            // White outline, dark fill (red outline for final level)
-            draw_circle(nx, ny, r, Color::new(0.15, 0.15, 0.15, 1.0));
-            if node.is_final {
-                draw_circle_lines(nx, ny, r, 3.0, hex_to_color("#e94560"));
-            } else {
-                draw_circle_lines(nx, ny, r, 2.5, WHITE);
+        // Seeded RNG for deterministic shape
+        let mut seed = (i as u32).wrapping_mul(2654435761);
+        let next = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            (*s >> 16) & 0x7FFF
+        };
+
+        // Grow an organic blob: start with a 2x2 core, expand by adding neighbors
+        let mut filled = [[false; 8]; 8];
+        // Core
+        for cy in 3..5 {
+            for cx in 3..5 {
+                filled[cy][cx] = true;
             }
-        } else {
-            // Gray (locked, red outline for final level)
-            draw_circle(nx, ny, r, Color::new(0.2, 0.2, 0.2, 1.0));
-            if node.is_final {
-                draw_circle_lines(nx, ny, r, 3.0, hex_to_color("#e94560"));
-            } else {
-                draw_circle_lines(nx, ny, r, 2.0, Color::new(0.35, 0.35, 0.35, 1.0));
+        }
+        // Grow ~16 more tiles by picking random empty neighbors of filled tiles
+        let mut grown = 0;
+        let target = 14 + (next(&mut seed) % 5) as i32; // 14-18 tiles added
+        for _ in 0..300 {
+            if grown >= target { break; }
+            let ry = (next(&mut seed) % grid_h as u32) as i32;
+            let rx = (next(&mut seed) % grid_w as u32) as i32;
+            if filled[ry as usize][rx as usize] { continue; }
+            // Must be adjacent to a filled tile
+            let mut adj = false;
+            for &(dx, dy) in &[(0,1),(0,-1),(1,0),(-1,0)] {
+                let ax = rx + dx;
+                let ay = ry + dy;
+                if ax >= 0 && ax < grid_w && ay >= 0 && ay < grid_h && filled[ay as usize][ax as usize] {
+                    adj = true;
+                    break;
+                }
+            }
+            if !adj { continue; }
+            // Avoid thin arms: count how many filled neighbors this would have
+            let mut nbrs = 0;
+            for &(dx, dy) in &[(0,1),(0,-1),(1,0),(-1,0)] {
+                let ax = rx + dx;
+                let ay = ry + dy;
+                if ax >= 0 && ax < grid_w && ay >= 0 && ay < grid_h && filled[ay as usize][ax as usize] {
+                    nbrs += 1;
+                }
+            }
+            if nbrs < 1 + (next(&mut seed) % 2) as i32 { continue; }
+            filled[ry as usize][rx as usize] = true;
+            grown += 1;
+        }
+
+        // Find bounding box of filled tiles to center the shape
+        let mut min_x = grid_w; let mut max_x = 0i32;
+        let mut min_y = grid_h; let mut max_y = 0i32;
+        for gy in 0..grid_h {
+            for gx in 0..grid_w {
+                if filled[gy as usize][gx as usize] {
+                    min_x = min_x.min(gx); max_x = max_x.max(gx);
+                    min_y = min_y.min(gy); max_y = max_y.max(gy);
+                }
+            }
+        }
+        let shape_w = (max_x - min_x + 1) as f32 * tile_px;
+        let shape_h = (max_y - min_y + 1) as f32 * tile_px;
+        let ox = nx - shape_w / 2.0 - min_x as f32 * tile_px;
+        let oy = ny - shape_h / 2.0 - min_y as f32 * tile_px;
+
+        // Draw filled tiles
+        for gy in 0..grid_h {
+            for gx in 0..grid_w {
+                if !filled[gy as usize][gx as usize] { continue; }
+                let ci = next(&mut seed) as usize % palette.len();
+                let mut c = palette[ci];
+
+                if node.completed {
+                    c = Color::new(c.r * 0.5, c.g * 0.5, c.b * 0.5, 1.0);
+                } else if !node.unlocked {
+                    c = Color::new(c.r * 0.25, c.g * 0.25, c.b * 0.25, 1.0);
+                }
+
+                let tx = ox + gx as f32 * tile_px;
+                let ty = oy + gy as f32 * tile_px;
+                draw_rectangle(tx, ty, tile_px, tile_px, c);
             }
         }
 
-        // Current node: pulsing player circle
+        // Final level: red outline tracing the blob perimeter
+        if node.is_final {
+            let red = hex_to_color("#e94560");
+            for gy in 0..grid_h {
+                for gx in 0..grid_w {
+                    if !filled[gy as usize][gx as usize] { continue; }
+                    let tx = ox + gx as f32 * tile_px;
+                    let ty = oy + gy as f32 * tile_px;
+                    // Draw edge lines where neighbor is empty
+                    if gx == 0 || !filled[gy as usize][(gx - 1) as usize] {
+                        draw_line(tx, ty, tx, ty + tile_px, 2.0, red);
+                    }
+                    if gx == grid_w - 1 || !filled[gy as usize][(gx + 1) as usize] {
+                        draw_line(tx + tile_px, ty, tx + tile_px, ty + tile_px, 2.0, red);
+                    }
+                    if gy == 0 || !filled[(gy - 1) as usize][gx as usize] {
+                        draw_line(tx, ty, tx + tile_px, ty, 2.0, red);
+                    }
+                    if gy == grid_h - 1 || !filled[(gy + 1) as usize][gx as usize] {
+                        draw_line(tx, ty + tile_px, tx + tile_px, ty + tile_px, 2.0, red);
+                    }
+                }
+            }
+        }
+
+        // Current node: green circle inside
         if i == ow.current_node {
-            let pulse = (time * 3.0).sin() * 0.3 + 0.7;
-            let pulse_color = Color::new(0.91, 0.27, 0.37, pulse);
-            draw_circle(nx, ny, r * 0.55, pulse_color);
-            draw_circle_lines(nx, ny, r + 4.0, 2.0, Color::new(0.91, 0.27, 0.37, pulse * 0.5));
+            draw_circle(nx, ny, tile_px * 1.2, hex_to_color("#44ff44"));
         }
 
-        // Level name below unlocked nodes
+        // Level name below node
         if node.unlocked {
             let ns = 14u16;
+            let bot_y = oy + (max_y + 1) as f32 * tile_px;
             let nw = measure_text(&node.name, Some(ui_font), ns, 1.0).width;
-            draw_text_ex(&node.name, nx - nw / 2.0, ny + r + 18.0, TextParams {
+            draw_text_ex(&node.name, nx - nw / 2.0, bot_y + 16.0, TextParams {
                 font: Some(ui_font), font_size: ns, color: WHITE, ..Default::default()
             });
         }
@@ -1186,7 +1461,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     let sh = screen_height();
 
     // ── Layout constants ──
-    let top_height = 128.0;
+    let top_height = 70.0;
     let bottom_height = 28.0;
     let mid_top = top_height;
     let mid_height = sh - top_height - bottom_height;
@@ -1199,19 +1474,11 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
 
     if !state.level.title.is_empty() {
         let tfont = title_font.unwrap_or(ui_font);
-        let ts = 38u16;
+        let ts = 32u16;
         let tw = measure_text(&state.level.title, Some(tfont), ts, 1.0).width;
-        draw_text_ex(&state.level.title, (sw - tw) / 2.0, 58.0, TextParams {
+        draw_text_ex(&state.level.title, (sw - tw) / 2.0, 48.0, TextParams {
             font: Some(tfont), font_size: ts, color: hex_to_color("#e0d5c0"), ..Default::default()
         });
-
-        if !state.level.description.is_empty() {
-            let ds = 19u16;
-            let dw = measure_text(&state.level.description, Some(tfont), ds, 1.0).width;
-            draw_text_ex(&state.level.description, (sw - dw) / 2.0, 95.0, TextParams {
-                font: Some(tfont), font_size: ds, color: Color::new(0.45, 0.45, 0.45, 1.0), ..Default::default()
-            });
-        }
     }
 
     // ── MIDDLE ROW: Map (left) + Log (right) ──
@@ -1472,8 +1739,8 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
 
     let log_font_size = 13u16;
     let line_h = 18.0;
-    let log_text_top = mid_top + 14.0;
     let log_pad = 12.0;
+    let log_text_top = mid_top + log_pad + log_font_size as f32;
     let log_max_w = log_width - log_pad * 2.0;
     // Word-wrap log entries into visual lines
     let entry_gap = 4.0_f32; // small gap between log entries

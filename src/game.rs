@@ -133,6 +133,7 @@ pub struct OverworldNode {
     pub font: String,
     pub description: String,
     pub theme: String,
+    pub palette: Vec<String>,
     pub budget: i32,
     pub x: f32,
     pub y: f32,
