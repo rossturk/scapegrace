@@ -110,6 +110,29 @@ fn hex_to_color(hex: &str) -> Color {
     Color::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
 }
 
+// ── Multi-layer soft shadow helper ──
+
+fn draw_soft_circle_shadow(cx: f32, cy: f32, r: f32) {
+    let layers: [(f32, f32); 4] = [(1.0, 0.20), (2.0, 0.14), (3.5, 0.08), (5.0, 0.04)];
+    for &(off, alpha) in &layers {
+        draw_circle(cx + off, cy + off, r + off * 0.5, Color::new(0.0, 0.0, 0.0, alpha));
+    }
+}
+
+fn draw_soft_rect_shadow(x: f32, y: f32, w: f32, h: f32) {
+    let layers: [(f32, f32); 4] = [(1.0, 0.20), (2.0, 0.14), (3.5, 0.08), (5.0, 0.04)];
+    for &(off, alpha) in &layers {
+        draw_rectangle(x + off, y + off, w + off, h + off, Color::new(0.0, 0.0, 0.0, alpha));
+    }
+}
+
+fn draw_soft_poly_shadow(cx: f32, cy: f32, sides: u8, r: f32, rot: f32) {
+    let layers: [(f32, f32); 4] = [(1.0, 0.20), (2.0, 0.14), (3.5, 0.08), (5.0, 0.04)];
+    for &(off, alpha) in &layers {
+        draw_poly(cx + off, cy + off, sides, r + off * 0.5, rot, Color::new(0.0, 0.0, 0.0, alpha));
+    }
+}
+
 fn item_color(item_type: &str) -> Color {
     match item_type {
         "weapon" => hex_to_color("#ff8844"),
@@ -387,6 +410,7 @@ async fn main() {
                                 );
                                 state.log(&state.level.description.clone(), "#888");
                                 state.log("Your task: find and defeat the boss.", "#666");
+                                if let Some(s) = &sfx { s.start_boss_drone(&state.level.scale); }
                                 screen = Screen::Playing;
                             } else {
                                 start_level_generation(&state, ow, &mut gen_rx);
@@ -438,6 +462,7 @@ async fn main() {
                                 } else {
                                     title_font = None;
                                 }
+                                if let Some(s) = &sfx { s.start_boss_drone(&state.level.scale); }
                                 screen = Screen::Playing;
                             }
                             GenMsg::Error(e) => {
@@ -461,6 +486,18 @@ async fn main() {
             Screen::Playing => {
                 handle_playing_input(&mut state, &mut screen, &mut confetti, &sfx,
                     &mut game_hold_time, &mut game_last_fire);
+                // Update boss drone volume based on distance to nearest living boss
+                if let Some(s) = &sfx {
+                    let dist = state.level.monsters.iter()
+                        .filter(|m| m.is_boss && m.is_alive())
+                        .map(|m| {
+                            let dx = state.player.x as f32 - (m.x as f32 + 0.5);
+                            let dy = state.player.y as f32 - (m.y as f32 + 0.5);
+                            (dx * dx + dy * dy).sqrt()
+                        })
+                        .fold(f32::MAX, f32::min);
+                    s.update_boss_drone(dist);
+                }
                 render_game(&state, &ui_font, title_font.as_ref());
             }
 
@@ -637,10 +674,10 @@ fn handle_playing_input(
 
         if state.victory {
             spawn_confetti(confetti);
-            if let Some(s) = sfx { s.victory(&sc); }
+            if let Some(s) = sfx { s.stop_boss_drone(); s.victory(&sc); }
             *screen = Screen::Victory;
         } else if state.game_over {
-            if let Some(s) = sfx { s.death(&sc); }
+            if let Some(s) = sfx { s.stop_boss_drone(); s.death(&sc); }
             *screen = Screen::Dead;
         }
     }
@@ -901,38 +938,7 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_c
     let sw = screen_width();
     let sh = screen_height();
 
-    // Spinner
-    let time = get_time() as f32;
-    let spinner_cx = sw / 2.0;
-    let spinner_cy = sh / 2.0 - 30.0;
-    let angle = time * 5.0;
-    let r = 16.0;
-    for i in 0..8 {
-        let a = angle + i as f32 * std::f32::consts::TAU / 8.0;
-        let alpha = 1.0 - i as f32 * 0.12;
-        draw_circle(
-            spinner_cx + a.cos() * r,
-            spinner_cy + a.sin() * r,
-            3.5,
-            Color::new(0.91, 0.27, 0.37, alpha),
-        );
-    }
-
-    let ps = 20u16;
-    let ptw = measure_text(phase_text, Some(font), ps, 1.0).width;
-    draw_text_ex(phase_text, (sw - ptw) / 2.0, sh / 2.0 + 20.0, TextParams {
-        font: Some(font), font_size: ps, color: GRAY, ..Default::default()
-    });
-
-    if !phase_detail.is_empty() {
-        let ds = 16u16;
-        let pdw = measure_text(phase_detail, Some(font), ds, 1.0).width;
-        draw_text_ex(phase_detail, (sw - pdw) / 2.0, sh / 2.0 + 48.0, TextParams {
-            font: Some(font), font_size: ds, color: DARKGRAY, ..Default::default()
-        });
-    }
-
-    // Draw tile blob ON TOP — slowly covers spinner and text
+    // Draw tile blob BEHIND text
     if tile_count > 0 {
         let tile_sz = 12.0;
         let grid_w = (sw / tile_sz) as i32 + 1;
@@ -1003,6 +1009,36 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_c
             draw_rectangle(tx as f32 * tile_sz, ty as f32 * tile_sz, tile_sz, tile_sz, c);
         }
     }
+
+    // Text with soft drop shadow
+    let ps = 20u16;
+    let ptw = measure_text(phase_text, Some(font), ps, 1.0).width;
+    let tx = (sw - ptw) / 2.0;
+    let ty = sh / 2.0 + 20.0;
+    let shadow_layers: [(f32, f32); 4] = [(1.0, 0.30), (2.0, 0.20), (3.5, 0.12), (5.0, 0.05)];
+    for &(off, alpha) in &shadow_layers {
+        draw_text_ex(phase_text, tx + off, ty + off, TextParams {
+            font: Some(font), font_size: ps, color: Color::new(0.0, 0.0, 0.0, alpha), ..Default::default()
+        });
+    }
+    draw_text_ex(phase_text, tx, ty, TextParams {
+        font: Some(font), font_size: ps, color: WHITE, ..Default::default()
+    });
+
+    if !phase_detail.is_empty() {
+        let ds = 16u16;
+        let pdw = measure_text(phase_detail, Some(font), ds, 1.0).width;
+        let dx = (sw - pdw) / 2.0;
+        let dy = sh / 2.0 + 48.0;
+        for &(off, alpha) in &shadow_layers {
+            draw_text_ex(phase_detail, dx + off, dy + off, TextParams {
+                font: Some(font), font_size: ds, color: Color::new(0.0, 0.0, 0.0, alpha), ..Default::default()
+            });
+        }
+        draw_text_ex(phase_detail, dx, dy, TextParams {
+            font: Some(font), font_size: ds, color: WHITE, ..Default::default()
+        });
+    }
 }
 
 // ── Overworld rendering ──
@@ -1028,26 +1064,31 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         font: Some(tfont), font_size: ts, color: hex_to_color("#e0d5c0"), ..Default::default()
     });
 
-    // Description (word-wrapped)
+    // Description (word-wrapped, balanced to avoid orphans)
     let ds = 16u16;
     let max_desc_w = sw - margin * 2.0;
-    let mut desc_lines: Vec<String> = Vec::new();
-    let mut current_line = String::new();
-    for word in ow.description.split_whitespace() {
-        let candidate = if current_line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{} {}", current_line, word)
-        };
-        if measure_text(&candidate, Some(ui_font), ds, 1.0).width > max_desc_w && !current_line.is_empty() {
-            desc_lines.push(current_line);
-            current_line = word.to_string();
-        } else {
-            current_line = candidate;
+    let wrap_at = |max_w: f32| -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for word in ow.description.split_whitespace() {
+            let candidate = if cur.is_empty() { word.to_string() } else { format!("{} {}", cur, word) };
+            if measure_text(&candidate, Some(ui_font), ds, 1.0).width > max_w && !cur.is_empty() {
+                lines.push(cur);
+                cur = word.to_string();
+            } else {
+                cur = candidate;
+            }
         }
-    }
-    if !current_line.is_empty() {
-        desc_lines.push(current_line);
+        if !cur.is_empty() { lines.push(cur); }
+        lines
+    };
+    let mut desc_lines = wrap_at(max_desc_w);
+    // If last line is an orphan (< 40% of max width), re-wrap narrower to balance
+    if desc_lines.len() >= 2 {
+        let last_w = measure_text(desc_lines.last().unwrap(), Some(ui_font), ds, 1.0).width;
+        if last_w < max_desc_w * 0.4 {
+            desc_lines = wrap_at(max_desc_w * 0.65);
+        }
     }
     let line_h = ds as f32 + 4.0;
     let desc_height = desc_lines.len() as f32 * line_h;
@@ -1243,8 +1284,9 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
             }
         }
 
-        // Current node: green circle inside
+        // Current node: green circle with soft shadow
         if i == ow.current_node {
+            draw_soft_circle_shadow(nx, ny, tile_px * 1.2);
             draw_circle(nx, ny, tile_px * 1.2, hex_to_color("#44ff44"));
         }
 
@@ -1259,50 +1301,6 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         }
     }
 
-    // Bottom info — word-wrapped level description
-    let current = &ow.nodes[ow.current_node];
-    let info = if current.completed {
-        format!("{} — COMPLETED", current.name)
-    } else {
-        format!("{} — {}", current.name, current.description)
-    };
-    let is = 16u16;
-    let max_info_w = sw - margin * 2.0;
-    let mut info_lines: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for word in info.split_whitespace() {
-        let candidate = if cur.is_empty() { word.to_string() } else { format!("{} {}", cur, word) };
-        if measure_text(&candidate, Some(ui_font), is, 1.0).width > max_info_w && !cur.is_empty() {
-            info_lines.push(cur);
-            cur = word.to_string();
-        } else {
-            cur = candidate;
-        }
-    }
-    if !cur.is_empty() { info_lines.push(cur); }
-    let info_line_h = is as f32 + 4.0;
-
-    let hint = if current.completed {
-        "Arrows: navigate"
-    } else {
-        "Arrows: navigate  |  ENTER: play level"
-    };
-    let hs = 14u16;
-
-    // Position from bottom up: hint, then info lines
-    let hint_y = sh - 12.0;
-    let hw = measure_text(hint, Some(ui_font), hs, 1.0).width;
-    draw_text_ex(hint, (sw - hw) / 2.0, hint_y, TextParams {
-        font: Some(ui_font), font_size: hs, color: hex_to_color("#9e9e9e"), ..Default::default()
-    });
-
-    let info_base_y = hint_y - 8.0 - (info_lines.len() as f32 * info_line_h);
-    for (i, line) in info_lines.iter().enumerate() {
-        let lw = measure_text(line, Some(ui_font), is, 1.0).width;
-        draw_text_ex(line, (sw - lw) / 2.0, info_base_y + i as f32 * info_line_h, TextParams {
-            font: Some(ui_font), font_size: is, color: hex_to_color("#e0d5c0"), ..Default::default()
-        });
-    }
 }
 
 fn draw_death_overlay(font: &Font, bold: &Font, state: &GameState) {
@@ -1545,6 +1543,42 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         }
     }
 
+    // ── Map ambient occlusion: darken walkable tiles near walls ──
+    for sy in 0..=tiles_y {
+        for sx in 0..=tiles_x {
+            let tx = camera_x + sx;
+            let ty = camera_y + sy;
+            if tx < 0 || ty < 0 || tx >= state.level.width || ty >= state.level.height { continue; }
+            if !state.level.revealed.contains(&(tx, ty)) { continue; }
+            let tile_name = &state.level.tiles[ty as usize][tx as usize];
+            let def = match state.level.tile_defs.get(tile_name) { Some(d) => d, None => continue };
+            if !def.walkable { continue; }
+
+            let screen_x = map_left + sx as f32 * TILE;
+            let screen_y = mid_top + sy as f32 * TILE;
+            if screen_y + TILE < mid_top || screen_y > mid_top + mid_height || screen_x + TILE > map_width { continue; }
+
+            // Count adjacent walls
+            let mut wall_count = 0u8;
+            for &(dx, dy) in &[(0i32,1i32),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)] {
+                let nx = tx + dx;
+                let ny = ty + dy;
+                if nx < 0 || ny < 0 || nx >= state.level.width || ny >= state.level.height {
+                    wall_count += 1;
+                    continue;
+                }
+                let n_name = &state.level.tiles[ny as usize][nx as usize];
+                if let Some(n_def) = state.level.tile_defs.get(n_name) {
+                    if !n_def.walkable { wall_count += 1; }
+                }
+            }
+            if wall_count > 0 {
+                let ao = (wall_count as f32 / 8.0) * 0.25;
+                draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.0, 0.0, 0.0, ao));
+            }
+        }
+    }
+
     // Items
     for item in &state.level.items {
         if !state.level.visible.contains(&(item.x, item.y)) { continue; }
@@ -1557,20 +1591,18 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         let r = TILE * 0.38;
         let color = item_color(&item.item_type);
 
-        let shadow = Color::new(0.0, 0.0, 0.0, 0.4);
-        let so = 2.0; // shadow offset
         match item.item_type.as_str() {
             "weapon" => {
-                draw_poly(cx + so, cy + so, 3, r, 0.0, shadow);
+                draw_soft_poly_shadow(cx, cy, 3, r, 0.0);
                 draw_poly(cx, cy, 3, r, 0.0, color);
             }
             "armor" => {
-                draw_circle(cx + so, cy + so, r, shadow);
+                draw_soft_circle_shadow(cx, cy, r);
                 draw_circle(cx, cy, r, color);
             }
             _ => {
                 let half = r * 0.85;
-                draw_rectangle(cx - half + so, cy - half + so, half * 2.0, half * 2.0, shadow);
+                draw_soft_rect_shadow(cx - half, cy - half, half * 2.0, half * 2.0);
                 draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, color);
             }
         }
@@ -1615,19 +1647,15 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         // Monsters face toward the player
         let mon_facing = ((state.player.y - mon.y) as f32).atan2((state.player.x - mon.x) as f32);
 
-        let shadow = Color::new(0.0, 0.0, 0.0, 0.4);
-        let so = 2.0;
         if mon.is_boss {
             let cx = sx + TILE;
             let cy = sy + TILE;
             let r = TILE * 0.85;
             let pct = mon.hp as f32 / mon.max_hp as f32;
             let base_color = hex_to_color("#ffd700");
-            // Glow
+            draw_soft_circle_shadow(cx, cy, r);
             draw_circle(cx, cy, r + 6.0, Color::new(1.0, 0.84, 0.0, 0.06));
             draw_circle(cx, cy, r + 3.0, Color::new(1.0, 0.84, 0.0, 0.12));
-            // Shadow + Pie chart
-            draw_circle(cx + so, cy + so, r, shadow);
             draw_circle(cx, cy, r, Color::new(0.15, 0.15, 0.15, 1.0));
             if pct > 0.0 {
                 draw_pie(cx, cy, r, pct, base_color, mon_facing);
@@ -1638,8 +1666,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
             let r = TILE * 0.4;
             let pct = mon.hp as f32 / mon.max_hp as f32;
             let base_color = Color::new(0.9, 0.25, 0.25, 1.0);
-            // Shadow + Pie chart
-            draw_circle(cx + so, cy + so, r, shadow);
+            draw_soft_circle_shadow(cx, cy, r);
             draw_circle(cx, cy, r, Color::new(0.15, 0.15, 0.15, 1.0));
             if pct > 0.0 {
                 draw_pie(cx, cy, r, pct, base_color, mon_facing);
@@ -1653,13 +1680,10 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     let has_shield = state.player.armor != "None";
     let has_sword = state.player.weapon != "Fists";
     let shield_color = Color::new(0.45, 0.55, 0.75, 0.9);
-    let shadow = Color::new(0.0, 0.0, 0.0, 0.4);
-    let so = 2.0;
 
-    // Size everything to fit in one tile
-    let outer_r = TILE * 0.42; // shield ring outer radius
-    let ring_w = 3.0;          // shield ring thickness
-    let inner_r = outer_r - ring_w - 1.0; // HP pie radius
+    let outer_r = TILE * 0.42;
+    let ring_w = 3.0;
+    let inner_r = outer_r - ring_w - 1.0;
     let r = if has_shield { inner_r } else { TILE * 0.35 };
     let shield_outer = if has_shield { outer_r } else { r };
 
@@ -1669,10 +1693,9 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         0.0
     };
 
-    // Shadow for entire player composite
-    draw_circle(px + so, py + so, shield_outer, shadow);
+    // Soft shadow for player
+    draw_soft_circle_shadow(px, py, shield_outer);
 
-    // Shield ring (drawn as outer circle, inner circle punches it visually)
     if has_shield {
         draw_circle(px, py, outer_r, shield_color);
     }
@@ -1696,12 +1719,6 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         let base1_y = sy + perp.sin() * sword_r * 0.4;
         let base2_x = sx - perp.cos() * sword_r * 0.4;
         let base2_y = sy - perp.sin() * sword_r * 0.4;
-        draw_triangle(
-            Vec2::new(tip_x + so, tip_y + so),
-            Vec2::new(base1_x + so, base1_y + so),
-            Vec2::new(base2_x + so, base2_y + so),
-            shadow,
-        );
         draw_triangle(
             Vec2::new(tip_x, tip_y),
             Vec2::new(base1_x, base1_y),
