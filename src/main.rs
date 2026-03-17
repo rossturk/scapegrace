@@ -39,6 +39,11 @@ fn window_conf() -> Conf {
         window_width: 1200,
         window_height: 800,
         window_resizable: true,
+        icon: Some(miniquad::conf::Icon {
+            small: *include_bytes!("../assets/icon_16.rgba"),
+            medium: *include_bytes!("../assets/icon_32.rgba"),
+            big: *include_bytes!("../assets/icon_64.rgba"),
+        }),
         ..Default::default()
     }
 }
@@ -906,7 +911,7 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
     for (i, line) in desc_lines.iter().enumerate() {
         let lw = measure_text(line, Some(ui_font), ds, 1.0).width;
         draw_text_ex(line, (sw - lw) / 2.0, 78.0 + i as f32 * line_h, TextParams {
-            font: Some(ui_font), font_size: ds, color: DARKGRAY, ..Default::default()
+            font: Some(ui_font), font_size: ds, color: hex_to_color("#9e9e9e"), ..Default::default()
         });
     }
 
@@ -979,7 +984,7 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         }
     }
 
-    // Bottom info
+    // Bottom info — word-wrapped level description
     let current = &ow.nodes[ow.current_node];
     let info = if current.completed {
         format!("{} — COMPLETED", current.name)
@@ -987,10 +992,20 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         format!("{} — {}", current.name, current.description)
     };
     let is = 16u16;
-    let iw = measure_text(&info, Some(ui_font), is, 1.0).width;
-    draw_text_ex(&info, (sw - iw) / 2.0, sh - 38.0, TextParams {
-        font: Some(ui_font), font_size: is, color: hex_to_color("#e0d5c0"), ..Default::default()
-    });
+    let max_info_w = sw - margin * 2.0;
+    let mut info_lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in info.split_whitespace() {
+        let candidate = if cur.is_empty() { word.to_string() } else { format!("{} {}", cur, word) };
+        if measure_text(&candidate, Some(ui_font), is, 1.0).width > max_info_w && !cur.is_empty() {
+            info_lines.push(cur);
+            cur = word.to_string();
+        } else {
+            cur = candidate;
+        }
+    }
+    if !cur.is_empty() { info_lines.push(cur); }
+    let info_line_h = is as f32 + 4.0;
 
     let hint = if current.completed {
         "Arrows: navigate"
@@ -998,10 +1013,21 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         "Arrows: navigate  |  ENTER: play level"
     };
     let hs = 14u16;
+
+    // Position from bottom up: hint, then info lines
+    let hint_y = sh - 12.0;
     let hw = measure_text(hint, Some(ui_font), hs, 1.0).width;
-    draw_text_ex(hint, (sw - hw) / 2.0, sh - 16.0, TextParams {
-        font: Some(ui_font), font_size: hs, color: DARKGRAY, ..Default::default()
+    draw_text_ex(hint, (sw - hw) / 2.0, hint_y, TextParams {
+        font: Some(ui_font), font_size: hs, color: hex_to_color("#9e9e9e"), ..Default::default()
     });
+
+    let info_base_y = hint_y - 8.0 - (info_lines.len() as f32 * info_line_h);
+    for (i, line) in info_lines.iter().enumerate() {
+        let lw = measure_text(line, Some(ui_font), is, 1.0).width;
+        draw_text_ex(line, (sw - lw) / 2.0, info_base_y + i as f32 * info_line_h, TextParams {
+            font: Some(ui_font), font_size: is, color: hex_to_color("#e0d5c0"), ..Default::default()
+        });
+    }
 }
 
 fn draw_death_overlay(font: &Font, bold: &Font, state: &GameState) {

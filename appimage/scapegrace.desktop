@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Scapegrace
+Exec=scapegrace
+Icon=scapegrace
+Type=Application
+Categories=Game;RolePlaying;
+Comment=LLM-generated roguelike

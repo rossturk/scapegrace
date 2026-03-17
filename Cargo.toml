@@ -12,3 +12,11 @@ rand = "0.8"
 dotenvy = "0.15"
 rodio = "0.19"
 arboard = "3"
+
+[package.metadata.bundle]
+name = "Scapegrace"
+identifier = "com.allmuddy.scapegrace"
+icon = ["icon.png"]
+category = "public.app-category.games"
+short_description = "LLM-generated roguelike"
+copyright = "Copyright 2024 allmuddy"

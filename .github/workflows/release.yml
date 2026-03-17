@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle
+
+      - name: Build .app bundle
+        run: cargo bundle --release
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname Scapegrace \
+            -srcfolder target/release/bundle/osx/Scapegrace.app \
+            -ov -format UDZO \
+            target/Scapegrace-mac.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Scapegrace-mac.dmg
+          path: target/Scapegrace-mac.dmg
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxi-dev libgl1-mesa-dev
+
+      - name: Build AppImage
+        run: ./appimage/build-appimage.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Scapegrace-linux.AppImage
+          path: target/Scapegrace-*.AppImage
+
+  release:
+    needs: [build-mac, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Scapegrace-mac.dmg/Scapegrace-mac.dmg
+            Scapegrace-linux.AppImage/Scapegrace-*.AppImage
+          generate_release_notes: true
