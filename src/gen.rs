@@ -120,6 +120,7 @@ pub struct LevelConfig {
     pub font: String,
     pub description: String,
     pub theme: String,
+    pub palette: Vec<String>,
     pub budget: i32,
     pub floor: i32,
 }
@@ -285,7 +286,7 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
     // ── Phase 1: Objects + tile_defs (single LLM call) ──
     on_phase(PhaseUpdate { phase: "designing level".into(), detail: String::new() });
 
-    let p2_prompt = build_phase2_prompt(floor, player, budget, theme, &config.title, &config.description);
+    let p2_prompt = build_phase2_prompt(floor, player, budget, theme, &config.title, &config.description, &config.palette);
     let p2_content = call_llm_streaming(&client, &api_key, &model, &p2_prompt, Some(&on_token))?;
     let p2: Phase2Result = serde_json::from_str(&p2_content)
         .map_err(|e| format!("Phase 1 parse error: {}", e))?;
@@ -351,7 +352,7 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
 
 // ── Prompt builders ──
 
-fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, title: &str, description: &str) -> String {
+fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, title: &str, description: &str, palette: &[String]) -> String {
     let mut p = String::new();
     p.push_str(&format!("Generate the TILE DEFINITIONS and OBJECTS for level {} of a roguelike game.\n\n", floor));
     p.push_str(&format!("Theme: {} — \"{}\"\n", theme, title));
@@ -369,7 +370,8 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, ti
     p.push_str("  Unspent carries over to the next level.\n\n");
 
     p.push_str("Return a JSON object with:\n");
-    p.push_str("- tile_defs: object mapping single chars to {name, color (hex), walkable (bool), char (display char or empty)}. Must include a wall char (not walkable) and a floor char (walkable). Add 1-3 thematic tiles. Be creative and bold with colors. IMPORTANT: Do NOT use these colors for tiles, they are reserved for game entities: green (#66bb6a), red/crimson (#e64545), gold/yellow (#ffd700), cyan/teal (#4dd0e1), orange (#ffa726). Avoid any color that would be close to these.\n");
+    p.push_str(&format!("- tile_defs: object mapping single chars to {{name, color (hex), walkable (bool), char (display char or empty)}}. Must include a wall char (not walkable) and a floor char (walkable). Add 1-3 thematic tiles. USE THESE EXACT COLORS for your tiles (assign them to whichever tile types make sense): {}. You may darken or lighten them slightly for variety but stay in the same hues.\n",
+        palette.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")));
     p.push_str(&format!("- boss: {{name, sprite (emoji), hp (~{}), attack (~{}), defense (~{}), xp_value (~{}), description}}\n",
         15 + floor * 8, 3 + floor * 2, floor * 2, 20 + floor * 5));
     p.push_str(&format!("- monster_types: array of 2-3 templates {{name, sprite, hp (~{}), attack (~{}), defense (~{}), xp_value (~{}), description}}\n",
@@ -437,7 +439,7 @@ fn build_overworld_prompt() -> String {
     p.push_str("  - description: one atmospheric sentence\n");
     p.push_str("  - theme: detailed theme string for the level (e.g. 'collapsing origami palace', 'library where books rewrite themselves', 'volcanic glassblowing workshop')\n");
     p.push_str("  - color: a hex color (e.g. '#e94560') representing the level's primary color/mood. Each level should have a distinct color.\n");
-    p.push_str("  - palette: array of 4-6 hex colors representing the level's tile colors (floor, wall, accent, etc). These should be thematically cohesive and distinct per level. The overworld will render a mini tile grid preview from these colors.\n");
+    p.push_str("  - palette: array of 4-6 hex colors for the level's tile types (wall, floor, and 1-3 thematic tiles like lava, water, grass, etc). Be creative and bold with colors. These must be thematically cohesive and visually distinct per level. IMPORTANT: Do NOT use these colors, they are reserved for game entities: green (#66bb6a), red/crimson (#e64545), gold/yellow (#ffd700), cyan/teal (#4dd0e1), orange (#ffa726). Avoid any color close to these.\n");
     p.push_str("  - budget: scapebux budget for the level (integer)\n");
     p.push_str("  - x: horizontal position 0.0-1.0 (left to right)\n");
     p.push_str("  - y: vertical position 0.0-1.0 (top to bottom)\n");

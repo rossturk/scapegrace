@@ -731,6 +731,7 @@ fn start_level_generation(
         font: node.font.clone(),
         description: node.description.clone(),
         theme: node.theme.clone(),
+        palette: node.palette.clone(),
         budget: node.budget,
         floor: ow.current_node as i32 + 1,
     };
