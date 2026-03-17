@@ -134,10 +134,6 @@ pub struct PhaseUpdate {
 
 // ── LLM caller ──
 
-fn call_llm(client: &reqwest::blocking::Client, api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
-    call_llm_streaming(client, api_key, model, prompt, None::<fn()>)
-}
-
 fn call_llm_streaming<F>(
     client: &reqwest::blocking::Client, api_key: &str, model: &str, prompt: &str,
     on_token: Option<F>,
