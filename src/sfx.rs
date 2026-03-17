@@ -1,10 +1,12 @@
 use ::rand::Rng;
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
+use std::cell::RefCell;
 use std::time::Duration;
 
 pub struct Sfx {
     _stream: OutputStream,
     handle: OutputStreamHandle,
+    drone: RefCell<Option<Sink>>,
 }
 
 /// Pick a random note from the scale
@@ -87,7 +89,7 @@ fn pick_triad(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
 impl Sfx {
     pub fn new() -> Option<Self> {
         let (stream, handle) = OutputStream::try_default().ok()?;
-        Some(Self { _stream: stream, handle })
+        Some(Self { _stream: stream, handle, drone: RefCell::new(None) })
     }
 
     fn play(&self, source: impl Source<Item = f32> + Send + 'static) {
@@ -103,7 +105,7 @@ impl Sfx {
         // Bassline — root/fifth biased, low single notes
         let mut rng = ::rand::thread_rng();
         let dur = rng.gen_range(25..45);
-        let vol = rng.gen_range(0.04..0.08);
+        let vol = rng.gen_range(0.046..0.092);
         let freq = pick_bass(scale, &mut rng);
         self.play(
             Osc::sine(freq)
@@ -341,6 +343,38 @@ impl Sfx {
         );
     }
 
+    /// Start a looping low drone for boss proximity. Call once when a level begins.
+    pub fn start_boss_drone(&self, scale: &[f32]) {
+        self.stop_boss_drone();
+        let freq = if scale.is_empty() { 55.0 } else { scale[0] * 0.25 };
+        // Detuned pair for unsettling beating
+        let source = Chord::new(&[freq, freq * 1.02], Waveform::Sine);
+        if let Ok(sink) = Sink::try_new(&self.handle) {
+            sink.set_volume(0.0);
+            sink.append(source);
+            *self.drone.borrow_mut() = Some(sink);
+        }
+    }
+
+    /// Update drone volume based on Euclidean distance to boss. Silent beyond 20 tiles.
+    pub fn update_boss_drone(&self, distance: f32) {
+        if let Some(sink) = self.drone.borrow().as_ref() {
+            let max_dist: f32 = 20.0;
+            if distance > max_dist {
+                sink.set_volume(0.0);
+            } else {
+                let t = 1.0 - (distance / max_dist);
+                sink.set_volume(t * 0.7);
+            }
+        }
+    }
+
+    pub fn stop_boss_drone(&self) {
+        if let Some(sink) = self.drone.borrow_mut().take() {
+            sink.stop();
+        }
+    }
+
     pub fn navigate(&self) {
         // UI tick — not tied to level scale
         self.play(
@@ -366,17 +400,23 @@ impl Sfx {
 #[derive(Clone, Copy)]
 enum Waveform { Sine, Square, Saw }
 
-/// Multiple oscillators mixed together (chord/dyad)
+/// Multiple oscillators mixed together (chord/dyad), arpeggiated low-to-high
 struct Chord {
     oscs: Vec<Osc>,
     sample_rate: u32,
+    sample_idx: u64,
+    stagger: u64,
 }
 
 impl Chord {
     fn new(freqs: &[f32], waveform: Waveform) -> Self {
+        let mut sorted: Vec<f32> = freqs.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Self {
-            oscs: freqs.iter().map(|&f| Osc::new(f, waveform)).collect(),
+            oscs: sorted.iter().map(|&f| Osc::new(f, waveform)).collect(),
             sample_rate: 44100,
+            sample_idx: 0,
+            stagger: 441, // ~10ms between each note
         }
     }
     fn sine(freqs: &[f32]) -> Self { Self::new(freqs, Waveform::Sine) }
@@ -389,7 +429,15 @@ impl Iterator for Chord {
     fn next(&mut self) -> Option<f32> {
         if self.oscs.is_empty() { return Some(0.0); }
         let n = self.oscs.len() as f32;
-        let sum: f32 = self.oscs.iter_mut().filter_map(|o| o.next()).sum();
+        let mut sum = 0.0f32;
+        for (i, osc) in self.oscs.iter_mut().enumerate() {
+            if self.sample_idx >= (i as u64) * self.stagger {
+                if let Some(v) = osc.next() {
+                    sum += v;
+                }
+            }
+        }
+        self.sample_idx += 1;
         Some(sum / n)
     }
 }
