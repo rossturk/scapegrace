@@ -603,7 +603,7 @@ fn handle_playing_input(
     last_fire: &mut f64,
 ) {
     let sc = state.level.scale.clone();
-    if is_key_pressed(KeyCode::P) {
+    if is_key_pressed(KeyCode::H) {
         use_potion(state);
         if let Some(s) = sfx { s.pickup_potion(&sc); }
     }
@@ -823,7 +823,7 @@ fn draw_key_entry_screen(font: &Font, bold: &Font, input: &str, error: &Option<S
     // Flavor text
     let lines = [
         "You were warned.",
-        "You came anyway.",
+        "You summoned us anyway.",
         "",
         "Speak the passphrase, and the gate opens.",
     ];
@@ -1824,7 +1824,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         font: Some(ui_font), font_size: 14, color: hp_bar_color(hp_pct), ..Default::default()
     });
 
-    let keys = "WASD: move  Bump: attack  P: potion";
+    let keys = "WASD: move  Bump: attack  H: potion";
     let kw = measure_text(keys, Some(ui_font), 13, 1.0).width;
     draw_text_ex(keys, sw - kw - 16.0, bot_y + 19.0, TextParams {
         font: Some(ui_font), font_size: 13, color: WHITE, ..Default::default()

@@ -420,7 +420,8 @@ pub fn use_potion(state: &mut GameState) -> bool {
         return false;
     }
     let mut rng = rand::thread_rng();
-    let heal = rng.gen_range(8..=15);
+    let pct = rng.gen_range(0.15..=0.25);
+    let heal = (state.player.max_hp as f32 * pct).round() as i32;
     state.player.potions -= 1;
     state.player.hp = (state.player.hp + heal).min(state.player.max_hp);
     state.log(&format!("You drink a potion and heal {} HP. ({} left)", heal, state.player.potions), "#44ff44");
@@ -428,6 +429,31 @@ pub fn use_potion(state: &mut GameState) -> bool {
 }
 
 // ── Monster AI ──
+
+fn has_line_of_sight(level: &Level, x0: i32, y0: i32, x1: i32, y1: i32) -> bool {
+    let dx = (x1 - x0) as f32;
+    let dy = (y1 - y0) as f32;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1.0 { return true; }
+    let steps = (dist * 2.0) as i32 + 1;
+    let sx = dx / steps as f32;
+    let sy = dy / steps as f32;
+    let mut x = x0 as f32 + 0.5;
+    let mut y = y0 as f32 + 0.5;
+    for _ in 0..steps {
+        x += sx;
+        y += sy;
+        let tx = x as i32;
+        let ty = y as i32;
+        if tx < 0 || ty < 0 || tx >= level.width || ty >= level.height { return false; }
+        if tx == x1 && ty == y1 { return true; }
+        let tile = &level.tiles[ty as usize][tx as usize];
+        if !level.tile_defs.get(tile).map_or(false, |t| t.walkable) {
+            return false;
+        }
+    }
+    true
+}
 
 pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
     let mut events = vec![];
@@ -439,6 +465,7 @@ pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
         let mon = &state.level.monsters[i];
         let dist = (mon.x - px).abs() + (mon.y - py).abs();
         if dist > 8 { continue; }
+        if !has_line_of_sight(&state.level, mon.x, mon.y, px, py) { continue; }
 
         // Adjacent? Attack.
         let adjacent = if mon.is_boss {

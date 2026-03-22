@@ -52,6 +52,15 @@ fn pick_bass(scale: &[f32], rng: &mut impl ::rand::Rng) -> f32 {
     scale[idx.min(scale.len() - 1)] * 0.5 // one octave down for bass weight
 }
 
+/// Build a pentatonic minor scale from the root of the given scale, one octave down for bass use.
+/// Pentatonic minor is broadly compatible with all modal scales.
+fn pentatonic_bass(scale: &[f32]) -> Vec<f32> {
+    let root = if scale.is_empty() { 220.0 } else { scale[0] * 0.5 };
+    [0, 3, 5, 7, 10].iter()
+        .map(|&s| root * 2.0_f32.powf(s as f32 / 12.0))
+        .collect()
+}
+
 /// Pick a dyad: root + third (2 scale degrees up)
 fn pick_dyad(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
     if scale.len() < 3 { return vec![pick(scale, rng)]; }
@@ -102,11 +111,12 @@ impl Sfx {
     // ── Game sounds — all in the level's musical mode ──
 
     pub fn footstep(&self, scale: &[f32]) {
-        // Bassline — root/fifth biased, low single notes
+        // Bassline — pentatonic minor from same root, compatible with all modes
         let mut rng = ::rand::thread_rng();
-        let dur = rng.gen_range(25..45);
+        let dur = rng.gen_range(40..70);
         let vol = rng.gen_range(0.046..0.092);
-        let freq = pick_bass(scale, &mut rng);
+        let penta = pentatonic_bass(scale);
+        let freq = pick_bass(&penta, &mut rng);
         self.play(
             Osc::sine(freq)
                 .take_duration(Duration::from_millis(dur))
@@ -116,14 +126,14 @@ impl Sfx {
     }
 
     pub fn hit(&self, scale: &[f32]) {
-        // Punch — low dyad, square wave
+        // Punch — low triad, square wave
         let mut rng = ::rand::thread_rng();
-        let freqs: Vec<f32> = pick_dyad_low(scale, &mut rng).iter().map(|f| f * 0.5).collect();
+        let freqs: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
         self.play(
             Chord::square(&freqs)
-                .take_duration(Duration::from_millis(80))
+                .take_duration(Duration::from_millis(160))
                 .amplify(0.15)
-                .fade_out(Duration::from_millis(80))
+                .fade_out(Duration::from_millis(160))
         );
     }
 
@@ -133,9 +143,9 @@ impl Sfx {
         let freqs: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
         self.play(
             Chord::saw(&freqs)
-                .take_duration(Duration::from_millis(120))
+                .take_duration(Duration::from_millis(240))
                 .amplify(0.25)
-                .fade_out(Duration::from_millis(120))
+                .fade_out(Duration::from_millis(240))
         );
     }
 
@@ -148,14 +158,14 @@ impl Sfx {
         let lo_avg = lo.iter().sum::<f32>() / lo.len() as f32;
         // Sweep the root, chord the destination
         self.play(
-            Sweep::new(hi_avg, lo_avg, Duration::from_millis(100), Waveform::Square)
+            Sweep::new(hi_avg, lo_avg, Duration::from_millis(150), Waveform::Square)
                 .amplify(0.10)
-                .fade_out(Duration::from_millis(100))
+                .fade_out(Duration::from_millis(150))
                 .then(
                     Chord::square(&lo)
-                        .take_duration(Duration::from_millis(60))
+                        .take_duration(Duration::from_millis(120))
                         .amplify(0.12)
-                        .fade_out(Duration::from_millis(60))
+                        .fade_out(Duration::from_millis(120))
                 )
         );
     }
@@ -166,26 +176,26 @@ impl Sfx {
         let freqs = pick_dyad_high(scale, &mut rng);
         self.play(
             Chord::sine(&freqs)
-                .take_duration(Duration::from_millis(40))
+                .take_duration(Duration::from_millis(70))
                 .amplify(0.03)
-                .fade_out(Duration::from_millis(40))
+                .fade_out(Duration::from_millis(70))
         );
     }
 
     pub fn kill(&self, scale: &[f32]) {
-        // Rising sweep into a triumphant dyad
+        // Rising sweep into a triumphant triad with sustained tail
         let mut rng = ::rand::thread_rng();
         let lo = pick_low(scale, &mut rng);
-        let hi_chord = pick_dyad_high(scale, &mut rng);
+        let hi_chord = pick_triad(scale, &mut rng);
         let hi_avg = hi_chord.iter().sum::<f32>() / hi_chord.len() as f32;
         self.play(
-            Sweep::new(lo, hi_avg, Duration::from_millis(60), Waveform::Sine)
+            Sweep::new(lo, hi_avg, Duration::from_millis(100), Waveform::Sine)
                 .amplify(0.10)
                 .then(
                     Chord::sine(&hi_chord)
-                        .take_duration(Duration::from_millis(50))
+                        .take_duration(Duration::from_millis(300))
                         .amplify(0.12)
-                        .fade_out(Duration::from_millis(50))
+                        .fade_out(Duration::from_millis(300))
                 )
         );
     }
@@ -197,14 +207,14 @@ impl Sfx {
         let lo_chord: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
         let lo_avg = lo_chord.iter().sum::<f32>() / lo_chord.len() as f32;
         self.play(
-            Sweep::new(hi, lo_avg, Duration::from_millis(800), Waveform::Saw)
+            Sweep::new(hi, lo_avg, Duration::from_millis(3200), Waveform::Saw)
                 .amplify(0.15)
-                .fade_out(Duration::from_millis(800))
+                .fade_out(Duration::from_millis(3200))
                 .then(
                     Chord::saw(&lo_chord)
-                        .take_duration(Duration::from_millis(1200))
+                        .take_duration(Duration::from_millis(4800))
                         .amplify(0.12)
-                        .fade_out(Duration::from_millis(1200))
+                        .fade_out(Duration::from_millis(4800))
                 )
         );
     }
@@ -217,12 +227,12 @@ impl Sfx {
         let c1 = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])];
         let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
         self.play(
-            Chord::sine(&c0).take_duration(Duration::from_millis(100)).amplify(0.12)
-                .then(silence(Duration::from_millis(30)))
-                .then(Chord::sine(&c1).take_duration(Duration::from_millis(100)).amplify(0.12))
-                .then(silence(Duration::from_millis(30)))
-                .then(Chord::sine(&c2).take_duration(Duration::from_millis(200)).amplify(0.15)
-                    .fade_out(Duration::from_millis(200)))
+            Chord::sine(&c0).take_duration(Duration::from_millis(400)).amplify(0.12)
+                .then(silence(Duration::from_millis(80)))
+                .then(Chord::sine(&c1).take_duration(Duration::from_millis(400)).amplify(0.12))
+                .then(silence(Duration::from_millis(80)))
+                .then(Chord::sine(&c2).take_duration(Duration::from_millis(800)).amplify(0.15)
+                    .fade_out(Duration::from_millis(800)))
         );
     }
 
@@ -232,9 +242,9 @@ impl Sfx {
         let freqs: Vec<f32> = pick_dyad_high(scale, &mut rng).iter().map(|f| f * 2.0).collect();
         self.play(
             Chord::sine(&freqs)
-                .take_duration(Duration::from_millis(60))
+                .take_duration(Duration::from_millis(120))
                 .amplify(0.10)
-                .fade_out(Duration::from_millis(60))
+                .fade_out(Duration::from_millis(120))
         );
     }
 
@@ -245,13 +255,13 @@ impl Sfx {
         let hi_chord = pick_dyad(scale, &mut rng);
         let hi_avg = hi_chord.iter().sum::<f32>() / hi_chord.len() as f32;
         self.play(
-            Sweep::new(lo, hi_avg, Duration::from_millis(50), Waveform::Sine)
+            Sweep::new(lo, hi_avg, Duration::from_millis(80), Waveform::Sine)
                 .amplify(0.08)
                 .then(
                     Chord::sine(&hi_chord)
-                        .take_duration(Duration::from_millis(40))
+                        .take_duration(Duration::from_millis(100))
                         .amplify(0.10)
-                        .fade_out(Duration::from_millis(40))
+                        .fade_out(Duration::from_millis(100))
                 )
         );
     }
@@ -264,24 +274,25 @@ impl Sfx {
         let c1 = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])];
         let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
         self.play(
-            Chord::saw(&c0).take_duration(Duration::from_millis(100)).amplify(0.10)
-                .then(silence(Duration::from_millis(20)))
-                .then(Chord::saw(&c1).take_duration(Duration::from_millis(100)).amplify(0.10))
-                .then(silence(Duration::from_millis(20)))
-                .then(Chord::saw(&c2).take_duration(Duration::from_millis(180)).amplify(0.12)
-                    .fade_out(Duration::from_millis(180)))
+            Chord::saw(&c0).take_duration(Duration::from_millis(160)).amplify(0.10)
+                .then(silence(Duration::from_millis(40)))
+                .then(Chord::saw(&c1).take_duration(Duration::from_millis(160)).amplify(0.10))
+                .then(silence(Duration::from_millis(40)))
+                .then(Chord::saw(&c2).take_duration(Duration::from_millis(300)).amplify(0.12)
+                    .fade_out(Duration::from_millis(300)))
         );
     }
 
     pub fn pickup_armor(&self, scale: &[f32]) {
-        // Lower metallic dyad — saw wave
+        // Lower metallic triad — saw wave
         let mut rng = ::rand::thread_rng();
-        let freqs = pick_dyad_low(scale, &mut rng);
+        let freqs = pick_triad(scale, &mut rng);
+        let lo_freqs: Vec<f32> = freqs.iter().map(|f| f * 0.5).collect();
         self.play(
-            Chord::saw(&freqs)
-                .take_duration(Duration::from_millis(150))
+            Chord::saw(&lo_freqs)
+                .take_duration(Duration::from_millis(250))
                 .amplify(0.10)
-                .fade_out(Duration::from_millis(150))
+                .fade_out(Duration::from_millis(250))
         );
     }
 
@@ -294,28 +305,28 @@ impl Sfx {
         let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
         let c3 = [notes.get(3).copied().unwrap_or(notes[0]), notes.get(5).copied().unwrap_or(notes[0])];
         self.play(
-            Chord::sine(&c0).take_duration(Duration::from_millis(80)).amplify(0.10)
-                .then(Chord::sine(&c1).take_duration(Duration::from_millis(80)).amplify(0.10))
-                .then(Chord::sine(&c2).take_duration(Duration::from_millis(80)).amplify(0.10))
-                .then(Chord::sine(&c3).take_duration(Duration::from_millis(160)).amplify(0.13)
-                    .fade_out(Duration::from_millis(160)))
+            Chord::sine(&c0).take_duration(Duration::from_millis(150)).amplify(0.10)
+                .then(Chord::sine(&c1).take_duration(Duration::from_millis(150)).amplify(0.10))
+                .then(Chord::sine(&c2).take_duration(Duration::from_millis(150)).amplify(0.10))
+                .then(Chord::sine(&c3).take_duration(Duration::from_millis(300)).amplify(0.13)
+                    .fade_out(Duration::from_millis(300)))
         );
     }
 
     pub fn trap(&self, scale: &[f32]) {
-        // Dissonant low chord stab
+        // Dissonant low chord stab with sustained ugliness
         let mut rng = ::rand::thread_rng();
-        let freqs: Vec<f32> = pick_dyad_low(scale, &mut rng).iter().map(|f| f * 0.5).collect();
+        let freqs: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
         let detuned: Vec<f32> = freqs.iter().map(|f| f * 0.9).collect();
         self.play(
             Chord::square(&freqs)
-                .take_duration(Duration::from_millis(30))
+                .take_duration(Duration::from_millis(60))
                 .amplify(0.15)
                 .then(
                     Chord::square(&detuned)
-                        .take_duration(Duration::from_millis(100))
+                        .take_duration(Duration::from_millis(300))
                         .amplify(0.12)
-                        .fade_out(Duration::from_millis(100))
+                        .fade_out(Duration::from_millis(300))
                 )
         );
     }
@@ -331,24 +342,26 @@ impl Sfx {
         let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
         let c3 = [notes.get(3).copied().unwrap_or(notes[0]), notes.get(5).copied().unwrap_or(notes[0])];
         self.play(
-            Sweep::new(hi, lo, Duration::from_millis(300), Waveform::Saw)
+            Sweep::new(hi, lo, Duration::from_millis(600), Waveform::Saw)
                 .amplify(0.18)
-                .fade_out(Duration::from_millis(300))
-                .then(silence(Duration::from_millis(100)))
-                .then(Chord::sine(&c0).take_duration(Duration::from_millis(120)).amplify(0.12))
-                .then(Chord::sine(&c1).take_duration(Duration::from_millis(120)).amplify(0.12))
-                .then(Chord::sine(&c2).take_duration(Duration::from_millis(120)).amplify(0.12))
-                .then(Chord::sine(&c3).take_duration(Duration::from_millis(300)).amplify(0.15)
-                    .fade_out(Duration::from_millis(300)))
+                .fade_out(Duration::from_millis(600))
+                .then(silence(Duration::from_millis(200)))
+                .then(Chord::sine(&c0).take_duration(Duration::from_millis(300)).amplify(0.12))
+                .then(Chord::sine(&c1).take_duration(Duration::from_millis(300)).amplify(0.12))
+                .then(Chord::sine(&c2).take_duration(Duration::from_millis(300)).amplify(0.12))
+                .then(Chord::sine(&c3).take_duration(Duration::from_millis(800)).amplify(0.15)
+                    .fade_out(Duration::from_millis(800)))
         );
     }
 
     /// Start a looping low drone for boss proximity. Call once when a level begins.
     pub fn start_boss_drone(&self, scale: &[f32]) {
         self.stop_boss_drone();
-        let freq = if scale.is_empty() { 55.0 } else { scale[0] * 0.25 };
-        // Detuned pair for unsettling beating
-        let source = Chord::new(&[freq, freq * 1.02], Waveform::Sine);
+        let root = if scale.is_empty() { 55.0 } else { scale[0] * 0.25 };
+        // Use the second scale degree for dissonance — dark modes (phrygian, locrian)
+        // naturally have a minor 2nd here, bright modes have a major 2nd
+        let second = if scale.len() >= 2 { scale[1] * 0.25 } else { root * 1.06 };
+        let source = Chord::new(&[root, second, root * 1.005], Waveform::Sine);
         if let Ok(sink) = Sink::try_new(&self.handle) {
             sink.set_volume(0.0);
             sink.append(source);
