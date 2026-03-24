@@ -1,5 +1,6 @@
 mod game;
 mod gen;
+mod mapgen;
 mod maps;
 mod sfx;
 
@@ -9,6 +10,15 @@ use ::rand::Rng;
 use std::sync::mpsc;
 
 const TILE: f32 = 24.0;
+
+// Entity colors — used in game rendering AND overworld particles
+const COLOR_BOSS: &str = "#ffd700";
+const COLOR_MONSTER: &str = "#e64545";
+const COLOR_SHIELD: &str = "#7388bf";
+const COLOR_WEAPON: &str = "#ff8844";
+const COLOR_POTION: &str = "#44ff44";
+const COLOR_GOLD: &str = "#ffd700";
+const COLOR_ARMOR: &str = "#4488ff";
 const NAV_INITIAL_DELAY: f64 = 0.3;
 const NAV_REPEAT_RATE: f64 = 0.15;
 const GAME_INITIAL_DELAY: f64 = 0.18;
@@ -17,6 +27,7 @@ const GAME_REPEAT_RATE: f64 = 0.10;
 enum Screen {
     KeyEntry,
     Start,
+    SoundTest,
     GenOverworld,
     Overworld,
     GenLevel,
@@ -29,7 +40,9 @@ enum Screen {
 enum GenMsg {
     Phase(String, String),
     Token,
+    DesignToken(usize), // design index — flash on the corresponding node
     OverworldReady(game::Overworld, Option<Vec<u8>>),
+    LevelDesignReady(usize, gen::Phase2Result),
     LevelDone(Level, [i32; 2], Option<Vec<u8>>),
     Error(String),
 }
@@ -135,10 +148,10 @@ fn draw_soft_poly_shadow(cx: f32, cy: f32, sides: u8, r: f32, rot: f32) {
 
 fn item_color(item_type: &str) -> Color {
     match item_type {
-        "weapon" => hex_to_color("#ff8844"),
-        "armor" => hex_to_color("#4488ff"),
-        "potion" => hex_to_color("#44ff44"),
-        "gold" => hex_to_color("#ffd700"),
+        "weapon" => hex_to_color(COLOR_WEAPON),
+        "armor" => hex_to_color(COLOR_ARMOR),
+        "potion" => hex_to_color(COLOR_POTION),
+        "gold" => hex_to_color(COLOR_GOLD),
         _ => WHITE,
     }
 }
@@ -168,11 +181,21 @@ async fn main() {
     let mut confetti: Vec<Confetti> = vec![];
     let mut title_font: Option<Font> = None;
     let mut overworld_font: Option<Font> = None;
+    let mut desc_font: Option<Font> = None;
+    let mut label_font: Option<Font> = None;
 
     // Overworld state
     let mut overworld: Option<Overworld> = None;
+    let mut level_designs: Vec<Option<gen::Phase2Result>> = Vec::new();
+    let mut design_token_flashes: Vec<Vec<f64>> = Vec::new(); // per-node flash times
+    let mut bg_gen_rx: Option<mpsc::Receiver<GenMsg>> = None;
     let mut player_snapshot: Option<Player> = None;
     let mut level_snapshot: Option<(usize, Level, [i32; 2])> = None; // (node_index, level, start) for retry
+
+    // Sound test state
+    let mut st_root: usize = 0;
+    let mut st_scale: usize = 0;
+    let mut st_selected: usize = 0;
 
     // Key repeat
     let mut nav_hold_time: f64 = 0.0;
@@ -279,6 +302,110 @@ async fn main() {
                     phase_detail.clear();
                     loading_tiles = 0;
                 }
+                if is_key_pressed(KeyCode::T) {
+                    screen = Screen::SoundTest;
+                }
+            }
+
+            Screen::SoundTest => {
+                const ROOTS: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                const SCALES: [&str; 12] = [
+                    "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian",
+                    "locrian", "pentatonic_major", "pentatonic_minor", "blues", "whole_tone", "chromatic",
+                ];
+                const SOUNDS: [&str; 14] = [
+                    "footstep", "hit", "crit", "player_hurt", "miss", "kill", "death",
+                    "victory", "pickup_gold", "pickup_potion", "pickup_weapon", "pickup_armor",
+                    "level_up", "trap",
+                ];
+
+                let scale = gen::build_scale(ROOTS[st_root], SCALES[st_scale]);
+
+                // Input
+                if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q) {
+                    screen = Screen::Start;
+                }
+                if is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A) {
+                    st_root = (st_root + ROOTS.len() - 1) % ROOTS.len();
+                }
+                if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) {
+                    st_root = (st_root + 1) % ROOTS.len();
+                }
+                if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
+                    if st_selected > 0 { st_selected -= 1; }
+                }
+                if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
+                    if st_selected < SOUNDS.len() - 1 { st_selected += 1; }
+                }
+                if is_key_pressed(KeyCode::Tab) {
+                    st_scale = (st_scale + 1) % SCALES.len();
+                }
+                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
+                    if let Some(s) = &sfx {
+                        match SOUNDS[st_selected] {
+                            "footstep" => s.footstep(&scale),
+                            "hit" => s.hit(&scale),
+                            "crit" => s.crit(&scale),
+                            "player_hurt" => s.player_hurt(&scale),
+                            "miss" => s.miss(&scale),
+                            "kill" => s.kill(&scale),
+                            "death" => s.death(&scale),
+                            "victory" => s.victory(&scale),
+                            "pickup_gold" => s.pickup_gold(&scale),
+                            "pickup_potion" => s.pickup_potion(&scale),
+                            "pickup_weapon" => s.pickup_weapon(&scale),
+                            "pickup_armor" => s.pickup_armor(&scale),
+                            "level_up" => s.level_up(&scale),
+                            "trap" => s.trap(&scale),
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Draw
+                let sw = screen_width();
+                let title = "SOUND TEST";
+                let ts = 36u16;
+                let tw = measure_text(title, Some(&ui_font_bold), ts, 1.0).width;
+                draw_text_ex(title, (sw - tw) / 2.0, 50.0, TextParams {
+                    font: Some(&ui_font_bold), font_size: ts, color: hex_to_color("#e94560"), ..Default::default()
+                });
+
+                // Mode selector
+                let mode_text = format!("<  {} {}  >", ROOTS[st_root], SCALES[st_scale]);
+                let ms = 20u16;
+                let mw = measure_text(&mode_text, Some(&ui_font_bold), ms, 1.0).width;
+                draw_text_ex(&mode_text, (sw - mw) / 2.0, 90.0, TextParams {
+                    font: Some(&ui_font_bold), font_size: ms, color: hex_to_color("#ffd700"), ..Default::default()
+                });
+
+                let hint = "LEFT/RIGHT: root   TAB: scale   ESC: back";
+                let hs = 13u16;
+                let hw = measure_text(hint, Some(&ui_font), hs, 1.0).width;
+                draw_text_ex(hint, (sw - hw) / 2.0, 112.0, TextParams {
+                    font: Some(&ui_font), font_size: hs, color: DARKGRAY, ..Default::default()
+                });
+
+                // Sound list
+                let start_y = 145.0;
+                let row_h = 28.0;
+                let ls = 18u16;
+                for (i, name) in SOUNDS.iter().enumerate() {
+                    let sel = i == st_selected;
+                    let label = if sel { format!("> {}", name) } else { format!("  {}", name) };
+                    let color = if sel { WHITE } else { GRAY };
+                    let lw = measure_text(&label, Some(&ui_font), ls, 1.0).width;
+                    draw_text_ex(&label, (sw - lw) / 2.0, start_y + i as f32 * row_h, TextParams {
+                        font: Some(&ui_font), font_size: ls, color, ..Default::default()
+                    });
+                }
+
+                let play_hint = "ENTER: play sound";
+                let ps = 14u16;
+                let pw = measure_text(play_hint, Some(&ui_font), ps, 1.0).width;
+                draw_text_ex(play_hint, (sw - pw) / 2.0, start_y + SOUNDS.len() as f32 * row_h + 20.0, TextParams {
+                    font: Some(&ui_font), font_size: ps, color: DARKGRAY, ..Default::default()
+                });
             }
 
             Screen::GenOverworld => {
@@ -301,6 +428,24 @@ async fn main() {
                                         Err(e) => eprintln!("Overworld font error: {}", e),
                                     }
                                 }
+                                if let Some(bytes) = fetch_google_font(&ow.description_font) {
+                                    match load_ttf_font_from_bytes(&bytes) {
+                                        Ok(f) => desc_font = Some(f),
+                                        Err(e) => eprintln!("Desc font error: {}", e),
+                                    }
+                                }
+                                if let Some(bytes) = fetch_google_font(&ow.label_font) {
+                                    match load_ttf_font_from_bytes(&bytes) {
+                                        Ok(f) => label_font = Some(f),
+                                        Err(e) => eprintln!("Label font error: {}", e),
+                                    }
+                                }
+                                // Initialize design slots (one per playable node)
+                                let playable = ow.nodes.iter().filter(|n| !n.completed).count();
+                                level_designs = vec![None; playable];
+                                design_token_flashes = vec![Vec::new(); playable];
+                                // Start background level design generation
+                                start_background_designs(&ow, &mut bg_gen_rx);
                                 overworld = Some(ow);
                                 screen = Screen::Overworld;
                             }
@@ -322,8 +467,27 @@ async fn main() {
             }
 
             Screen::Overworld => {
+                // Receive background level design tokens and completions
+                if let Some(rx) = &bg_gen_rx {
+                    while let Ok(msg) = rx.try_recv() {
+                        match msg {
+                            GenMsg::DesignToken(idx) => {
+                                if idx < design_token_flashes.len() {
+                                    design_token_flashes[idx].push(get_time());
+                                }
+                            }
+                            GenMsg::LevelDesignReady(idx, design) => {
+                                if idx < level_designs.len() {
+                                    level_designs[idx] = Some(design);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 if let Some(ow) = &mut overworld {
-                    draw_overworld(&*ow, &ui_font, &ui_font_bold, overworld_font.as_ref());
+                    draw_overworld(&*ow, &ui_font, &ui_font_bold, overworld_font.as_ref(), desc_font.as_ref(), label_font.as_ref(), &design_token_flashes);
 
                     // Navigation with key repeat
                     let cur = ow.current_node;
@@ -413,7 +577,7 @@ async fn main() {
                                 if let Some(s) = &sfx { s.start_boss_drone(&state.level.scale); }
                                 screen = Screen::Playing;
                             } else {
-                                start_level_generation(&state, ow, &mut gen_rx);
+                                start_level_generation(&state, ow, &level_designs, &mut gen_rx);
                                 screen = Screen::GenLevel;
                                 phase_text = overworld_loading_phrase();
                                 phase_detail.clear();
@@ -476,7 +640,7 @@ async fn main() {
 
                 if phase_detail == "Press ENTER to retry" && is_key_pressed(KeyCode::Enter) {
                     if let Some(ow) = &overworld {
-                        start_level_generation(&state, ow, &mut gen_rx);
+                        start_level_generation(&state, ow, &level_designs, &mut gen_rx);
                         phase_text = "creating universe".into();
                         phase_detail.clear();
                     }
@@ -581,6 +745,9 @@ async fn main() {
                     // Full reset
                     state = GameState::new();
                     overworld = None;
+                    level_designs.clear();
+                    design_token_flashes.clear();
+                    bg_gen_rx = None;
                     player_snapshot = None;
                     confetti.clear();
                     overworld_font = None;
@@ -717,15 +884,69 @@ fn start_overworld_generation(gen_rx: &mut Option<mpsc::Receiver<GenMsg>>) {
     });
 }
 
+fn start_background_designs(
+    ow: &Overworld,
+    bg_rx: &mut Option<mpsc::Receiver<GenMsg>>,
+) {
+    let (tx, rx) = mpsc::channel();
+    *bg_rx = Some(rx);
+
+    // Collect playable node configs
+    let configs: Vec<(usize, gen::LevelConfig)> = ow.nodes.iter().enumerate()
+        .filter(|(_, n)| !n.completed)
+        .enumerate()
+        .map(|(design_idx, (node_idx, node))| {
+            (design_idx, gen::LevelConfig {
+                title: node.name.clone(),
+                font: node.font.clone(),
+                description: node.description.clone(),
+                theme: node.theme.clone(),
+                palette: node.palette.clone(),
+                budget: node.budget,
+                floor: node_idx as i32,
+            })
+        })
+        .collect();
+
+    let campaign_name = ow.name.clone();
+    let campaign_desc = ow.description.clone();
+
+    std::thread::spawn(move || {
+        let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+        let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
+        let client = reqwest::blocking::Client::new();
+
+        for (design_idx, config) in &configs {
+            let prompt = gen::build_single_level_design_prompt(
+                &campaign_name, &campaign_desc, config,
+            );
+            let tx_tok = tx.clone();
+            let di = *design_idx;
+            match gen::call_llm_for_design(&client, &api_key, &model, &prompt,
+                Some(move || { let _ = tx_tok.send(GenMsg::DesignToken(di)); }),
+            ) {
+                Ok(design) => {
+                    eprintln!("Design ready: {} — boss '{}'", config.title, design.boss.name);
+                    let _ = tx.send(GenMsg::LevelDesignReady(*design_idx, design));
+                }
+                Err(e) => {
+                    eprintln!("Design error for '{}': {}", config.title, e);
+                }
+            }
+        }
+    });
+}
+
 fn start_level_generation(
     state: &GameState,
     ow: &Overworld,
+    designs: &[Option<gen::Phase2Result>],
     gen_rx: &mut Option<mpsc::Receiver<GenMsg>>,
 ) {
     let (tx, rx) = mpsc::channel();
     *gen_rx = Some(rx);
-    let player = state.player.clone();
     let node = &ow.nodes[ow.current_node];
+    let node_idx = ow.current_node;
     let config = gen::LevelConfig {
         title: node.name.clone(),
         font: node.font.clone(),
@@ -736,21 +957,41 @@ fn start_level_generation(
         floor: ow.current_node as i32 + 1,
     };
 
-    std::thread::spawn(move || {
-        let tx2 = tx.clone();
-        match gen::generate_level(&config, &player,
-            |phase| { let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail)); },
-            move || { let _ = tx2.send(GenMsg::Token); },
-        ) {
-            Ok((level, start, _remaining)) => {
-                let font_bytes = fetch_google_font(&level.font);
-                let _ = tx.send(GenMsg::LevelDone(level, start, font_bytes));
+    // Design index is node_idx - 1 because node 0 is the "Start" node (not a level)
+    let design_idx = node_idx.saturating_sub(1);
+    if let Some(Some(design)) = designs.get(design_idx) {
+        // Use pre-generated design — no LLM call needed
+        let design = design.clone();
+        std::thread::spawn(move || {
+            match gen::build_level_from_design(&config, &design) {
+                Ok((level, start, _remaining)) => {
+                    let font_bytes = fetch_google_font(&level.font);
+                    let _ = tx.send(GenMsg::LevelDone(level, start, font_bytes));
+                }
+                Err(e) => {
+                    let _ = tx.send(GenMsg::Error(e));
+                }
             }
-            Err(e) => {
-                let _ = tx.send(GenMsg::Error(e));
+        });
+    } else {
+        // Fallback: generate on the fly (shouldn't happen normally)
+        let player = state.player.clone();
+        std::thread::spawn(move || {
+            let tx2 = tx.clone();
+            match gen::generate_level(&config, &player,
+                |phase| { let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail)); },
+                move || { let _ = tx2.send(GenMsg::Token); },
+            ) {
+                Ok((level, start, _remaining)) => {
+                    let font_bytes = fetch_google_font(&level.font);
+                    let _ = tx.send(GenMsg::LevelDone(level, start, font_bytes));
+                }
+                Err(e) => {
+                    let _ = tx.send(GenMsg::Error(e));
+                }
             }
-        }
-    });
+        });
+    }
 }
 
 /// Fetch a Google Font TTF at runtime. Returns None on any failure.
@@ -1044,9 +1285,75 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_c
 
 // ── Overworld rendering ──
 
-fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Option<&Font>) {
+fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Option<&Font>, d_font: Option<&Font>, l_font: Option<&Font>, design_flashes: &[Vec<f64>]) {
     let sw = screen_width();
     let sh = screen_height();
+    let bg = hex_to_color(&ow.bg_color);
+    let text_col = hex_to_color(&ow.text_color);
+    // Description text: slightly dimmer than title
+    let desc_col = Color::new(text_col.r * 0.7, text_col.g * 0.7, text_col.b * 0.7, 1.0);
+
+    draw_rectangle(0.0, 0.0, sw, sh, bg);
+
+    // Parallax floating entity-shaped particles
+    {
+        let time = get_time() as f32;
+        let entity_colors = [
+            hex_to_color(COLOR_BOSS),
+            hex_to_color(COLOR_MONSTER),
+            hex_to_color(COLOR_WEAPON),
+            hex_to_color(COLOR_ARMOR),
+            hex_to_color(COLOR_POTION),
+        ];
+        // 0=boss(circle), 1=monster(circle), 2=weapon(triangle), 3=armor(ring), 4=potion(circle)
+        for layer in 0..2 {
+            let speed = if layer == 0 { 0.25 } else { 0.12 };
+            let scale = if layer == 0 { 1.0 } else { 0.6 };
+            let alpha = if layer == 0 { 0.10 } else { 0.05 };
+            let count = 25;
+            let mut seed: u32 = 0xBEEF + layer as u32 * 7919;
+            let next = |s: &mut u32| -> f32 {
+                *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((*s >> 16) & 0x7FFF) as f32 / 0x7FFF as f32
+            };
+            for _ in 0..count {
+                let base_x = next(&mut seed) * sw;
+                let base_y = next(&mut seed) * sh;
+                let phase = next(&mut seed) * std::f32::consts::TAU;
+                let shape = (next(&mut seed) * entity_colors.len() as f32) as usize;
+                let rot = next(&mut seed) * std::f32::consts::TAU;
+                let px = base_x + (time * speed + phase).sin() * 15.0;
+                let py = (base_y + time * speed * 6.0) % sh;
+                let r = 4.0 * scale;
+                let c = entity_colors[shape % entity_colors.len()];
+                let col = Color::new(c.r, c.g, c.b, alpha);
+                match shape {
+                    0 => { // boss — larger circle
+                        draw_circle(px, py, r * 1.5, col);
+                    }
+                    1 => { // monster — small circle
+                        draw_circle(px, py, r, col);
+                    }
+                    2 => { // weapon — triangle
+                        let a = rot + time * 0.3;
+                        draw_triangle(
+                            Vec2::new(px + a.cos() * r * 1.5, py + a.sin() * r * 1.5),
+                            Vec2::new(px + (a + 2.3).cos() * r, py + (a + 2.3).sin() * r),
+                            Vec2::new(px + (a - 2.3).cos() * r, py + (a - 2.3).sin() * r),
+                            col,
+                        );
+                    }
+                    3 => { // armor — ring
+                        draw_circle(px, py, r * 1.2, col);
+                        draw_circle(px, py, r * 0.6, bg);
+                    }
+                    _ => { // potion — small circle
+                        draw_circle(px, py, r * 0.8, col);
+                    }
+                }
+            }
+        }
+    }
 
     // Layout
     let margin = 80.0;
@@ -1062,10 +1369,11 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
     let ts = 36u16;
     let tw = measure_text(&ow.name, Some(tfont), ts, 1.0).width;
     draw_text_ex(&ow.name, (sw - tw) / 2.0, 50.0, TextParams {
-        font: Some(tfont), font_size: ts, color: hex_to_color("#e0d5c0"), ..Default::default()
+        font: Some(tfont), font_size: ts, color: text_col, ..Default::default()
     });
 
     // Description (word-wrapped, balanced to avoid orphans)
+    let dfont = d_font.unwrap_or(ui_font);
     let ds = 16u16;
     let max_desc_w = sw - margin * 2.0;
     let wrap_at = |max_w: f32| -> Vec<String> {
@@ -1073,7 +1381,7 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         let mut cur = String::new();
         for word in ow.description.split_whitespace() {
             let candidate = if cur.is_empty() { word.to_string() } else { format!("{} {}", cur, word) };
-            if measure_text(&candidate, Some(ui_font), ds, 1.0).width > max_w && !cur.is_empty() {
+            if measure_text(&candidate, Some(dfont), ds, 1.0).width > max_w && !cur.is_empty() {
                 lines.push(cur);
                 cur = word.to_string();
             } else {
@@ -1084,9 +1392,8 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         lines
     };
     let mut desc_lines = wrap_at(max_desc_w);
-    // If last line is an orphan (< 40% of max width), re-wrap narrower to balance
     if desc_lines.len() >= 2 {
-        let last_w = measure_text(desc_lines.last().unwrap(), Some(ui_font), ds, 1.0).width;
+        let last_w = measure_text(desc_lines.last().unwrap(), Some(dfont), ds, 1.0).width;
         if last_w < max_desc_w * 0.4 {
             desc_lines = wrap_at(max_desc_w * 0.65);
         }
@@ -1094,9 +1401,9 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
     let line_h = ds as f32 + 4.0;
     let desc_height = desc_lines.len() as f32 * line_h;
     for (i, line) in desc_lines.iter().enumerate() {
-        let lw = measure_text(line, Some(ui_font), ds, 1.0).width;
+        let lw = measure_text(line, Some(dfont), ds, 1.0).width;
         draw_text_ex(line, (sw - lw) / 2.0, 78.0 + i as f32 * line_h, TextParams {
-            font: Some(ui_font), font_size: ds, color: hex_to_color("#9e9e9e"), ..Default::default()
+            font: Some(dfont), font_size: ds, color: desc_col, ..Default::default()
         });
     }
 
@@ -1184,8 +1491,25 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
             (*s >> 16) & 0x7FFF
         };
 
-        // Grow an organic blob: start with a 2x2 core, expand by adding neighbors
         let mut filled = [[false; 8]; 8];
+
+        if i == 0 {
+            // Start node: rounded rectangle shape
+            //   .xxx.
+            //   xxxxx
+            //   xxxxx
+            //   xxxxx
+            //   .xxx.
+            let pattern: [[bool; 5]; 5] = [
+                [false, true,  true,  true,  false],
+                [true,  true,  true,  true,  true],
+                [true,  true,  true,  true,  true],
+                [true,  true,  true,  true,  true],
+                [false, true,  true,  true,  false],
+            ];
+            for py in 0..5 { for px in 0..5 { filled[py + 1][px + 1] = pattern[py][px]; } }
+        } else {
+        // Grow an organic blob: start with a 2x2 core, expand by adding neighbors
         // Core
         for cy in 3..5 {
             for cx in 3..5 {
@@ -1224,6 +1548,7 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
             filled[ry as usize][rx as usize] = true;
             grown += 1;
         }
+        } // end else (non-start node)
 
         // Find bounding box of filled tiles to center the shape
         let mut min_x = grid_w; let mut max_x = 0i32;
@@ -1246,7 +1571,11 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
             for gx in 0..grid_w {
                 if !filled[gy as usize][gx as usize] { continue; }
                 let ci = next(&mut seed) as usize % palette.len();
+                let brightness = 0.7 + (next(&mut seed) % 300) as f32 / 1000.0; // 0.7–1.0
                 let mut c = palette[ci];
+                c.r *= brightness;
+                c.g *= brightness;
+                c.b *= brightness;
 
                 if node.completed {
                     c = Color::new(c.r * 0.5, c.g * 0.5, c.b * 0.5, 1.0);
@@ -1257,6 +1586,43 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
                 let tx = ox + gx as f32 * tile_px;
                 let ty = oy + gy as f32 * tile_px;
                 draw_rectangle(tx, ty, tile_px, tile_px, c);
+            }
+        }
+
+        // Flash tiles as LLM tokens stream in for this node's level design
+        // design_flashes index = node_idx - 1 (skip start node)
+        if i > 0 {
+            let flash_idx = i - 1;
+            if let Some(flashes) = design_flashes.get(flash_idx) {
+                if !flashes.is_empty() {
+                    let now = get_time();
+                    let filled_positions: Vec<(i32, i32)> = (0..grid_h)
+                        .flat_map(|gy| (0..grid_w).filter_map(move |gx| {
+                            if filled[gy as usize][gx as usize] { Some((gx, gy)) } else { None }
+                        }))
+                        .collect();
+                    if !filled_positions.is_empty() {
+                        for (ti, &flash_time) in flashes.iter().enumerate() {
+                            let age = (now - flash_time) as f32;
+                            let flash = (1.0 - age / 1.5).max(0.0);
+                            if flash <= 0.0 { continue; }
+                            let pos_idx = ((ti as u32).wrapping_mul(2654435761) >> 16) as usize % filled_positions.len();
+                            let &(gx, gy) = &filled_positions[pos_idx];
+                            let tx = ox + gx as f32 * tile_px;
+                            let ty = oy + gy as f32 * tile_px;
+                            // Flash the tile's own palette color, brightened
+                            let ci = ((ti as u32).wrapping_mul(1103515245) >> 16) as usize % palette.len();
+                            let base = palette[ci];
+                            let bright = Color::new(
+                                (base.r * 1.8).min(1.0),
+                                (base.g * 1.8).min(1.0),
+                                (base.b * 1.8).min(1.0),
+                                flash * 0.8,
+                            );
+                            draw_rectangle(tx, ty, tile_px, tile_px, bright);
+                        }
+                    }
+                }
             }
         }
 
@@ -1291,13 +1657,14 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
             draw_circle(nx, ny, tile_px * 1.2, hex_to_color("#44ff44"));
         }
 
-        // Level name below node
-        if node.unlocked {
+        // Level name below node (skip start node)
+        if node.unlocked && i != 0 {
+            let lfont = l_font.unwrap_or(ui_font);
             let ns = 14u16;
             let bot_y = oy + (max_y + 1) as f32 * tile_px;
-            let nw = measure_text(&node.name, Some(ui_font), ns, 1.0).width;
+            let nw = measure_text(&node.name, Some(lfont), ns, 1.0).width;
             draw_text_ex(&node.name, nx - nw / 2.0, bot_y + 16.0, TextParams {
-                font: Some(ui_font), font_size: ns, color: WHITE, ..Default::default()
+                font: Some(lfont), font_size: ns, color: text_col, ..Default::default()
             });
         }
     }
@@ -1331,7 +1698,7 @@ fn draw_death_overlay(font: &Font, bold: &Font, state: &GameState) {
     });
 }
 
-fn draw_victory_overlay(font: &Font, bold: &Font, state: &GameState) {
+fn draw_victory_overlay(font: &Font, bold: &Font, _state: &GameState) {
     let sw = screen_width();
     let sh = screen_height();
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.88));
@@ -1343,12 +1710,13 @@ fn draw_victory_overlay(font: &Font, bold: &Font, state: &GameState) {
         font: Some(bold), font_size: ts, color: hex_to_color("#ffd700"), ..Default::default()
     });
 
-    let summary = format!("Level {}  {} gold  {}", state.player.level, state.player.gold, state.player.weapon);
-    let ss = 18u16;
-    let smw = measure_text(&summary, Some(font), ss, 1.0).width;
-    draw_text_ex(&summary, (sw - smw) / 2.0, sh / 2.0 + 20.0, TextParams {
-        font: Some(font), font_size: ss, color: GRAY, ..Default::default()
-    });
+    if !_state.level.victory_message.is_empty() {
+        let ms = 18u16;
+        let mw = measure_text(&_state.level.victory_message, Some(font), ms, 1.0).width;
+        draw_text_ex(&_state.level.victory_message, (sw - mw) / 2.0, sh / 2.0 + 20.0, TextParams {
+            font: Some(font), font_size: ms, color: GRAY, ..Default::default()
+        });
+    }
 
     let prompt = "Press ENTER to continue";
     let ps = 16u16;
@@ -1653,10 +2021,10 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
             let cy = sy + TILE;
             let r = TILE * 0.85;
             let pct = mon.hp as f32 / mon.max_hp as f32;
-            let base_color = hex_to_color("#ffd700");
+            let base_color = hex_to_color(COLOR_BOSS);
             draw_soft_circle_shadow(cx, cy, r);
-            draw_circle(cx, cy, r + 6.0, Color::new(1.0, 0.84, 0.0, 0.06));
-            draw_circle(cx, cy, r + 3.0, Color::new(1.0, 0.84, 0.0, 0.12));
+            draw_circle(cx, cy, r + 6.0, Color::new(base_color.r, base_color.g, base_color.b, 0.06));
+            draw_circle(cx, cy, r + 3.0, Color::new(base_color.r, base_color.g, base_color.b, 0.12));
             draw_circle(cx, cy, r, Color::new(0.15, 0.15, 0.15, 1.0));
             if pct > 0.0 {
                 draw_pie(cx, cy, r, pct, base_color, mon_facing);
@@ -1666,7 +2034,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
             let cy = sy + TILE / 2.0;
             let r = TILE * 0.4;
             let pct = mon.hp as f32 / mon.max_hp as f32;
-            let base_color = Color::new(0.9, 0.25, 0.25, 1.0);
+            let base_color = hex_to_color(COLOR_MONSTER);
             draw_soft_circle_shadow(cx, cy, r);
             draw_circle(cx, cy, r, Color::new(0.15, 0.15, 0.15, 1.0));
             if pct > 0.0 {
@@ -1680,7 +2048,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     let py = mid_top + (state.player.y - camera_y) as f32 * TILE + TILE / 2.0;
     let has_shield = state.player.armor != "None";
     let has_sword = state.player.weapon != "Fists";
-    let shield_color = Color::new(0.45, 0.55, 0.75, 0.9);
+    let shield_color = { let c = hex_to_color(COLOR_SHIELD); Color::new(c.r, c.g, c.b, 0.9) };
 
     let outer_r = TILE * 0.42;
     let ring_w = 3.0;

@@ -16,7 +16,6 @@ pub struct TileDef {
 pub struct Monster {
     pub id: String,
     pub name: String,
-    pub sprite: String,
     pub x: i32,
     pub y: i32,
     pub hp: i32,
@@ -39,7 +38,6 @@ impl Monster {
 pub struct Item {
     pub id: String,
     pub name: String,
-    pub sprite: String,
     pub x: i32,
     pub y: i32,
     pub item_type: String, // weapon, armor, potion, gold
@@ -64,6 +62,7 @@ pub struct Player {
     pub armor: String,
     pub armor_defense: i32,
     pub potions: i32,
+    pub keys: i32,
     pub floor: i32,
     pub facing: f32, // radians, 0 = right, PI/2 = down
 }
@@ -78,7 +77,7 @@ impl Default for Player {
             gold: 0,
             weapon: "Fists".into(), weapon_damage: 0,
             armor: "None".into(), armor_defense: 0,
-            potions: 1, floor: 1, facing: -std::f32::consts::FRAC_PI_2,
+            potions: 1, keys: 0, floor: 1, facing: -std::f32::consts::FRAC_PI_2,
         }
     }
 }
@@ -102,6 +101,7 @@ pub struct Level {
     pub description: String,
     pub font: String,
     pub scale: Vec<f32>,  // frequencies for footstep notes
+    pub victory_message: String,
     #[serde(skip)]
     pub revealed: HashSet<(i32, i32)>,
     #[serde(skip)]
@@ -121,7 +121,11 @@ pub struct Trap {
 pub struct Overworld {
     pub name: String,
     pub font: String,
+    pub description_font: String,
+    pub label_font: String,
     pub description: String,
+    pub bg_color: String,
+    pub text_color: String,
     pub nodes: Vec<OverworldNode>,
     pub connections: Vec<(usize, usize)>,
     pub current_node: usize,
@@ -156,11 +160,12 @@ impl GameState {
         Self {
             player: Player::default(),
             level: Level {
-                width: 40, height: 24,
+                width: 60, height: 36,
                 tiles: vec![], tile_defs: Default::default(),
                 monsters: vec![], items: vec![], traps: vec![],
                 title: String::new(), description: String::new(), font: String::new(),
-                scale: vec![], revealed: HashSet::new(), visible: HashSet::new(),
+                scale: vec![], victory_message: String::new(),
+                revealed: HashSet::new(), visible: HashSet::new(),
             },
             log: vec![],
             game_over: false,
@@ -285,7 +290,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
         Item {
             id: format!("drop_{}", mon_id),
             name: format!("{} Gold", gold),
-            sprite: "💰".into(), x: mx, y: my,
+            x: mx, y: my,
             item_type: "gold".into(), value: gold,
             description: String::new(),
         }
@@ -293,7 +298,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
         Item {
             id: format!("drop_{}", mon_id),
             name: "Health Potion".into(),
-            sprite: "🧪".into(), x: mx, y: my,
+            x: mx, y: my,
             item_type: "potion".into(), value: 0,
             description: String::new(),
         }
@@ -314,6 +319,23 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
     }
 
     let tile = &state.level.tiles[ny as usize][nx as usize];
+    if tile == "locked_door" {
+        if state.player.keys > 0 {
+            state.player.keys -= 1;
+            // Find the floor tile name to replace with
+            let floor_name = state.level.tile_defs.values()
+                .find(|t| t.walkable)
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "floor".into());
+            state.level.tiles[ny as usize][nx as usize] = floor_name;
+            state.log("You unlock the door! 🔓", "#ffd700");
+            // Don't move into the tile this turn — just unlock
+            return serde_json::json!({"moved": false, "unlocked": true});
+        } else {
+            state.log("The door is locked. Find a key.", "#888");
+            return serde_json::json!({"moved": false});
+        }
+    }
     if let Some(td) = state.level.tile_defs.get(tile) {
         if !td.walkable {
             return serde_json::json!({"moved": false});
@@ -388,27 +410,19 @@ fn pickup_item(state: &mut GameState, item: &Item) {
             state.player.potions += 1;
             state.log(&format!("Picked up {}.", item.name), "#44ff44");
         }
+        "key" => {
+            state.player.keys += 1;
+            state.log("Picked up a key! 🔑", "#ffd700");
+        }
         "weapon" => {
-            if item.value > state.player.weapon_damage {
-                state.log(&format!("Equipped {}! (ATK +{})", item.name, item.value), "#ff8844");
-                state.player.weapon = item.name.clone();
-                state.player.weapon_damage = item.value;
-            } else {
-                let sell = item.value * 2;
-                state.player.gold += sell;
-                state.log(&format!("Sold {} for {} gold.", item.name, sell), "#888");
-            }
+            state.log(&format!("Equipped {}! (ATK +{})", item.name, item.value), "#ff8844");
+            state.player.weapon = item.name.clone();
+            state.player.weapon_damage = item.value;
         }
         "armor" => {
-            if item.value > state.player.armor_defense {
-                state.log(&format!("Equipped {}! (DEF +{})", item.name, item.value), "#4488ff");
-                state.player.armor = item.name.clone();
-                state.player.armor_defense = item.value;
-            } else {
-                let sell = item.value * 2;
-                state.player.gold += sell;
-                state.log(&format!("Sold {} for {} gold.", item.name, sell), "#888");
-            }
+            state.log(&format!("Equipped {}! (DEF +{})", item.name, item.value), "#4488ff");
+            state.player.armor = item.name.clone();
+            state.player.armor_defense = item.value;
         }
         _ => {}
     }
