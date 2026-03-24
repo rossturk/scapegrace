@@ -1256,7 +1256,7 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_c
     let ptw = measure_text(phase_text, Some(font), ps, 1.0).width;
     let tx = (sw - ptw) / 2.0;
     let ty = sh / 2.0 + 20.0;
-    let shadow_layers: [(f32, f32); 4] = [(1.0, 0.30), (2.0, 0.20), (3.5, 0.12), (5.0, 0.05)];
+    let shadow_layers: [(f32, f32); 4] = [(3.0, 0.35), (5.0, 0.25), (8.0, 0.15), (12.0, 0.06)];
     for &(off, alpha) in &shadow_layers {
         draw_text_ex(phase_text, tx + off, ty + off, TextParams {
             font: Some(font), font_size: ps, color: Color::new(0.0, 0.0, 0.0, alpha), ..Default::default()

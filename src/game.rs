@@ -538,24 +538,28 @@ pub fn reveal_around(level: &mut Level, px: i32, py: i32, radius: i32) -> Vec<[i
     level.visible.clear();
 
     // Cast rays to perimeter of vision circle
-    let r2 = radius * radius;
-    let steps = (radius * 8).max(32); // number of rays around the circle
+    let r_f = radius as f32 + 0.5; // slight extra reach for smoother edge
+    let steps = (radius * 16).max(64); // number of rays around the circle
     for i in 0..steps {
         let angle = (i as f32 / steps as f32) * std::f32::consts::TAU;
         let dx = angle.cos();
         let dy = angle.sin();
 
-        // March along the ray
-        let mut x = px as f32 + 0.5;
-        let mut y = py as f32 + 0.5;
-        for _ in 0..=(radius + 1) {
+        // March along the ray, tracking float distance
+        let origin_x = px as f32 + 0.5;
+        let origin_y = py as f32 + 0.5;
+        let mut x = origin_x;
+        let mut y = origin_y;
+        for _ in 0..=(radius + 2) {
             let tx = x as i32;
             let ty = y as i32;
 
             if tx < 0 || ty < 0 || tx >= level.width || ty >= level.height { break; }
 
-            let dist2 = (tx - px) * (tx - px) + (ty - py) * (ty - py);
-            if dist2 > r2 { break; }
+            // Float distance from player center
+            let fdx = x - origin_x;
+            let fdy = y - origin_y;
+            if fdx * fdx + fdy * fdy > r_f * r_f { break; }
 
             // Mark visible and revealed
             level.visible.insert((tx, ty));
