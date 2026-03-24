@@ -12,8 +12,8 @@ use std::sync::mpsc;
 const TILE: f32 = 24.0;
 
 // Entity colors — used in game rendering AND overworld particles
-const COLOR_BOSS: &str = "#ffd700";
-const COLOR_MONSTER: &str = "#e64545";
+const COLOR_BOSS: &str = "#e64545";
+const COLOR_MONSTER: &str = "#ffd700";
 const COLOR_SHIELD: &str = "#7388bf";
 const COLOR_WEAPON: &str = "#ff8844";
 const COLOR_POTION: &str = "#44ff44";
@@ -35,6 +35,15 @@ enum Screen {
     Dead,
     Victory,
     GameWon,
+    Store,
+}
+
+struct StoreItem {
+    name: &'static str,
+    description: &'static str,
+    price: i32,
+    item_type: &'static str,
+    stock: i32,
 }
 
 enum GenMsg {
@@ -168,8 +177,8 @@ async fn main() {
     let sfx = sfx::Sfx::new();
 
     let mut state = GameState::new();
-    let has_key = !std::env::var("OPENROUTER_API_KEY").unwrap_or_default().is_empty();
-    let mut screen = if has_key { Screen::Start } else { Screen::KeyEntry };
+    let has_llm = !gen::llm_api_key().is_empty() || std::env::var("LLM_BASE_URL").is_ok();
+    let mut screen = if has_llm { Screen::Start } else { Screen::KeyEntry };
     let mut key_input = String::new();
     let mut key_error: Option<String> = None;
     let mut key_validating = false;
@@ -191,6 +200,10 @@ async fn main() {
     let mut bg_gen_rx: Option<mpsc::Receiver<GenMsg>> = None;
     let mut player_snapshot: Option<Player> = None;
     let mut level_snapshot: Option<(usize, Level, [i32; 2])> = None; // (node_index, level, start) for retry
+
+    // Store state
+    let mut store_items: Vec<StoreItem> = Vec::new();
+    let mut store_selection: usize = 0;
 
     // Sound test state
     let mut st_root: usize = 0;
@@ -221,7 +234,7 @@ async fn main() {
                         key_validating = false;
                         match result {
                             Ok(()) => {
-                                std::env::set_var("OPENROUTER_API_KEY", key_input.trim());
+                                std::env::set_var("LLM_API_KEY", key_input.trim());
                                 screen = Screen::Start;
                             }
                             Err(e) => {
@@ -505,7 +518,7 @@ async fn main() {
                                     }
                                 }
                                 // Initialize design slots (one per playable node)
-                                let playable = ow.nodes.iter().filter(|n| !n.completed).count();
+                                let playable = ow.nodes.iter().filter(|n| n.node_type == NodeType::Level && !n.completed).count();
                                 level_designs = vec![None; playable];
                                 design_token_flashes = vec![Vec::new(); playable];
                                 // Start background level design generation
@@ -613,7 +626,18 @@ async fn main() {
 
                     if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
                         let node = &ow.nodes[ow.current_node];
-                        if node.unlocked && !node.completed {
+                        // Store nodes are always re-enterable
+                        let can_enter = node.unlocked && (node.node_type == NodeType::Store || !node.completed);
+                        if can_enter && node.node_type == NodeType::Store {
+                            if let Some(s) = &sfx { s.confirm(); }
+                            store_items = vec![
+                                StoreItem { name: "Healing Potion", description: "Heals 15-25% HP", price: 15, item_type: "potion", stock: 3 },
+                                StoreItem { name: "Speed Potion", description: "Monsters frozen 5 turns", price: 25, item_type: "speed_potion", stock: 2 },
+                                StoreItem { name: "Bomb", description: "Area damage to nearby monsters", price: 30, item_type: "bomb", stock: 2 },
+                            ];
+                            store_selection = 0;
+                            screen = Screen::Store;
+                        } else if can_enter {
                             if let Some(s) = &sfx { s.confirm(); }
                             player_snapshot = Some(state.player.clone());
                             // Reuse saved level if retrying after death on same node
@@ -784,6 +808,7 @@ async fn main() {
                         state.player.armor = "None".into();
                         state.player.armor_defense = 0;
                         state.player.hp = state.player.max_hp;
+                        state.player.speed_turns = 0;
                         state.victory = false;
                         state.game_over = false;
                         state.log.clear();
@@ -797,6 +822,35 @@ async fn main() {
                             screen = Screen::Overworld;
                         }
                     }
+                }
+            }
+
+            Screen::Store => {
+                draw_store_screen(&ui_font, &ui_font_bold, &state, &store_items, store_selection);
+
+                if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
+                    if store_selection > 0 { store_selection -= 1; }
+                }
+                if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
+                    if store_selection < store_items.len().saturating_sub(1) { store_selection += 1; }
+                }
+                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
+                    if let Some(item) = store_items.get_mut(store_selection) {
+                        if item.stock > 0 && state.player.gold >= item.price {
+                            state.player.gold -= item.price;
+                            item.stock -= 1;
+                            match item.item_type {
+                                "potion" => state.player.potions += 1,
+                                "speed_potion" => state.player.speed_potions += 1,
+                                "bomb" => state.player.bombs += 1,
+                                _ => {}
+                            }
+                            if let Some(s) = &sfx { s.confirm(); }
+                        }
+                    }
+                }
+                if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q) {
+                    screen = Screen::Overworld;
                 }
             }
 
@@ -846,6 +900,12 @@ fn handle_playing_input(
         use_potion(state);
         if let Some(s) = sfx { s.pickup_potion(&sc); }
     }
+    if is_key_pressed(KeyCode::B) {
+        use_bomb(state);
+    }
+    if is_key_pressed(KeyCode::V) {
+        use_speed_potion(state);
+    }
 
     let mut dx = 0i32;
     let mut dy = 0i32;
@@ -885,7 +945,14 @@ fn handle_playing_input(
         let moved = result["moved"].as_bool().unwrap_or(false);
         let combat = result["combat"].as_bool().unwrap_or(false);
         if moved || combat {
-            monster_turns(state);
+            if state.player.speed_turns > 0 {
+                state.player.speed_turns -= 1;
+                if state.player.speed_turns == 0 {
+                    state.log("Speed wears off.", "#888");
+                }
+            } else {
+                monster_turns(state);
+            }
         }
 
         // Trigger sounds based on what happened
@@ -945,17 +1012,26 @@ fn start_overworld_generation(gen_rx: &mut Option<mpsc::Receiver<GenMsg>>) {
     *gen_rx = Some(rx);
 
     std::thread::spawn(move || {
-        let tx2 = tx.clone();
-        match gen::generate_overworld(
-            |phase| { let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail)); },
-            move || { let _ = tx2.send(GenMsg::Token); },
-        ) {
-            Ok(ow) => {
-                let font_bytes = fetch_google_font(&ow.font);
-                let _ = tx.send(GenMsg::OverworldReady(ow, font_bytes));
-            }
-            Err(e) => {
-                let _ = tx.send(GenMsg::Error(e));
+        let max_retries = 3;
+        for attempt in 1..=max_retries {
+            let tx_tok = tx.clone();
+            match gen::generate_overworld(
+                |phase| { let _ = tx.send(GenMsg::Phase(phase.phase, phase.detail)); },
+                move || { let _ = tx_tok.send(GenMsg::Token); },
+            ) {
+                Ok(ow) => {
+                    let font_bytes = fetch_google_font(&ow.font);
+                    let _ = tx.send(GenMsg::OverworldReady(ow, font_bytes));
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("Overworld attempt {}/{} failed: {}", attempt, max_retries, e);
+                    if attempt == max_retries {
+                        let _ = tx.send(GenMsg::Error(e));
+                    } else {
+                        let _ = tx.send(GenMsg::Phase("retrying overworld".into(), format!("attempt {}/{}", attempt + 1, max_retries)));
+                    }
+                }
             }
         }
     });
@@ -968,9 +1044,9 @@ fn start_background_designs(
     let (tx, rx) = mpsc::channel();
     *bg_rx = Some(rx);
 
-    // Collect playable node configs
+    // Collect playable Level node configs (skip Start and Store)
     let configs: Vec<(usize, gen::LevelConfig)> = ow.nodes.iter().enumerate()
-        .filter(|(_, n)| !n.completed)
+        .filter(|(_, n)| !n.completed && n.node_type == NodeType::Level)
         .enumerate()
         .map(|(design_idx, (node_idx, node))| {
             (design_idx, gen::LevelConfig {
@@ -989,8 +1065,8 @@ fn start_background_designs(
     let campaign_desc = ow.description.clone();
 
     std::thread::spawn(move || {
-        let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
-        let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
+        let api_key = gen::llm_api_key();
+        let model = gen::llm_model();
         let client = reqwest::blocking::Client::new();
 
         for (design_idx, config) in &configs {
@@ -1034,8 +1110,10 @@ fn start_level_generation(
         floor: ow.current_node as i32 + 1,
     };
 
-    // Design index is node_idx - 1 because node 0 is the "Start" node (not a level)
-    let design_idx = node_idx.saturating_sub(1);
+    // Design index = count of Level nodes before this one (skip Start/Store)
+    let design_idx = ow.nodes[..node_idx].iter()
+        .filter(|n| n.node_type == NodeType::Level && !n.completed)
+        .count();
     if let Some(Some(design)) = designs.get(design_idx) {
         // Use pre-generated design — no LLM call needed
         let design = design.clone();
@@ -1107,20 +1185,35 @@ fn fetch_google_font(font_name: &str) -> Option<Vec<u8>> {
 }
 
 fn validate_api_key(key: &str) -> Result<(), String> {
+    let base_url = gen::llm_base_url();
     let client = reqwest::blocking::Client::new();
-    // /auth/key actually checks if the key is valid
-    let resp = client.get("https://openrouter.ai/api/v1/auth/key")
-        .header("Authorization", format!("Bearer {}", key))
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .map_err(|e| format!("Could not reach the gate: {}", e))?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
-        Err("The passphrase was not recognized.".into())
+    if base_url.contains("openrouter.ai") {
+        let resp = client.get(format!("{}/auth/key", base_url.trim_end_matches('/')))
+            .header("Authorization", format!("Bearer {}", key))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .map_err(|e| format!("Could not reach the gate: {}", e))?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
+            Err("The passphrase was not recognized.".into())
+        } else {
+            Err(format!("The gate refused entry. ({})", resp.status()))
+        }
     } else {
-        Err(format!("The gate refused entry. ({})", resp.status()))
+        // For Ollama and other local providers, just check the models endpoint is reachable
+        let resp = client.get(format!("{}/models", base_url.trim_end_matches('/')))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .map_err(|e| format!("Could not reach LLM server: {}", e))?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("LLM server responded with status {}", resp.status()))
+        }
     }
 }
 
@@ -1572,17 +1665,22 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
 
         if i == 0 {
             // Start node: rounded rectangle shape
-            //   .xxx.
-            //   xxxxx
-            //   xxxxx
-            //   xxxxx
-            //   .xxx.
             let pattern: [[bool; 5]; 5] = [
                 [false, true,  true,  true,  false],
                 [true,  true,  true,  true,  true],
                 [true,  true,  true,  true,  true],
                 [true,  true,  true,  true,  true],
                 [false, true,  true,  true,  false],
+            ];
+            for py in 0..5 { for px in 0..5 { filled[py + 1][px + 1] = pattern[py][px]; } }
+        } else if node.node_type == NodeType::Store {
+            // Store node: coin/diamond shape
+            let pattern: [[bool; 5]; 5] = [
+                [false, false, true,  false, false],
+                [false, true,  true,  true,  false],
+                [true,  true,  true,  true,  true ],
+                [false, true,  true,  true,  false],
+                [false, false, true,  false, false],
             ];
             for py in 0..5 { for px in 0..5 { filled[py + 1][px + 1] = pattern[py][px]; } }
         } else {
@@ -1698,6 +1796,54 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
                             );
                             draw_rectangle(tx, ty, tile_px, tile_px, bright);
                         }
+                    }
+                }
+            }
+        }
+
+        // Start node: green outline
+        if node.node_type == NodeType::Start {
+            let green = hex_to_color("#44ff44");
+            for gy in 0..grid_h {
+                for gx in 0..grid_w {
+                    if !filled[gy as usize][gx as usize] { continue; }
+                    let tx = ox + gx as f32 * tile_px;
+                    let ty = oy + gy as f32 * tile_px;
+                    if gx == 0 || !filled[gy as usize][(gx - 1) as usize] {
+                        draw_line(tx, ty, tx, ty + tile_px, 2.0, green);
+                    }
+                    if gx == grid_w - 1 || !filled[gy as usize][(gx + 1) as usize] {
+                        draw_line(tx + tile_px, ty, tx + tile_px, ty + tile_px, 2.0, green);
+                    }
+                    if gy == 0 || !filled[(gy - 1) as usize][gx as usize] {
+                        draw_line(tx, ty, tx + tile_px, ty, 2.0, green);
+                    }
+                    if gy == grid_h - 1 || !filled[(gy + 1) as usize][gx as usize] {
+                        draw_line(tx, ty + tile_px, tx + tile_px, ty + tile_px, 2.0, green);
+                    }
+                }
+            }
+        }
+
+        // Store node: gold outline
+        if node.node_type == NodeType::Store {
+            let gold = hex_to_color("#ffd700");
+            for gy in 0..grid_h {
+                for gx in 0..grid_w {
+                    if !filled[gy as usize][gx as usize] { continue; }
+                    let tx = ox + gx as f32 * tile_px;
+                    let ty = oy + gy as f32 * tile_px;
+                    if gx == 0 || !filled[gy as usize][(gx - 1) as usize] {
+                        draw_line(tx, ty, tx, ty + tile_px, 2.0, gold);
+                    }
+                    if gx == grid_w - 1 || !filled[gy as usize][(gx + 1) as usize] {
+                        draw_line(tx + tile_px, ty, tx + tile_px, ty + tile_px, 2.0, gold);
+                    }
+                    if gy == 0 || !filled[(gy - 1) as usize][gx as usize] {
+                        draw_line(tx, ty, tx + tile_px, ty, 2.0, gold);
+                    }
+                    if gy == grid_h - 1 || !filled[(gy + 1) as usize][gx as usize] {
+                        draw_line(tx, ty + tile_px, tx + tile_px, ty + tile_px, 2.0, gold);
                     }
                 }
             }
@@ -2303,21 +2449,27 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         0.0
     };
     let stats = format!(
-        "HP {}/{}  LVL {}  ATK {}  DEF {}  {} / {}  ${}  P{}",
+        "HP {}/{}  LVL {}  ATK {}  DEF {}  {} / {}  ${}  P{}  S{}  B{}",
         state.player.hp, state.player.max_hp, state.player.level,
         state.player.attack + state.player.weapon_damage,
         state.player.defense + state.player.armor_defense,
         state.player.weapon, state.player.armor,
         state.player.gold, state.player.potions,
+        state.player.speed_potions, state.player.bombs,
     );
     draw_text_ex(&stats, 16.0, bot_y + 19.0, TextParams {
         font: Some(ui_font), font_size: 14, color: hp_bar_color(hp_pct), ..Default::default()
     });
 
-    let keys = "WASD: move  Bump: attack  H: potion";
-    let kw = measure_text(keys, Some(ui_font), 13, 1.0).width;
-    draw_text_ex(keys, sw - kw - 16.0, bot_y + 19.0, TextParams {
-        font: Some(ui_font), font_size: 13, color: WHITE, ..Default::default()
+    let mut keys_str = "WASD: move  Bump: attack  H: potion  V: speed  B: bomb".to_string();
+    if state.player.speed_turns > 0 {
+        keys_str = format!("FAST ({} turns)  {}", state.player.speed_turns, keys_str);
+    }
+    let kw = measure_text(&keys_str, Some(ui_font), 13, 1.0).width;
+    draw_text_ex(&keys_str, sw - kw - 16.0, bot_y + 19.0, TextParams {
+        font: Some(ui_font), font_size: 13,
+        color: if state.player.speed_turns > 0 { hex_to_color("#44ddff") } else { WHITE },
+        ..Default::default()
     });
 }
 
@@ -2345,4 +2497,86 @@ fn hp_bar_color(pct: f32) -> Color {
     } else {
         hex_to_color("#ef5350")
     }
+}
+
+fn draw_store_screen(font: &Font, bold: &Font, state: &GameState, items: &[StoreItem], selection: usize) {
+    let sw = screen_width();
+    let sh = screen_height();
+    clear_background(Color::new(0.05, 0.04, 0.02, 1.0));
+
+    // Title
+    let title = "STORE";
+    let ts = 48u16;
+    let tw = measure_text(title, Some(bold), ts, 1.0).width;
+    draw_text_ex(title, (sw - tw) / 2.0, sh * 0.12, TextParams {
+        font: Some(bold), font_size: ts, color: hex_to_color("#ffd700"), ..Default::default()
+    });
+
+    // Gold display
+    let gold_text = format!("Gold: {}", state.player.gold);
+    let gs = 20u16;
+    let gw = measure_text(&gold_text, Some(font), gs, 1.0).width;
+    draw_text_ex(&gold_text, (sw - gw) / 2.0, sh * 0.19, TextParams {
+        font: Some(font), font_size: gs, color: hex_to_color("#ffd700"), ..Default::default()
+    });
+
+    // Inventory summary
+    let inv_text = format!("Potions: {}  Speed: {}  Bombs: {}",
+        state.player.potions, state.player.speed_potions, state.player.bombs);
+    let iw = measure_text(&inv_text, Some(font), 16, 1.0).width;
+    draw_text_ex(&inv_text, (sw - iw) / 2.0, sh * 0.24, TextParams {
+        font: Some(font), font_size: 16, color: Color::new(0.6, 0.6, 0.6, 1.0), ..Default::default()
+    });
+
+    // Items
+    let item_x = sw * 0.25;
+    let mut y = sh * 0.35;
+    let line_h = 50.0;
+
+    for (i, item) in items.iter().enumerate() {
+        let selected = i == selection;
+        let can_buy = item.stock > 0 && state.player.gold >= item.price;
+
+        // Selection indicator
+        if selected {
+            draw_rectangle(item_x - 15.0, y - 18.0, sw * 0.5 + 30.0, line_h - 6.0,
+                Color::new(0.15, 0.12, 0.05, 1.0));
+            draw_text_ex(">", item_x - 12.0, y + 5.0, TextParams {
+                font: Some(bold), font_size: 20, color: hex_to_color("#ffd700"), ..Default::default()
+            });
+        }
+
+        let name_color = if can_buy {
+            if selected { hex_to_color("#ffffff") } else { hex_to_color("#cccccc") }
+        } else {
+            Color::new(0.4, 0.4, 0.4, 1.0)
+        };
+
+        // Name
+        draw_text_ex(item.name, item_x + 5.0, y + 5.0, TextParams {
+            font: Some(bold), font_size: 20, color: name_color, ..Default::default()
+        });
+
+        // Description
+        draw_text_ex(item.description, item_x + 5.0, y + 22.0, TextParams {
+            font: Some(font), font_size: 14, color: Color::new(0.5, 0.5, 0.5, 1.0), ..Default::default()
+        });
+
+        // Price and stock (right-aligned)
+        let price_text = format!("{}g  x{}", item.price, item.stock);
+        let price_color = if can_buy { hex_to_color("#ffd700") } else { Color::new(0.4, 0.3, 0.1, 1.0) };
+        let pw = measure_text(&price_text, Some(font), 18, 1.0).width;
+        draw_text_ex(&price_text, item_x + sw * 0.5 - pw, y + 5.0, TextParams {
+            font: Some(font), font_size: 18, color: price_color, ..Default::default()
+        });
+
+        y += line_h;
+    }
+
+    // Controls
+    let help = "[ENTER] Buy   [ESC] Leave";
+    let hw = measure_text(help, Some(font), 16, 1.0).width;
+    draw_text_ex(help, (sw - hw) / 2.0, sh * 0.88, TextParams {
+        font: Some(font), font_size: 16, color: Color::new(0.4, 0.4, 0.4, 1.0), ..Default::default()
+    });
 }

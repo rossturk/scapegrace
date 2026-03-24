@@ -4,6 +4,13 @@ use std::collections::HashSet;
 
 // ── Types ──
 
+#[derive(Clone, PartialEq)]
+pub enum NodeType {
+    Start,
+    Level,
+    Store,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TileDef {
     pub name: String,
@@ -65,6 +72,9 @@ pub struct Player {
     pub keys: i32,
     pub floor: i32,
     pub facing: f32, // radians, 0 = right, PI/2 = down
+    pub bombs: i32,
+    pub speed_potions: i32,
+    pub speed_turns: i32,
 }
 
 impl Default for Player {
@@ -78,6 +88,7 @@ impl Default for Player {
             weapon: "Fists".into(), weapon_damage: 0,
             armor: "None".into(), armor_defense: 0,
             potions: 1, keys: 0, floor: 1, facing: -std::f32::consts::FRAC_PI_2,
+            bombs: 0, speed_potions: 0, speed_turns: 0,
         }
     }
 }
@@ -145,6 +156,7 @@ pub struct OverworldNode {
     pub completed: bool,
     pub unlocked: bool,
     pub is_final: bool,
+    pub node_type: NodeType,
 }
 
 pub struct GameState {
@@ -440,6 +452,64 @@ pub fn use_potion(state: &mut GameState) -> bool {
     state.player.potions -= 1;
     state.player.hp = (state.player.hp + heal).min(state.player.max_hp);
     state.log(&format!("You drink a potion and heal {} HP. ({} left)", heal, state.player.potions), "#44ff44");
+    true
+}
+
+pub fn use_bomb(state: &mut GameState) -> bool {
+    if state.player.bombs <= 0 {
+        state.log("No bombs!", "#888");
+        return false;
+    }
+    state.player.bombs -= 1;
+    let mut rng = rand::thread_rng();
+    let px = state.player.x;
+    let py = state.player.y;
+    let radius = 3;
+    let mut hit_count = 0;
+
+    state.log("You throw a bomb!", "#ff6600");
+
+    for i in 0..state.level.monsters.len() {
+        if !state.level.monsters[i].is_alive() { continue; }
+        let dx = (state.level.monsters[i].x - px).abs();
+        let dy = (state.level.monsters[i].y - py).abs();
+        if dx <= radius && dy <= radius {
+            let damage = rng.gen_range(8..=15);
+            state.level.monsters[i].hp -= damage;
+            let mon_name = state.level.monsters[i].name.clone();
+            state.log(&format!("  Bomb hits {} for {} damage!", mon_name, damage), "#ff6600");
+            hit_count += 1;
+
+            if state.level.monsters[i].hp <= 0 {
+                let xp = state.level.monsters[i].xp_value;
+                let is_boss = state.level.monsters[i].is_boss;
+                state.log(&format!("  {} destroyed! (+{} XP)", mon_name, xp), "#44ff44");
+                state.player.xp += xp;
+                check_level_up(state);
+                maybe_drop_loot(state, i);
+                if is_boss {
+                    state.log("THE BOSS IS SLAIN!", "#ffd700");
+                    state.victory = true;
+                }
+            }
+        }
+    }
+
+    if hit_count == 0 {
+        state.log("  ...but nothing was in range.", "#888");
+    }
+    state.log(&format!("({} bombs left)", state.player.bombs), "#888");
+    true
+}
+
+pub fn use_speed_potion(state: &mut GameState) -> bool {
+    if state.player.speed_potions <= 0 {
+        state.log("No speed potions!", "#888");
+        return false;
+    }
+    state.player.speed_potions -= 1;
+    state.player.speed_turns = 5;
+    state.log(&format!("You drink a speed potion! Monsters frozen for 5 turns. ({} left)", state.player.speed_potions), "#44ddff");
     true
 }
 

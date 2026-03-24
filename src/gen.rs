@@ -83,13 +83,38 @@ pub struct ItemTemplateRaw {
     pub description: Option<String>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Clone)]
 #[allow(dead_code)]
 pub struct TrapRaw {
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub damage: Option<i32>,
     pub name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for TrapRaw {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de;
+        struct TrapVisitor;
+        impl<'de> de::Visitor<'de> for TrapVisitor {
+            type Value = TrapRaw;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a trap object or a trap name string")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<TrapRaw, E> {
+                Ok(TrapRaw { x: None, y: None, damage: None, name: Some(v.to_string()) })
+            }
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<TrapRaw, M::Error> {
+                #[derive(Deserialize)]
+                struct TrapObj {
+                    x: Option<i32>, y: Option<i32>, damage: Option<i32>, name: Option<String>,
+                }
+                let obj = TrapObj::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(TrapRaw { x: obj.x, y: obj.y, damage: obj.damage, name: obj.name })
+            }
+        }
+        deserializer.deserialize_any(TrapVisitor)
+    }
 }
 
 // ── Overworld result ──
@@ -115,8 +140,6 @@ pub struct OverworldResult {
     pub bg_color: Option<String>,
     pub text_color: Option<String>,
     pub levels: Vec<OverworldNodeRaw>,
-    pub connections: Vec<(usize, usize)>,
-    pub final_level: Option<usize>,
 }
 
 /// Config passed from overworld node to level generation
@@ -140,6 +163,25 @@ pub struct PhaseUpdate {
 
 // ── LLM caller ──
 
+pub fn llm_base_url() -> String {
+    std::env::var("LLM_BASE_URL").unwrap_or_else(|_|
+        std::env::var("OPENROUTER_API_KEY").map(|_| "https://openrouter.ai/api/v1".to_string())
+            .unwrap_or_else(|_| "http://localhost:11434/v1".to_string())
+    )
+}
+
+pub fn llm_api_key() -> String {
+    std::env::var("LLM_API_KEY")
+        .or_else(|_| std::env::var("OPENROUTER_API_KEY"))
+        .unwrap_or_default()
+}
+
+pub fn llm_model() -> String {
+    std::env::var("LLM_MODEL")
+        .or_else(|_| std::env::var("ALLMUDDY_MODEL"))
+        .unwrap_or_else(|_| "anthropic/claude-sonnet-4".into())
+}
+
 fn call_llm_streaming<F>(
     client: &reqwest::blocking::Client, api_key: &str, model: &str, prompt: &str,
     on_token: Option<F>,
@@ -148,13 +190,22 @@ where F: Fn()
 {
     use std::io::BufRead;
 
-    let resp = client.post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
+    let base_url = llm_base_url();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    let mut req = client.post(&url)
+        .header("Content-Type", "application/json");
+
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let resp = req
         .json(&serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 1.0,
+            "temperature": 0.9,
+            "max_tokens": 4096,
             "stream": on_token.is_some(),
         }))
         .timeout(std::time::Duration::from_secs(120))
@@ -242,84 +293,82 @@ fn expand_tile_defs(slim: &[TileDefSlim], palette: &[String]) -> HashMap<String,
 
 // ── Overworld layout ──
 
-/// Compute node positions from the DAG structure using layered layout.
-/// BFS from node 0 assigns depth (x-layer), nodes at same depth spread vertically.
-fn layout_overworld(ow: &mut crate::game::Overworld) {
+/// Position nodes for the linear-with-branch topology.
+/// Main path follows a gentle sine wave, branch drops below the branch point.
+/// `main_path_len` is passed from generate_overworld so layout knows exactly which
+/// indices are on the main path (0..main_path_len) vs branch (main_path_len..).
+fn layout_overworld(ow: &mut crate::game::Overworld, main_path_len: usize) {
     use rand::Rng;
     let mut rng = rand::thread_rng();
 
-    // Prepend a "Start" node connected to node 0 (which becomes node 1)
-    let start_node = crate::game::OverworldNode {
-        name: "Start".into(),
-        font: ow.font.clone(),
-        description: String::new(),
-        theme: String::new(),
-        palette: vec!["#888888".into()],
-        budget: 0,
-        x: 0.0, y: 0.5,
-        completed: true,
-        unlocked: true,
-        is_final: false,
+    let max_depth = main_path_len.max(2) - 1;
+
+    // Pick a random curve style for the main path
+    let curve: u32 = rng.gen_range(0..5);
+    let amplitude = rng.gen_range(0.12..=0.22);
+    let y_center = rng.gen_range(0.38..=0.52);
+    // Branch goes opposite the curve direction at the branch point
+    let branch_sign: f32;
+
+    // Curve function: maps t (0..1) to a y-offset from center
+    let curve_fn = |t: f32| -> f32 {
+        match curve {
+            0 => (t * std::f32::consts::PI).sin() * amplitude,             // arc up
+            1 => -(t * std::f32::consts::PI).sin() * amplitude,            // arc down
+            2 => (t * std::f32::consts::TAU).sin() * amplitude * 0.7,      // S-curve
+            3 => -(t * std::f32::consts::TAU).sin() * amplitude * 0.7,     // reverse S-curve
+            _ => (t * 0.8 - 0.4) * amplitude * 2.0,                        // diagonal
+        }
     };
-    ow.nodes.insert(0, start_node);
-    // Shift all existing connection indices by 1 and add start→old node 0
-    ow.connections = ow.connections.iter().map(|&(a, b)| (a + 1, b + 1)).collect();
-    ow.connections.push((0, 1));
-    // Unlock old node 0 (now index 1)
-    ow.nodes[1].unlocked = true;
 
-    let n = ow.nodes.len();
+    // Determine branch direction: opposite of the curve's tendency at the midpoint
+    let mid_offset = curve_fn(0.5);
+    branch_sign = if mid_offset > 0.0 { 1.0 } else { -1.0 }; // branch away from the curve
 
-    // BFS from node 0 to assign depth
-    let mut depth = vec![-1i32; n];
-    depth[0] = 0;
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(0);
-    while let Some(node) = queue.pop_front() {
-        for &(a, b) in &ow.connections {
-            let neighbor = if a == node { b } else if b == node { a } else { continue };
-            if neighbor < n && depth[neighbor] == -1 {
-                depth[neighbor] = depth[node] + 1;
-                queue.push_back(neighbor);
-            }
-        }
+    // Main path
+    for i in 0..main_path_len {
+        let t = i as f32 / max_depth as f32;
+        let wave = curve_fn(t);
+        let jitter_x = if i == 0 { 0.0 } else { rng.gen_range(-0.02..=0.02) };
+        let jitter_y = if i == 0 { 0.0 } else { rng.gen_range(-0.03..=0.03) };
+        ow.nodes[i].x = (t + jitter_x).clamp(0.02, 0.98);
+        ow.nodes[i].y = (y_center - wave + jitter_y).clamp(0.08, 0.92);
     }
 
-    for d in &mut depth {
-        if *d == -1 { *d = 0; }
+    // Branch nodes: offset perpendicular to the curve, away from main path
+    // Find the branch point index and the next main node's x for spacing
+    let bp_idx = ow.connections.iter()
+        .find(|&&(a, b)| (a < main_path_len && b >= main_path_len) || (b < main_path_len && a >= main_path_len))
+        .map(|&(a, b)| if a < main_path_len { a } else { b })
+        .unwrap_or(1);
+    let bp_x = ow.nodes[bp_idx].x;
+    let bp_y = ow.nodes[bp_idx].y;
+    // Branch x: midway toward the neighbor with more room (left or right)
+    let prev_x = if bp_idx > 0 { ow.nodes[bp_idx - 1].x } else { 0.0 };
+    let next_x = if bp_idx + 1 < main_path_len { ow.nodes[bp_idx + 1].x } else { 1.0 };
+    let gap_left = bp_x - prev_x;
+    let gap_right = next_x - bp_x;
+    let base_branch_x = if gap_left > gap_right {
+        (prev_x + bp_x) / 2.0  // more room to the left
+    } else {
+        (bp_x + next_x) / 2.0  // more room to the right
+    };
+
+    for i in main_path_len..ow.nodes.len() {
+        let depth_in_branch = i - main_path_len;
+        let jitter_x = rng.gen_range(-0.02..=0.02);
+        let jitter_y = rng.gen_range(-0.02..=0.02);
+        ow.nodes[i].x = (base_branch_x + 0.10 * depth_in_branch as f32 + jitter_x).clamp(0.02, 0.98);
+        ow.nodes[i].y = (bp_y + branch_sign * (0.25 + 0.15 * depth_in_branch as f32) + jitter_y).clamp(0.08, 0.92);
     }
 
-    let max_depth = *depth.iter().max().unwrap_or(&0);
-    if max_depth == 0 {
-        for (i, node) in ow.nodes.iter_mut().enumerate() {
-            node.x = i as f32 / (n.max(2) - 1) as f32;
-            node.y = 0.5;
-        }
-        return;
-    }
-
-    // Group nodes by depth layer
-    let mut layers: Vec<Vec<usize>> = vec![Vec::new(); (max_depth + 1) as usize];
-    for (i, &d) in depth.iter().enumerate() {
-        layers[d as usize].push(i);
-    }
-
-    // Assign positions: x from depth with jitter, y spread within layer with jitter
-    for (layer_idx, layer) in layers.iter().enumerate() {
-        let base_x = layer_idx as f32 / max_depth as f32;
-        let count = layer.len();
-        for (slot, &node_idx) in layer.iter().enumerate() {
-            let base_y = if count == 1 {
-                0.5
-            } else {
-                0.15 + (slot as f32 / (count - 1) as f32) * 0.7
-            };
-            // Add organic jitter (but not to start node)
-            let jitter_x = if node_idx == 0 { 0.0 } else { rng.gen_range(-0.04..=0.04) };
-            let jitter_y = if node_idx == 0 { 0.0 } else { rng.gen_range(-0.06..=0.06) };
-            ow.nodes[node_idx].x = (base_x + jitter_x).clamp(0.0, 1.0);
-            ow.nodes[node_idx].y = (base_y + jitter_y).clamp(0.05, 0.95);
-        }
+    // Vertically center the entire graph
+    let min_y = ow.nodes.iter().map(|n| n.y).fold(f32::MAX, f32::min);
+    let max_y = ow.nodes.iter().map(|n| n.y).fold(f32::MIN, f32::max);
+    let mid_y = (min_y + max_y) / 2.0;
+    let shift = 0.5 - mid_y;
+    for node in &mut ow.nodes {
+        node.y = (node.y + shift).clamp(0.08, 0.92);
     }
 }
 
@@ -331,8 +380,11 @@ pub fn generate_overworld<F, T>(
 ) -> Result<crate::game::Overworld, String>
 where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
 {
-    let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
-    let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
+    use crate::game::{NodeType, OverworldNode};
+    use rand::Rng;
+
+    let api_key = llm_api_key();
+    let model = llm_model();
     let client = reqwest::blocking::Client::new();
 
     let prompt = build_overworld_prompt();
@@ -340,29 +392,108 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
     let result: OverworldResult = serde_json::from_str(&content)
         .map_err(|e| format!("Overworld parse error: {}\n\nRaw: {}", e, &content[..content.len().min(500)]))?;
 
-    if result.levels.len() < 5 || result.levels.len() > 8 {
-        return Err(format!("Expected 5-8 levels, got {}", result.levels.len()));
+    if result.levels.len() < 5 || result.levels.len() > 7 {
+        return Err(format!("Expected 5-7 levels, got {}", result.levels.len()));
     }
 
     let ow_font = result.font.ok_or("LLM did not provide an overworld font")?;
 
-    let final_level = result.final_level.unwrap_or(result.levels.len() - 1);
-    // Build nodes (positions computed below by layout algorithm)
-    let nodes: Vec<crate::game::OverworldNode> = result.levels.into_iter().enumerate().map(|(i, n)| {
-        crate::game::OverworldNode {
-            name: n.name,
-            font: n.font.unwrap_or_else(|| ow_font.clone()),
-            description: n.description,
-            theme: n.theme,
-            palette: n.palette.or_else(|| n.color.map(|c| vec![c])).unwrap_or_else(|| vec!["#888888".into()]),
-            budget: n.budget,
-            x: 0.0,
-            y: 0.0,
+    // Split: first N-1 levels = main path, last level = optional branch
+    let n = result.levels.len();
+    let main_levels = &result.levels[..n - 1];
+    let branch_level = &result.levels[n - 1];
+
+    // Build nodes array:
+    // [0: Start] [1..main_count: main path levels] [main_count: optional] [main_count+1: store]
+    let mut nodes: Vec<OverworldNode> = Vec::new();
+
+    // Start node
+    nodes.push(OverworldNode {
+        name: "Start".into(),
+        font: ow_font.clone(),
+        description: String::new(),
+        theme: String::new(),
+        palette: vec!["#888888".into()],
+        budget: 0,
+        x: 0.0, y: 0.5,
+        completed: true,
+        unlocked: true,
+        is_final: false,
+        node_type: NodeType::Start,
+    });
+
+    // Main path levels (last one is the boss)
+    let main_count_levels = main_levels.len();
+    for (i, lv) in main_levels.iter().enumerate() {
+        nodes.push(OverworldNode {
+            name: lv.name.clone(),
+            font: lv.font.clone().unwrap_or_else(|| ow_font.clone()),
+            description: lv.description.clone(),
+            theme: lv.theme.clone(),
+            palette: lv.palette.clone().or_else(|| lv.color.clone().map(|c| vec![c])).unwrap_or_else(|| vec!["#888888".into()]),
+            budget: lv.budget,
+            x: 0.0, y: 0.0,
             completed: false,
-            unlocked: i == 0,
-            is_final: i == final_level,
-        }
-    }).collect();
+            unlocked: i == 0, // first main path level unlocked
+            is_final: i == main_count_levels - 1,
+            node_type: NodeType::Level,
+        });
+    }
+
+    let main_path_end = nodes.len(); // index after last main path node
+    let optional_idx = main_path_end;
+    let store_idx = main_path_end + 1;
+
+    // Optional branch level
+    nodes.push(OverworldNode {
+        name: branch_level.name.clone(),
+        font: branch_level.font.clone().unwrap_or_else(|| ow_font.clone()),
+        description: branch_level.description.clone(),
+        theme: branch_level.theme.clone(),
+        palette: branch_level.palette.clone().or_else(|| branch_level.color.clone().map(|c| vec![c])).unwrap_or_else(|| vec!["#888888".into()]),
+        budget: branch_level.budget,
+        x: 0.0, y: 0.0,
+        completed: false,
+        unlocked: false,
+        is_final: false,
+        node_type: NodeType::Level,
+    });
+
+    // Store node
+    nodes.push(OverworldNode {
+        name: "Store".into(),
+        font: ow_font.clone(),
+        description: "A merchant with rare supplies.".into(),
+        theme: String::new(),
+        palette: vec!["#ffd700".into(), "#aa8800".into(), "#665500".into()],
+        budget: 0,
+        x: 0.0, y: 0.0,
+        completed: false,
+        unlocked: false,
+        is_final: false,
+        node_type: NodeType::Store,
+    });
+
+    // Build connections: main chain + branch
+    let mut connections: Vec<(usize, usize)> = Vec::new();
+
+    // Main path: Start(0) → L1(1) → L2(2) → ... → Boss(main_path_end-1)
+    for i in 0..main_path_end - 1 {
+        connections.push((i, i + 1));
+    }
+
+    // Branch: random mid-path node → optional → store
+    let mut rng = rand::thread_rng();
+    // Branch off a main path level (indices 1..main_path_end-1, not Start or Boss)
+    let branch_point = if main_path_end > 3 {
+        rng.gen_range(1..main_path_end - 1)
+    } else {
+        1
+    };
+    connections.push((branch_point, optional_idx));
+    connections.push((optional_idx, store_idx));
+
+    eprintln!("Topology: {} main path nodes, branch at index {} → optional → store", main_path_end, branch_point);
 
     let desc_font = result.description_font.unwrap_or_else(|| ow_font.clone());
     let label_font = result.label_font.unwrap_or_else(|| ow_font.clone());
@@ -377,12 +508,12 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
         description: result.description,
         bg_color,
         text_color,
-        connections: result.connections,
+        connections,
         current_node: 0,
         nodes,
     };
 
-    layout_overworld(&mut overworld);
+    layout_overworld(&mut overworld, main_path_end);
 
     on_phase(PhaseUpdate {
         phase: "overworld designed".into(),
@@ -421,8 +552,8 @@ pub fn generate_level<F, T>(
 ) -> Result<(Level, [i32; 2], i32), String>
 where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
 {
-    let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
-    let model = std::env::var("ALLMUDDY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4".into());
+    let api_key = llm_api_key();
+    let model = llm_model();
     let client = reqwest::blocking::Client::new();
     let theme = &config.theme;
     let floor = config.floor;
@@ -493,7 +624,7 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, ti
     p.push_str("- traps: array of {name}. The engine decides count and damage from budget.\n");
     p.push_str("- mode: {root, scale} — a musical mode for the level's ambient sound. root is a note name (e.g. \"C\", \"F#\", \"Bb\"), scale is one of: \"ionian\", \"dorian\", \"phrygian\", \"lydian\", \"mixolydian\", \"aeolian\", \"locrian\", \"pentatonic_major\", \"pentatonic_minor\", \"blues\", \"whole_tone\", \"chromatic\". Choose a mode that fits the level's mood.\n");
     p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n- defeat_message: one short atmospheric sentence shown when the player dies in this level\n\n");
-    p.push_str("Return ONLY valid JSON.");
+    p.push_str("Respond in ENGLISH ONLY. Return ONLY valid JSON, no commentary.");
     p
 }
 
@@ -515,7 +646,7 @@ pub fn build_single_level_design_prompt(
     p.push_str("- traps: array of {name}. The engine decides count and damage from budget.\n");
     p.push_str("- mode: {root, scale} — musical mode. root = note name, scale = one of: ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian\n");
     p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n- defeat_message: one short atmospheric sentence shown when the player dies in this level\n\n");
-    p.push_str("Return ONLY valid JSON.");
+    p.push_str("Respond in ENGLISH ONLY. Return ONLY valid JSON, no commentary.");
     p
 }
 
@@ -530,34 +661,32 @@ pub fn call_llm_for_design<F: Fn()>(
 
 fn build_overworld_prompt() -> String {
     let mut p = String::new();
-    p.push_str("Design a CAMPAIGN OVERWORLD for a roguelike game (like a Super Mario World map).\n\n");
+    p.push_str("Design a CAMPAIGN for a roguelike game.\n\n");
     p.push_str("Be wildly creative with the setting. Invent something original and unexpected — the weirder the better.\n");
     p.push_str("Think more like: a sentient library that reshelves itself, a civilization built inside frozen music, a war between rival paint colors, a detective agency run by ghosts, an opera house where the architecture argues with the performers, a postal service that delivers to parallel dimensions, a courtroom where gravity is on trial.\n\n");
     p.push_str("Return a JSON object with:\n");
     p.push_str("- name: campaign name (2-4 words, evocative)\n");
-    p.push_str("- font: a Google Fonts font family for the overworld title\n");
+    p.push_str("- font: a Google Fonts font family for the campaign title\n");
     p.push_str("- description_font: a Google Fonts font family for the description text (readable, elegant)\n");
     p.push_str("- label_font: a Google Fonts font family for level name labels on the map\n");
     p.push_str("- description: one atmospheric sentence about the campaign\n");
     p.push_str("- bg_color: hex background color for the overworld screen (e.g. '#0a0a0a', '#1a0a2e')\n");
     p.push_str("- text_color: hex color for title and label text — must have strong contrast against bg_color\n");
-    p.push_str("- levels: array of 5-8 level nodes, each with:\n");
+    p.push_str("- levels: array of exactly 6 level objects, each with:\n");
     p.push_str("  - name: level title (2-4 words)\n");
     p.push_str("  - font: a Google Fonts font family for the level\n");
     p.push_str("  - description: one atmospheric sentence\n");
-    p.push_str("  - theme: detailed theme string for the level (e.g. 'collapsing origami palace', 'library where books rewrite themselves', 'volcanic glassblowing workshop')\n");
-    p.push_str("  - color: a hex color (e.g. '#e94560') representing the level's primary color/mood. Each level should have a distinct color.\n");
-    p.push_str("  - palette: array of 4-6 hex colors for the level's tile types (wall, floor, and 1-3 thematic tiles like lava, water, grass, etc). Be creative and bold with colors. These must be thematically cohesive and visually distinct per level. IMPORTANT: Do NOT use these colors, they are reserved for game entities: green (#66bb6a), red/crimson (#e64545), gold/yellow (#ffd700), cyan/teal (#4dd0e1), orange (#ffa726). Avoid any color close to these.\n");
-    p.push_str("  - budget: scapebux budget for the level (integer)\n");
-    p.push_str("- connections: array of [i, j] pairs (0-indexed) defining paths between levels. This is a DAG — create BRANCHING paths, not a linear chain.\n");
-    p.push_str("- final_level: index (0-based) of the FINAL BOSS level. Beating this level wins the game.\n\n");
+    p.push_str("  - theme: detailed theme string (e.g. 'collapsing origami palace', 'volcanic glassblowing workshop')\n");
+    p.push_str("  - color: a hex color representing the level's mood. Each level should have a distinct color.\n");
+    p.push_str("  - palette: array of 4-6 hex colors for the level's tile types. Be creative and bold. IMPORTANT: Do NOT use these reserved colors: green (#66bb6a), red (#e64545), gold (#ffd700), cyan (#4dd0e1), orange (#ffa726).\n");
+    p.push_str("  - budget: scapebux budget (integer)\n\n");
     p.push_str("RULES:\n");
-    p.push_str("- Total budget across ALL levels must be approximately 1200 scapebux\n");
-    p.push_str("- Early levels should have lower budgets (~120-160), the final level should be the hardest (~250-300)\n");
-    p.push_str("- Level 0 is the starting level. The final level should be at the END of the path, requiring multiple levels to reach.\n");
-    p.push_str("- Make sure all levels are reachable from level 0 via connections.\n");
-    p.push_str("- Each level theme should be distinct but all should feel part of the same campaign\n\n");
-    p.push_str("Return ONLY valid JSON.");
+    p.push_str("- Exactly 6 levels. The first 5 form a main path (easy→hard). The 6th is an optional side quest.\n");
+    p.push_str("- Level 5 (the last main path level) is the FINAL BOSS — give it the highest budget (~250-300).\n");
+    p.push_str("- Total budget across ALL 6 levels: approximately 1200 scapebux.\n");
+    p.push_str("- Early levels ~120-160, middle ~180-220, boss ~250-300, optional ~150.\n");
+    p.push_str("- Each level theme should be distinct but all should feel part of the same campaign.\n\n");
+    p.push_str("Respond in ENGLISH ONLY. Return ONLY valid JSON, no commentary.");
     p
 }
 
