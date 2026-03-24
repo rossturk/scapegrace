@@ -196,6 +196,9 @@ async fn main() {
     let mut st_root: usize = 0;
     let mut st_scale: usize = 0;
     let mut st_selected: usize = 0;
+    let mut st_reverb_on: bool = true;
+    let mut st_reverb_room: f32 = 0.5;   // 0.0 = tight corridor, 1.0 = huge cavern
+    let mut st_smooth_on: bool = true;
 
     // Key repeat
     let mut nav_hold_time: f64 = 0.0;
@@ -339,6 +342,24 @@ async fn main() {
                 if is_key_pressed(KeyCode::Tab) {
                     st_scale = (st_scale + 1) % SCALES.len();
                 }
+                // FX toggles
+                if is_key_pressed(KeyCode::R) {
+                    st_reverb_on = !st_reverb_on;
+                    if let Some(s) = &sfx { s.set_reverb_enabled(st_reverb_on); }
+                }
+                if is_key_pressed(KeyCode::F) {
+                    st_smooth_on = !st_smooth_on;
+                    if let Some(s) = &sfx { s.set_smooth_enabled(st_smooth_on); }
+                }
+                // Room size (reverb amount) with [ and ]
+                if is_key_pressed(KeyCode::LeftBracket) {
+                    st_reverb_room = (st_reverb_room - 0.1).max(0.0);
+                    if let Some(s) = &sfx { s.update_room_acoustics(st_reverb_room); }
+                }
+                if is_key_pressed(KeyCode::RightBracket) {
+                    st_reverb_room = (st_reverb_room + 0.1).min(1.0);
+                    if let Some(s) = &sfx { s.update_room_acoustics(st_reverb_room); }
+                }
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
                     if let Some(s) = &sfx {
                         match SOUNDS[st_selected] {
@@ -385,6 +406,12 @@ async fn main() {
                     font: Some(&ui_font), font_size: hs, color: DARKGRAY, ..Default::default()
                 });
 
+                let hint2 = "R: reverb   F: smooth   [/]: room size";
+                let h2w = measure_text(hint2, Some(&ui_font), hs, 1.0).width;
+                draw_text_ex(hint2, (sw - h2w) / 2.0, 128.0, TextParams {
+                    font: Some(&ui_font), font_size: hs, color: DARKGRAY, ..Default::default()
+                });
+
                 // Sound list
                 let start_y = 145.0;
                 let row_h = 28.0;
@@ -402,8 +429,46 @@ async fn main() {
                 let play_hint = "ENTER: play sound";
                 let ps = 14u16;
                 let pw = measure_text(play_hint, Some(&ui_font), ps, 1.0).width;
-                draw_text_ex(play_hint, (sw - pw) / 2.0, start_y + SOUNDS.len() as f32 * row_h + 20.0, TextParams {
+                let bottom_y = start_y + SOUNDS.len() as f32 * row_h + 20.0;
+                draw_text_ex(play_hint, (sw - pw) / 2.0, bottom_y, TextParams {
                     font: Some(&ui_font), font_size: ps, color: DARKGRAY, ..Default::default()
+                });
+
+                // FX status panel
+                let fx_y = bottom_y + 30.0;
+                let fx_size = 15u16;
+
+                let reverb_status = if st_reverb_on { "ON" } else { "OFF" };
+                let reverb_color = if st_reverb_on { hex_to_color("#4ecca3") } else { hex_to_color("#e94560") };
+                let (delay, feedback, wet) = if let Some(s) = &sfx {
+                    s.reverb_params()
+                } else {
+                    (0.0, 0.0, 0.0)
+                };
+                let reverb_text = format!(
+                    "REVERB [R]: {}   delay:{:.0}ms  feedback:{:.0}%  wet:{:.0}%",
+                    reverb_status, delay, feedback * 100.0, wet * 100.0
+                );
+                let rw = measure_text(&reverb_text, Some(&ui_font), fx_size, 1.0).width;
+                draw_text_ex(&reverb_text, (sw - rw) / 2.0, fx_y, TextParams {
+                    font: Some(&ui_font), font_size: fx_size, color: reverb_color, ..Default::default()
+                });
+
+                let room_text = format!(
+                    "ROOM SIZE [/]: {:.0}%  (corridor <---> cavern)",
+                    st_reverb_room * 100.0
+                );
+                let rmw = measure_text(&room_text, Some(&ui_font), fx_size, 1.0).width;
+                draw_text_ex(&room_text, (sw - rmw) / 2.0, fx_y + 22.0, TextParams {
+                    font: Some(&ui_font), font_size: fx_size, color: hex_to_color("#c4c4c4"), ..Default::default()
+                });
+
+                let smooth_status = if st_smooth_on { "ON" } else { "OFF" };
+                let smooth_color = if st_smooth_on { hex_to_color("#4ecca3") } else { hex_to_color("#e94560") };
+                let smooth_text = format!("ANTI-CLICK [F]: {}   (3ms fade-in/out)", smooth_status);
+                let smw = measure_text(&smooth_text, Some(&ui_font), fx_size, 1.0).width;
+                draw_text_ex(&smooth_text, (sw - smw) / 2.0, fx_y + 44.0, TextParams {
+                    font: Some(&ui_font), font_size: fx_size, color: smooth_color, ..Default::default()
                 });
             }
 
@@ -573,7 +638,11 @@ async fn main() {
                                 );
                                 state.log(&state.level.description.clone(), "#888");
                                 state.log("Your task: find and defeat the boss.", "#666");
-                                if let Some(s) = &sfx { s.start_boss_drone(&state.level.scale); }
+                                if let Some(s) = &sfx {
+                                    s.start_boss_drone(&state.level.scale);
+                                    let openness = game::measure_openness(&state.level, state.player.x, state.player.y);
+                                    s.update_room_acoustics(openness);
+                                }
                                 screen = Screen::Playing;
                             } else {
                                 start_level_generation(&state, ow, &level_designs, &mut gen_rx);
@@ -625,7 +694,11 @@ async fn main() {
                                 } else {
                                     title_font = None;
                                 }
-                                if let Some(s) = &sfx { s.start_boss_drone(&state.level.scale); }
+                                if let Some(s) = &sfx {
+                                    s.start_boss_drone(&state.level.scale);
+                                    let openness = game::measure_openness(&state.level, state.player.x, state.player.y);
+                                    s.update_room_acoustics(openness);
+                                }
                                 screen = Screen::Playing;
                             }
                             GenMsg::Error(e) => {
@@ -817,6 +890,11 @@ fn handle_playing_input(
 
         // Trigger sounds based on what happened
         if let Some(s) = sfx {
+            if moved {
+                // Update reverb based on how open the space is around the player
+                let openness = game::measure_openness(&state.level, state.player.x, state.player.y);
+                s.update_room_acoustics(openness);
+            }
             if moved && !combat {
                 s.footstep(&sc);
             }

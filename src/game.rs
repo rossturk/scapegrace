@@ -584,3 +584,33 @@ pub fn reveal_around(level: &mut Level, px: i32, py: i32, radius: i32) -> Vec<[i
 
     newly
 }
+
+/// Measure how open the space around the player is by casting rays in 8 directions
+/// and averaging how far they reach before hitting a wall. Returns 0.0 (completely
+/// boxed in) to 1.0 (wide open space), normalized against a max range.
+pub fn measure_openness(level: &Level, px: i32, py: i32) -> f32 {
+    let max_range: f32 = 12.0; // max distance to probe
+    let directions: [(f32, f32); 8] = [
+        (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
+        (0.7071, 0.7071), (-0.7071, 0.7071), (0.7071, -0.7071), (-0.7071, -0.7071),
+    ];
+    let mut total_dist = 0.0f32;
+    for &(dx, dy) in &directions {
+        let mut dist = 0.0f32;
+        loop {
+            dist += 1.0;
+            if dist > max_range { break; }
+            let tx = (px as f32 + dx * dist) as i32;
+            let ty = (py as f32 + dy * dist) as i32;
+            if tx < 0 || ty < 0 || tx >= level.width || ty >= level.height { break; }
+            let tile = &level.tiles[ty as usize][tx as usize];
+            if !level.tile_defs.get(tile).map_or(false, |t| t.walkable) {
+                break;
+            }
+        }
+        total_dist += dist;
+    }
+    // Average distance across all rays, normalized to 0..1
+    let avg = total_dist / (8.0 * max_range);
+    avg.clamp(0.0, 1.0)
+}
