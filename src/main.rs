@@ -50,8 +50,8 @@ enum GenMsg {
 fn window_conf() -> Conf {
     Conf {
         window_title: "Scapegrace".to_owned(),
-        window_width: 1200,
-        window_height: 800,
+        window_width: 1900,
+        window_height: 1000,
         window_resizable: true,
         high_dpi: true,
         icon: Some(miniquad::conf::Icon {
@@ -1682,17 +1682,45 @@ fn draw_death_overlay(font: &Font, bold: &Font, state: &GameState) {
         font: Some(bold), font_size: ts, color: hex_to_color("#ef5350"), ..Default::default()
     });
 
+    let mut y = sh / 2.0 + 20.0;
+
+    if !state.level.defeat_message.is_empty() {
+        let ms = 18u16;
+        let max_w = sw * 0.8;
+        let mut lines: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for word in state.level.defeat_message.split_whitespace() {
+            let candidate = if cur.is_empty() { word.to_string() } else { format!("{} {}", cur, word) };
+            if measure_text(&candidate, Some(font), ms, 1.0).width > max_w && !cur.is_empty() {
+                lines.push(cur);
+                cur = word.to_string();
+            } else {
+                cur = candidate;
+            }
+        }
+        if !cur.is_empty() { lines.push(cur); }
+        let line_h = ms as f32 + 4.0;
+        for (i, line) in lines.iter().enumerate() {
+            let lw = measure_text(line, Some(font), ms, 1.0).width;
+            draw_text_ex(line, (sw - lw) / 2.0, y + i as f32 * line_h, TextParams {
+                font: Some(font), font_size: ms, color: GRAY, ..Default::default()
+            });
+        }
+        y += lines.len() as f32 * (ms as f32 + 4.0) + 10.0;
+    }
+
     let summary = format!("Level {}  {} gold", state.player.level, state.player.gold);
     let ss = 18u16;
     let smw = measure_text(&summary, Some(font), ss, 1.0).width;
-    draw_text_ex(&summary, (sw - smw) / 2.0, sh / 2.0 + 20.0, TextParams {
+    draw_text_ex(&summary, (sw - smw) / 2.0, y, TextParams {
         font: Some(font), font_size: ss, color: GRAY, ..Default::default()
     });
+    y += 35.0;
 
     let prompt = "Press ENTER to return to overworld";
     let ps = 16u16;
     let pw = measure_text(prompt, Some(font), ps, 1.0).width;
-    draw_text_ex(prompt, (sw - pw) / 2.0, sh / 2.0 + 55.0, TextParams {
+    draw_text_ex(prompt, (sw - pw) / 2.0, y, TextParams {
         font: Some(font), font_size: ps, color: DARKGRAY, ..Default::default()
     });
 }
@@ -1711,16 +1739,33 @@ fn draw_victory_overlay(font: &Font, bold: &Font, _state: &GameState) {
 
     if !_state.level.victory_message.is_empty() {
         let ms = 18u16;
-        let mw = measure_text(&_state.level.victory_message, Some(font), ms, 1.0).width;
-        draw_text_ex(&_state.level.victory_message, (sw - mw) / 2.0, sh / 2.0 + 20.0, TextParams {
-            font: Some(font), font_size: ms, color: GRAY, ..Default::default()
-        });
+        let max_w = sw * 0.8;
+        let mut lines: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for word in _state.level.victory_message.split_whitespace() {
+            let candidate = if cur.is_empty() { word.to_string() } else { format!("{} {}", cur, word) };
+            if measure_text(&candidate, Some(font), ms, 1.0).width > max_w && !cur.is_empty() {
+                lines.push(cur);
+                cur = word.to_string();
+            } else {
+                cur = candidate;
+            }
+        }
+        if !cur.is_empty() { lines.push(cur); }
+        let line_h = ms as f32 + 4.0;
+        let start_y = sh / 2.0 + 20.0;
+        for (i, line) in lines.iter().enumerate() {
+            let lw = measure_text(line, Some(font), ms, 1.0).width;
+            draw_text_ex(line, (sw - lw) / 2.0, start_y + i as f32 * line_h, TextParams {
+                font: Some(font), font_size: ms, color: GRAY, ..Default::default()
+            });
+        }
     }
 
     let prompt = "Press ENTER to continue";
     let ps = 16u16;
     let pw = measure_text(prompt, Some(font), ps, 1.0).width;
-    draw_text_ex(prompt, (sw - pw) / 2.0, sh / 2.0 + 55.0, TextParams {
+    draw_text_ex(prompt, (sw - pw) / 2.0, sh / 2.0 + 65.0, TextParams {
         font: Some(font), font_size: ps, color: DARKGRAY, ..Default::default()
     });
 }

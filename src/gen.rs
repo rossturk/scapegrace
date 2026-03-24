@@ -42,6 +42,7 @@ pub struct Phase2Result {
     pub budget_spent: Option<serde_json::Value>,
     pub mode: Option<ModeRaw>,
     pub victory_message: Option<String>,
+    pub defeat_message: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -491,7 +492,7 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, ti
     p.push_str("- armor: {name, description}\n");
     p.push_str("- traps: array of {name}. The engine decides count and damage from budget.\n");
     p.push_str("- mode: {root, scale} — a musical mode for the level's ambient sound. root is a note name (e.g. \"C\", \"F#\", \"Bb\"), scale is one of: \"ionian\", \"dorian\", \"phrygian\", \"lydian\", \"mixolydian\", \"aeolian\", \"locrian\", \"pentatonic_major\", \"pentatonic_minor\", \"blues\", \"whole_tone\", \"chromatic\". Choose a mode that fits the level's mood.\n");
-    p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n\n");
+    p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n- defeat_message: one short atmospheric sentence shown when the player dies in this level\n\n");
     p.push_str("Return ONLY valid JSON.");
     p
 }
@@ -513,7 +514,7 @@ pub fn build_single_level_design_prompt(
     p.push_str("- armor: {name, description}\n");
     p.push_str("- traps: array of {name}. The engine decides count and damage from budget.\n");
     p.push_str("- mode: {root, scale} — musical mode. root = note name, scale = one of: ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian\n");
-    p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n\n");
+    p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n- defeat_message: one short atmospheric sentence shown when the player dies in this level\n\n");
     p.push_str("Return ONLY valid JSON.");
     p
 }
@@ -793,6 +794,7 @@ fn assemble_level(
         font: p1.font.clone().expect("font was set from overworld config"),
         scale,
         victory_message: p2.victory_message.clone().unwrap_or_default(),
+        defeat_message: p2.defeat_message.clone().unwrap_or_default(),
         revealed: HashSet::new(),
         visible: HashSet::new(),
     };

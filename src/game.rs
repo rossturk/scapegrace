@@ -102,6 +102,7 @@ pub struct Level {
     pub font: String,
     pub scale: Vec<f32>,  // frequencies for footstep notes
     pub victory_message: String,
+    pub defeat_message: String,
     #[serde(skip)]
     pub revealed: HashSet<(i32, i32)>,
     #[serde(skip)]
@@ -164,7 +165,7 @@ impl GameState {
                 tiles: vec![], tile_defs: Default::default(),
                 monsters: vec![], items: vec![], traps: vec![],
                 title: String::new(), description: String::new(), font: String::new(),
-                scale: vec![], victory_message: String::new(),
+                scale: vec![], victory_message: String::new(), defeat_message: String::new(),
                 revealed: HashSet::new(), visible: HashSet::new(),
             },
             log: vec![],
