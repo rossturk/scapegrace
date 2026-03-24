@@ -512,7 +512,7 @@ pub fn build_single_level_design_prompt(
     p.push_str("- weapon: {name, description}\n");
     p.push_str("- armor: {name, description}\n");
     p.push_str("- traps: array of {name}. The engine decides count and damage from budget.\n");
-    p.push_str("- mode: {root, scale} — musical mode. root = note name, scale = one of: ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian, pentatonic_major, pentatonic_minor, blues, whole_tone, chromatic\n");
+    p.push_str("- mode: {root, scale} — musical mode. root = note name, scale = one of: ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian\n");
     p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n\n");
     p.push_str("Return ONLY valid JSON.");
     p
@@ -780,7 +780,7 @@ fn assemble_level(
 
     let scale = p2.mode.as_ref()
         .map(|m| build_scale(&m.root, &m.scale))
-        .unwrap_or_else(|| build_scale("C", "pentatonic_minor"));
+        .unwrap_or_else(|| build_scale("C", "aeolian"));
 
     if let Some(m) = &p2.mode {
         eprintln!("Mode: {} {}", m.root, m.scale);
@@ -868,7 +868,7 @@ pub fn build_scale(root: &str, scale_name: &str) -> Vec<f32> {
         "blues" => vec![0, 3, 5, 6, 7, 10],
         "whole_tone" => vec![0, 2, 4, 6, 8, 10],
         "chromatic" => vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-        _ => vec![0, 3, 5, 7, 10], // default pentatonic minor
+        _ => vec![0, 2, 3, 5, 7, 8, 10], // default aeolian (natural minor)
     };
 
     // Generate frequencies across 2 octaves starting from octave 4

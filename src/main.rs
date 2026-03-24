@@ -309,9 +309,8 @@ async fn main() {
 
             Screen::SoundTest => {
                 const ROOTS: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-                const SCALES: [&str; 12] = [
-                    "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian",
-                    "locrian", "pentatonic_major", "pentatonic_minor", "blues", "whole_tone", "chromatic",
+                const SCALES: [&str; 7] = [
+                    "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian",
                 ];
                 const SOUNDS: [&str; 14] = [
                     "footstep", "hit", "crit", "player_hurt", "miss", "kill", "death",

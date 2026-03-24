@@ -7,6 +7,7 @@ pub struct Sfx {
     _stream: OutputStream,
     handle: OutputStreamHandle,
     drone: RefCell<Option<Sink>>,
+    bass_pos: RefCell<usize>,
 }
 
 /// Pick a random note from the scale
@@ -41,23 +42,18 @@ fn notes_per_octave(scale: &[f32]) -> usize {
     (scale.len() / 2).max(1)
 }
 
-/// Pick a bass note biased toward root and fifth (scale degrees 1 and 5)
-fn pick_bass(scale: &[f32], rng: &mut impl ::rand::Rng) -> f32 {
-    if scale.is_empty() { return 220.0; }
-    let npo = notes_per_octave(scale);
-    // Strong bass tones: root(0), fifth(4 in 7-note, 3 in 5-note), octave root
-    let fifth_idx = (npo * 4 / 7).min(npo - 1); // approximate fifth
-    let candidates = [0, fifth_idx, npo]; // root, fifth, octave root
-    let idx = candidates[rng.gen_range(0..candidates.len())];
-    scale[idx.min(scale.len() - 1)] * 0.5 // one octave down for bass weight
-}
-
-/// Build a pentatonic minor scale from the root of the given scale, one octave down for bass use.
-/// Pentatonic minor is broadly compatible with all modal scales.
+/// Build a pentatonic scale from the mode by picking 5 of 7 notes (drop the 4th and 7th degrees).
+/// This is compatible with all 7-note modes. One octave down for bass use.
 fn pentatonic_bass(scale: &[f32]) -> Vec<f32> {
-    let root = if scale.is_empty() { 220.0 } else { scale[0] * 0.5 };
-    [0, 3, 5, 7, 10].iter()
-        .map(|&s| root * 2.0_f32.powf(s as f32 / 12.0))
+    if scale.is_empty() { return vec![220.0]; }
+    let npo = notes_per_octave(scale);
+    if npo < 7 {
+        // Not a 7-note scale, use as-is
+        return scale.iter().map(|f| f * 0.5).collect();
+    }
+    // Pick degrees 0, 1, 2, 4, 5 (drop 3rd and 6th — the "avoid" notes)
+    [0, 1, 2, 4, 5].iter()
+        .map(|&d| scale[d.min(scale.len() - 1)] * 0.5)
         .collect()
 }
 
@@ -87,6 +83,31 @@ fn pick_dyad_high(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
     vec![scale[root], scale[root + 2]]
 }
 
+/// Pick a diatonic minor triad from the scale.
+/// Finds root degrees where root+2 is a minor third (~3 semitones) and root+4 is a perfect fifth (~7 semitones).
+fn pick_minor_triad(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
+    if scale.len() < 5 { return pick_dyad(scale, rng); }
+    let minor_third = 2.0_f32.powf(3.0 / 12.0); // ~1.189
+    let perfect_fifth = 2.0_f32.powf(7.0 / 12.0); // ~1.498
+    let tolerance = 0.02;
+    let mut candidates: Vec<usize> = Vec::new();
+    for i in 0..scale.len() - 4 {
+        let third_ratio = scale[i + 2] / scale[i];
+        let fifth_ratio = scale[i + 4] / scale[i];
+        if (third_ratio - minor_third).abs() < tolerance
+            && (fifth_ratio - perfect_fifth).abs() < tolerance
+        {
+            candidates.push(i);
+        }
+    }
+    if candidates.is_empty() {
+        // Fallback to any diatonic triad
+        return pick_triad(scale, rng);
+    }
+    let root = candidates[rng.gen_range(0..candidates.len())];
+    vec![scale[root], scale[root + 2], scale[root + 4]]
+}
+
 /// Pick a triad: root + third + fifth (0, 2, 4 scale degrees up)
 fn pick_triad(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
     if scale.len() < 5 { return pick_dyad(scale, rng); }
@@ -98,7 +119,7 @@ fn pick_triad(scale: &[f32], rng: &mut impl ::rand::Rng) -> Vec<f32> {
 impl Sfx {
     pub fn new() -> Option<Self> {
         let (stream, handle) = OutputStream::try_default().ok()?;
-        Some(Self { _stream: stream, handle, drone: RefCell::new(None) })
+        Some(Self { _stream: stream, handle, drone: RefCell::new(None), bass_pos: RefCell::new(0) })
     }
 
     fn play(&self, source: impl Source<Item = f32> + Send + 'static) {
@@ -111,12 +132,25 @@ impl Sfx {
     // ── Game sounds — all in the level's musical mode ──
 
     pub fn footstep(&self, scale: &[f32]) {
-        // Bassline — pentatonic minor from same root, compatible with all modes
+        // Walking bassline — stepwise motion through pentatonic bass
         let mut rng = ::rand::thread_rng();
-        let dur = rng.gen_range(40..70);
-        let vol = rng.gen_range(0.046..0.092);
         let penta = pentatonic_bass(scale);
-        let freq = pick_bass(&penta, &mut rng);
+        if penta.is_empty() { return; }
+
+        let mut pos = *self.bass_pos.borrow();
+        // Move 1-2 steps, biased toward stepping up (walking forward)
+        let step: i32 = match rng.gen_range(0..10) {
+            0..=4 => 1,    // step up (50%)
+            5..=7 => -1,   // step down (30%)
+            8 => 2,        // leap up (10%)
+            _ => 0,        // repeat (10%)
+        };
+        pos = ((pos as i32 + step).rem_euclid(penta.len() as i32)) as usize;
+        *self.bass_pos.borrow_mut() = pos;
+
+        let freq = penta[pos];
+        let dur = rng.gen_range(45..65);
+        let vol = rng.gen_range(0.05..0.09);
         self.play(
             Osc::sine(freq)
                 .take_duration(Duration::from_millis(dur))
@@ -126,9 +160,9 @@ impl Sfx {
     }
 
     pub fn hit(&self, scale: &[f32]) {
-        // Punch — low triad, square wave
+        // Punch — low minor triad, square wave
         let mut rng = ::rand::thread_rng();
-        let freqs: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
+        let freqs: Vec<f32> = pick_minor_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
         self.play(
             Chord::square(&freqs)
                 .take_duration(Duration::from_millis(160))
@@ -138,9 +172,9 @@ impl Sfx {
     }
 
     pub fn crit(&self, scale: &[f32]) {
-        // Hard slam — low triad, saw wave
+        // Hard slam — low minor triad, saw wave
         let mut rng = ::rand::thread_rng();
-        let freqs: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
+        let freqs: Vec<f32> = pick_minor_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
         self.play(
             Chord::saw(&freqs)
                 .take_duration(Duration::from_millis(240))
@@ -201,39 +235,92 @@ impl Sfx {
     }
 
     pub fn death(&self, scale: &[f32]) {
-        // Long descending crash into sustained low triad
-        let mut rng = ::rand::thread_rng();
-        let hi = pick_high(scale, &mut rng);
-        let lo_chord: Vec<f32> = pick_triad(scale, &mut rng).iter().map(|f| f * 0.25).collect();
-        let lo_avg = lo_chord.iter().sum::<f32>() / lo_chord.len() as f32;
-        self.play(
-            Sweep::new(hi, lo_avg, Duration::from_millis(3200), Waveform::Saw)
-                .amplify(0.15)
-                .fade_out(Duration::from_millis(3200))
-                .then(
-                    Chord::saw(&lo_chord)
-                        .take_duration(Duration::from_millis(4800))
-                        .amplify(0.12)
-                        .fade_out(Duration::from_millis(4800))
-                )
+        // Slowly descending triads — major triads first, ending on minor
+        let npo = notes_per_octave(scale);
+        // Start high in the scale, step down
+        let start = if scale.len() > npo + 4 { npo + 4 } else { scale.len().saturating_sub(1) };
+        let chord_dur = 400u64;
+        let gap = 100u64;
+        let num_chords = 6;
+
+        let mut song: Box<dyn Source<Item = f32> + Send> = Box::new(
+            silence(Duration::from_millis(1))
         );
+        for step in 0..num_chords {
+            let root_idx = start.saturating_sub(step);
+            let third_idx = (root_idx + 2).min(scale.len() - 1);
+            let fifth_idx = (root_idx + 4).min(scale.len() - 1);
+            let root = if root_idx < scale.len() { scale[root_idx] } else { scale[0] } * 0.5;
+            let third = if third_idx < scale.len() { scale[third_idx] } else { root } * 0.5;
+            let fifth = if fifth_idx < scale.len() { scale[fifth_idx] } else { root } * 0.5;
+
+            let vol = 0.13 - step as f32 * 0.01;
+            let dur = if step == num_chords - 1 { chord_dur * 3 } else { chord_dur };
+            song = Box::new(
+                song
+                    .then(
+                        Chord::sine(&[root, third, fifth])
+                            .take_duration(Duration::from_millis(dur))
+                            .amplify(vol.max(0.05))
+                            .fade_out(Duration::from_millis(dur))
+                    )
+                    .then(silence(Duration::from_millis(gap)))
+            );
+        }
+        self.play(song);
     }
 
     pub fn victory(&self, scale: &[f32]) {
-        // Ascending 3-chord fanfare — each note becomes a dyad
-        let mut rng = ::rand::thread_rng();
-        let notes = pick_ascending(scale, 5, &mut rng);
-        let c0 = [notes[0], notes.get(2).copied().unwrap_or(notes[0])];
-        let c1 = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])];
-        let c2 = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])];
-        self.play(
-            Chord::sine(&c0).take_duration(Duration::from_millis(400)).amplify(0.12)
-                .then(silence(Duration::from_millis(80)))
-                .then(Chord::sine(&c1).take_duration(Duration::from_millis(400)).amplify(0.12))
-                .then(silence(Duration::from_millis(80)))
-                .then(Chord::sine(&c2).take_duration(Duration::from_millis(800)).amplify(0.15)
-                    .fade_out(Duration::from_millis(800)))
+        // Ascending 8-chord fanfare with arpeggiated triads
+        let npo = notes_per_octave(scale);
+
+        let mut song: Box<dyn Source<Item = f32> + Send> = Box::new(
+            silence(Duration::from_millis(1))
         );
+
+        // 6 ascending triads, quick arpeggiated
+        for step in 0..6 {
+            let root_idx = step;
+            let third_idx = (root_idx + 2).min(scale.len() - 1);
+            let fifth_idx = (root_idx + 4).min(scale.len() - 1);
+            let root = scale[root_idx.min(scale.len() - 1)];
+            let third = scale[third_idx];
+            let fifth = scale[fifth_idx];
+
+            // Arpeggiate: root, then third, then full triad
+            let arp_dur = 80u64;
+            let hold_dur = 200u64;
+            let vol = 0.08 + step as f32 * 0.01;
+            song = Box::new(
+                song
+                    .then(Osc::sine(root).take_duration(Duration::from_millis(arp_dur)).amplify(vol))
+                    .then(Osc::sine(third).take_duration(Duration::from_millis(arp_dur)).amplify(vol))
+                    .then(
+                        Chord::sine(&[root, third, fifth])
+                            .take_duration(Duration::from_millis(hold_dur))
+                            .amplify(vol + 0.02)
+                            .fade_out(Duration::from_millis(hold_dur))
+                    )
+                    .then(silence(Duration::from_millis(40)))
+            );
+        }
+
+        // Final sustained chord — root triad of the second octave
+        let final_root = scale[npo.min(scale.len() - 1)];
+        let final_third = scale[(npo + 2).min(scale.len() - 1)];
+        let final_fifth = scale[(npo + 4).min(scale.len() - 1)];
+        song = Box::new(
+            song
+                .then(silence(Duration::from_millis(100)))
+                .then(
+                    Chord::sine(&[final_root, final_third, final_fifth])
+                        .take_duration(Duration::from_millis(1200))
+                        .amplify(0.16)
+                        .fade_out(Duration::from_millis(1200))
+                )
+        );
+
+        self.play(song);
     }
 
     pub fn pickup_gold(&self, scale: &[f32]) {
@@ -284,15 +371,19 @@ impl Sfx {
     }
 
     pub fn pickup_armor(&self, scale: &[f32]) {
-        // Lower metallic triad — saw wave
+        // Ascending 3-chord metallic fanfare — same as weapon but one octave lower
         let mut rng = ::rand::thread_rng();
-        let freqs = pick_triad(scale, &mut rng);
-        let lo_freqs: Vec<f32> = freqs.iter().map(|f| f * 0.5).collect();
+        let notes = pick_ascending(scale, 5, &mut rng);
+        let c0: Vec<f32> = [notes[0], notes.get(2).copied().unwrap_or(notes[0])].iter().map(|f| f * 0.5).collect();
+        let c1: Vec<f32> = [notes.get(1).copied().unwrap_or(notes[0]), notes.get(3).copied().unwrap_or(notes[0])].iter().map(|f| f * 0.5).collect();
+        let c2: Vec<f32> = [notes.get(2).copied().unwrap_or(notes[0]), notes.get(4).copied().unwrap_or(notes[0])].iter().map(|f| f * 0.5).collect();
         self.play(
-            Chord::saw(&lo_freqs)
-                .take_duration(Duration::from_millis(250))
-                .amplify(0.10)
-                .fade_out(Duration::from_millis(250))
+            Chord::saw(&c0).take_duration(Duration::from_millis(160)).amplify(0.10)
+                .then(silence(Duration::from_millis(40)))
+                .then(Chord::saw(&c1).take_duration(Duration::from_millis(160)).amplify(0.10))
+                .then(silence(Duration::from_millis(40)))
+                .then(Chord::saw(&c2).take_duration(Duration::from_millis(300)).amplify(0.12)
+                    .fade_out(Duration::from_millis(300)))
         );
     }
 
