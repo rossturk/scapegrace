@@ -53,6 +53,7 @@ jobs:
       - name: Sign the app
         run: |
           codesign --deep --force --options runtime \
+            --entitlements Scapegrace.entitlements \
             --sign "$SIGN_IDENTITY" \
             --keychain "$KEYCHAIN_FILE" \
             target/release/bundle/osx/Scapegrace.app
