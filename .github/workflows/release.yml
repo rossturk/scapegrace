@@ -29,11 +29,13 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           CERT_FILE=$(mktemp /tmp/cert.XXXXXX.p12)
-          KEYCHAIN_FILE=$(mktemp /tmp/keychain.XXXXXX.keychain-db)
+          KEYCHAIN_FILE="/tmp/scapegrace-build-$$.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
 
           echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_FILE"
 
+          # Remove stale keychain if it exists
+          security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_FILE"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_FILE"
@@ -125,7 +127,7 @@ jobs:
         run: cargo build --release
 
       - name: Package
-        shell: pwsh
+        shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path target/Scapegrace-win
           Copy-Item target/release/scapegrace.exe target/Scapegrace-win/
