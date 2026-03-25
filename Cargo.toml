@@ -12,6 +12,7 @@ rand = "0.8"
 dotenvy = "0.15"
 rodio = "0.19"
 arboard = "3"
+dirs = "5"
 
 [package.metadata.bundle]
 name = "Scapegrace"

@@ -157,9 +157,82 @@ fn item_color(item_type: &str) -> Color {
     }
 }
 
+fn config_dir() -> std::path::PathBuf {
+    let base = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("com.allmuddy.scapegrace")
+}
+
+fn config_path() -> std::path::PathBuf {
+    config_dir().join("config")
+}
+
+fn save_config(value: &str) {
+    let dir = config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(config_path(), value);
+}
+
+fn load_config() {
+    if let Ok(value) = std::fs::read_to_string(config_path()) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            if is_ollama_input(trimmed) {
+                std::env::set_var("LLM_BASE_URL", normalize_ollama_url(trimmed));
+            } else {
+                std::env::set_var("LLM_API_KEY", trimmed);
+            }
+        }
+    }
+}
+
+fn saved_config_value() -> String {
+    std::fs::read_to_string(config_path())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// Detect if input looks like an Ollama URL/hostname (not an API key)
+fn is_ollama_input(input: &str) -> bool {
+    input.starts_with("http://") || input.starts_with("https://")
+        || (input.contains('.') && !input.starts_with("sk-"))
+}
+
+/// Normalize various Ollama URL formats to a full URL with /v1 path
+fn normalize_ollama_url(input: &str) -> String {
+    let mut url = input.to_string();
+
+    // Add http:// if no scheme
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        url = format!("http://{}", url);
+    }
+
+    // Add default port if none specified
+    // Parse to check: if there's no port after the host, add :11434
+    if let Ok(parsed) = url.parse::<reqwest::Url>() {
+        if parsed.port().is_none() {
+            // Insert port before the path
+            let scheme = parsed.scheme();
+            let host = parsed.host_str().unwrap_or("localhost");
+            let path = parsed.path();
+            url = format!("{}://{}:11434{}", scheme, host, path);
+        }
+    }
+
+    // Add /v1 if not present
+    let url = url.trim_end_matches('/');
+    if !url.ends_with("/v1") {
+        format!("{}/v1", url)
+    } else {
+        url.to_string()
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     dotenvy::dotenv().ok();
+    load_config(); // load saved config from OS config dir
 
     let ui_font = load_ttf_font_from_bytes(include_bytes!("../assets/JetBrainsMono-Regular.ttf"))
         .expect("Failed to load embedded UI font");
@@ -171,7 +244,7 @@ async fn main() {
     let mut state = GameState::new();
     let has_llm = !gen::llm_api_key().is_empty() || std::env::var("LLM_BASE_URL").is_ok();
     let mut screen = if has_llm { Screen::Start } else { Screen::KeyEntry };
-    let mut key_input = String::new();
+    let mut key_input = saved_config_value();
     let mut key_error: Option<String> = None;
     let mut key_validating = false;
     let mut key_rx: Option<mpsc::Receiver<Result<(), String>>> = None;
@@ -227,7 +300,15 @@ async fn main() {
                         key_validating = false;
                         match result {
                             Ok(()) => {
-                                std::env::set_var("LLM_API_KEY", key_input.trim());
+                                let trimmed = key_input.trim();
+                                if is_ollama_input(trimmed) {
+                                    let url = normalize_ollama_url(trimmed);
+                                    std::env::set_var("LLM_BASE_URL", &url);
+                                    save_config(&url);
+                                } else {
+                                    std::env::set_var("LLM_API_KEY", trimmed);
+                                    save_config(trimmed);
+                                }
                                 screen = Screen::Start;
                             }
                             Err(e) => {
@@ -287,8 +368,16 @@ async fn main() {
                         let trimmed = key_input.trim().to_string();
                         if trimmed.is_empty() {
                             key_error = Some("The passphrase cannot be empty.".into());
+                        } else if is_ollama_input(&trimmed) {
+                            let url = normalize_ollama_url(&trimmed);
+                            key_validating = true;
+                            key_error = None;
+                            let (tx, rx) = mpsc::channel();
+                            key_rx = Some(rx);
+                            std::thread::spawn(move || {
+                                let _ = tx.send(validate_ollama_url(&url));
+                            });
                         } else {
-                            // Validate the key in background
                             key_validating = true;
                             key_error = None;
                             let (tx, rx) = mpsc::channel();
@@ -1213,35 +1302,34 @@ fn fetch_google_font(font_name: &str) -> Option<Vec<u8>> {
 }
 
 fn validate_api_key(key: &str) -> Result<(), String> {
-    let base_url = gen::llm_base_url();
     let client = reqwest::blocking::Client::new();
+    let resp = client.get("https://openrouter.ai/api/v1/auth/key")
+        .header("Authorization", format!("Bearer {}", key))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|e| format!("Could not reach OpenRouter: {}", e))?;
 
-    if base_url.contains("openrouter.ai") {
-        let resp = client.get(format!("{}/auth/key", base_url.trim_end_matches('/')))
-            .header("Authorization", format!("Bearer {}", key))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .map_err(|e| format!("Could not reach the gate: {}", e))?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
-            Err("The passphrase was not recognized.".into())
-        } else {
-            Err(format!("The gate refused entry. ({})", resp.status()))
-        }
+    if resp.status().is_success() {
+        Ok(())
+    } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
+        Err("Key not recognized.".into())
     } else {
-        // For Ollama and other local providers, just check the models endpoint is reachable
-        let resp = client.get(format!("{}/models", base_url.trim_end_matches('/')))
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .map_err(|e| format!("Could not reach LLM server: {}", e))?;
+        Err(format!("OpenRouter error ({})", resp.status()))
+    }
+}
 
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("LLM server responded with status {}", resp.status()))
-        }
+fn validate_ollama_url(url: &str) -> Result<(), String> {
+    let client = reqwest::blocking::Client::new();
+    let models_url = format!("{}/models", url.trim_end_matches('/'));
+    let resp = client.get(&models_url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .map_err(|e| format!("Could not reach {}: {}", url, e))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Server responded with status {}", resp.status()))
     }
 }
 
@@ -1289,22 +1377,27 @@ fn draw_key_entry_screen(font: &Font, bold: &Font, input: &str, error: &Option<S
     let fs = 16u16;
     let max_inner = field_w - 24.0; // padding on both sides
     if input.is_empty() {
-        draw_text_ex("sk-or-...", field_x + 12.0, field_y + 24.0, TextParams {
+        draw_text_ex("key or hostname...", field_x + 12.0, field_y + 24.0, TextParams {
             font: Some(font), font_size: fs, color: Color::new(0.3, 0.3, 0.3, 1.0), ..Default::default()
         });
     } else {
-        // Show: ••••••••last4  — but cap dots to fit the field
-        let tail: String = input.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
-        let tail_w = measure_text(&tail, Some(font), fs, 1.0).width;
-        let dot = "\u{2022}";
-        let dot_w = measure_text(dot, Some(font), fs, 1.0).width;
-        let available = max_inner - tail_w;
-        let dot_count = if input.len() > 4 {
-            ((available / dot_w) as usize).min(input.len() - 4)
+        let display = if is_ollama_input(input) {
+            // Show URL in full
+            input.to_string()
         } else {
-            0
+            // Mask API key: ••••••••last4
+            let tail: String = input.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+            let tail_w = measure_text(&tail, Some(font), fs, 1.0).width;
+            let dot = "\u{2022}";
+            let dot_w = measure_text(dot, Some(font), fs, 1.0).width;
+            let available = max_inner - tail_w;
+            let dot_count = if input.len() > 4 {
+                ((available / dot_w) as usize).min(input.len() - 4)
+            } else {
+                0
+            };
+            format!("{}{}", dot.repeat(dot_count), tail)
         };
-        let display = format!("{}{}", dot.repeat(dot_count), tail);
         draw_text_ex(&display, field_x + 12.0, field_y + 24.0, TextParams {
             font: Some(font), font_size: fs, color: hex_to_color("#e0d5c0"), ..Default::default()
         });
