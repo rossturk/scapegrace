@@ -179,6 +179,9 @@ fn load_config() {
         if !trimmed.is_empty() {
             if is_ollama_input(trimmed) {
                 std::env::set_var("LLM_BASE_URL", normalize_ollama_url(trimmed));
+                if std::env::var("LLM_MODEL").is_err() {
+                    std::env::set_var("LLM_MODEL", "qwen2.5:14b");
+                }
             } else {
                 std::env::set_var("LLM_API_KEY", trimmed);
             }
@@ -231,8 +234,28 @@ fn normalize_ollama_url(input: &str) -> String {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    dotenvy::dotenv().ok();
-    load_config(); // load saved config from OS config dir
+    // Load .env if present
+    match dotenvy::dotenv() {
+        Ok(path) => println!("[config] loaded .env from {}", path.display()),
+        Err(_) => println!("[config] no .env found"),
+    }
+
+    // Load saved config from OS config dir
+    let config_file = config_path();
+    match std::fs::read_to_string(&config_file) {
+        Ok(val) if !val.trim().is_empty() => {
+            println!("[config] loaded saved config from {}: {:?}", config_file.display(), val.trim());
+        }
+        Ok(_) => println!("[config] saved config at {} is empty", config_file.display()),
+        Err(_) => println!("[config] no saved config at {}", config_file.display()),
+    }
+    load_config();
+
+    println!("[config] LLM_BASE_URL = {:?}", std::env::var("LLM_BASE_URL").ok());
+    println!("[config] LLM_API_KEY = {:?}", std::env::var("LLM_API_KEY").ok().map(|k| {
+        if k.len() > 8 { format!("{}...{}", &k[..4], &k[k.len()-4..]) } else { "(set)".into() }
+    }));
+    println!("[config] LLM_MODEL = {:?}", std::env::var("LLM_MODEL").ok());
 
     let ui_font = load_ttf_font_from_bytes(include_bytes!("../assets/JetBrainsMono-Regular.ttf"))
         .expect("Failed to load embedded UI font");
@@ -243,6 +266,7 @@ async fn main() {
 
     let mut state = GameState::new();
     let has_llm = !gen::llm_api_key().is_empty() || std::env::var("LLM_BASE_URL").is_ok();
+    println!("[config] has_llm={} → screen={}", has_llm, if has_llm { "Start" } else { "KeyEntry" });
     let mut screen = if has_llm { Screen::Start } else { Screen::KeyEntry };
     let mut key_input = saved_config_value();
     let mut key_error: Option<String> = None;
@@ -304,6 +328,9 @@ async fn main() {
                                 if is_ollama_input(trimmed) {
                                     let url = normalize_ollama_url(trimmed);
                                     std::env::set_var("LLM_BASE_URL", &url);
+                                    if std::env::var("LLM_MODEL").is_err() {
+                                        std::env::set_var("LLM_MODEL", "qwen2.5:14b");
+                                    }
                                     save_config(&url);
                                 } else {
                                     std::env::set_var("LLM_API_KEY", trimmed);

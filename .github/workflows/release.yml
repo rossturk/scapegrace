@@ -8,11 +8,17 @@ on:
 permissions:
   contents: write
 
+env:
+  SHORT_SHA: ""
+
 jobs:
   build-mac:
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -63,14 +69,14 @@ jobs:
           hdiutil create -volname Scapegrace \
             -srcfolder target/release/bundle/osx/Scapegrace.app \
             -ov -format UDZO \
-            target/Scapegrace-mac.dmg
+            target/Scapegrace-mac-${SHORT_SHA}.dmg
 
       - name: Sign the DMG
         run: |
           codesign --force --options runtime \
             --sign "$SIGN_IDENTITY" \
             --keychain "$KEYCHAIN_FILE" \
-            target/Scapegrace-mac.dmg
+            target/Scapegrace-mac-${SHORT_SHA}.dmg
 
       - name: Notarize
         env:
@@ -78,13 +84,13 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit target/Scapegrace-mac.dmg \
+          xcrun notarytool submit target/Scapegrace-mac-${SHORT_SHA}.dmg \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
 
-          xcrun stapler staple target/Scapegrace-mac.dmg
+          xcrun stapler staple target/Scapegrace-mac-${SHORT_SHA}.dmg
 
       - name: Cleanup
         if: always()
@@ -97,12 +103,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Scapegrace-mac.dmg
-          path: target/Scapegrace-mac.dmg
+          path: target/Scapegrace-mac-*.dmg
 
   build-linux:
     runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -110,16 +119,25 @@ jobs:
       - name: Build AppImage
         run: ./appimage/build-appimage.sh
 
+      - name: Rename artifact
+        run: mv target/Scapegrace-*.AppImage target/Scapegrace-linux-${SHORT_SHA}.AppImage
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Scapegrace-linux.AppImage
-          path: target/Scapegrace-*.AppImage
+          path: target/Scapegrace-linux-*.AppImage
 
   build-windows:
     runs-on: [self-hosted, Windows, X64]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        shell: powershell
+        run: |
+          $sha = git rev-parse --short HEAD
+          echo "SHORT_SHA=$sha" >> $env:GITHUB_ENV
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -133,13 +151,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/Scapegrace-win
           Copy-Item target/release/scapegrace.exe target/Scapegrace-win/
           if (Test-Path icon.png) { Copy-Item icon.png target/Scapegrace-win/ }
-          Compress-Archive -Path target/Scapegrace-win/* -DestinationPath target/Scapegrace-win.zip -Force
+          Compress-Archive -Path target/Scapegrace-win/* -DestinationPath "target/Scapegrace-win-$env:SHORT_SHA.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Scapegrace-win.zip
-          path: target/Scapegrace-win.zip
+          path: target/Scapegrace-win-*.zip
 
   release:
     needs: [build-mac, build-linux, build-windows]
@@ -152,7 +170,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Scapegrace-mac.dmg/Scapegrace-mac.dmg
-            Scapegrace-linux.AppImage/Scapegrace-*.AppImage
-            Scapegrace-win.zip/Scapegrace-win.zip
+            Scapegrace-mac.dmg/Scapegrace-mac-*.dmg
+            Scapegrace-linux.AppImage/Scapegrace-linux-*.AppImage
+            Scapegrace-win.zip/Scapegrace-win-*.zip
           generate_release_notes: true
