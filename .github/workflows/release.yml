@@ -28,8 +28,8 @@ jobs:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          CERT_FILE=$(mktemp /tmp/cert.XXXXXX.p12)
-          KEYCHAIN_FILE="/tmp/scapegrace-build-$$.keychain-db"
+          CERT_FILE="/tmp/scapegrace-cert-$GITHUB_RUN_ID.p12"
+          KEYCHAIN_FILE="/tmp/scapegrace-keychain-$GITHUB_RUN_ID.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
 
           echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_FILE"
@@ -85,12 +85,12 @@ jobs:
 
           xcrun stapler staple target/Scapegrace-mac.dmg
 
-      - name: Cleanup keychain
+      - name: Cleanup
         if: always()
         run: |
-          if [ -f "$KEYCHAIN_FILE" ]; then
-            security delete-keychain "$KEYCHAIN_FILE"
-          fi
+          security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
+          rm -f /tmp/scapegrace-cert-*.p12
+          rm -f /tmp/scapegrace-keychain-*.keychain-db
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
