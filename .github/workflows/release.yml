@@ -104,11 +104,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libxi-dev libgl1-mesa-dev
-
       - name: Build AppImage
         run: ./appimage/build-appimage.sh
 
