@@ -118,6 +118,8 @@ pub struct Level {
     pub revealed: HashSet<(i32, i32)>,
     #[serde(skip)]
     pub visible: HashSet<(i32, i32)>,
+    #[serde(skip)]
+    pub char_marks: std::collections::HashMap<(i32, i32), f32>, // bomb scorch: pos → intensity 0.0-1.0
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -141,6 +143,16 @@ pub struct Overworld {
     pub nodes: Vec<OverworldNode>,
     pub connections: Vec<(usize, usize)>,
     pub current_node: usize,
+    pub store_stock: Vec<StoreSlot>,
+}
+
+#[derive(Clone)]
+pub struct StoreSlot {
+    pub name: String,
+    pub description: String,
+    pub item_type: String,
+    pub price: i32,
+    pub stock: i32,
 }
 
 #[derive(Clone)]
@@ -179,6 +191,7 @@ impl GameState {
                 title: String::new(), description: String::new(), font: String::new(),
                 scale: vec![], victory_message: String::new(), defeat_message: String::new(),
                 revealed: HashSet::new(), visible: HashSet::new(),
+                char_marks: Default::default(),
             },
             log: vec![],
             game_over: false,
@@ -189,9 +202,6 @@ impl GameState {
 
     pub fn log(&mut self, text: &str, color: &str) {
         self.log.push(LogEntry { text: text.into(), color: color.into() });
-        if self.log.len() > 50 {
-            self.log.drain(0..self.log.len() - 50);
-        }
     }
 }
 
@@ -465,32 +475,54 @@ pub fn use_bomb(state: &mut GameState) -> bool {
     let px = state.player.x;
     let py = state.player.y;
     let radius = 3;
+    let max_damage = 15;
     let mut hit_count = 0;
 
     state.log("You throw a bomb!", "#ff6600");
 
+    // Char tiles in radius — intensity falls off with distance
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let tx = px + dx;
+            let ty = py + dy;
+            if tx < 0 || ty < 0 || tx >= state.level.width || ty >= state.level.height { continue; }
+            let dist = ((dx * dx + dy * dy) as f32).sqrt();
+            if dist > radius as f32 { continue; }
+            let intensity = 1.0 - (dist / (radius as f32 + 1.0));
+            let tile = &state.level.tiles[ty as usize][tx as usize];
+            if state.level.tile_defs.get(tile).map_or(false, |t| t.walkable) {
+                let existing = state.level.char_marks.get(&(tx, ty)).copied().unwrap_or(0.0);
+                state.level.char_marks.insert((tx, ty), existing.max(intensity));
+            }
+        }
+    }
+
     for i in 0..state.level.monsters.len() {
         if !state.level.monsters[i].is_alive() { continue; }
-        let dx = (state.level.monsters[i].x - px).abs();
-        let dy = (state.level.monsters[i].y - py).abs();
-        if dx <= radius && dy <= radius {
-            let damage = rng.gen_range(8..=15);
-            state.level.monsters[i].hp -= damage;
-            let mon_name = state.level.monsters[i].name.clone();
-            state.log(&format!("  Bomb hits {} for {} damage!", mon_name, damage), "#ff6600");
-            hit_count += 1;
+        let dx = state.level.monsters[i].x - px;
+        let dy = state.level.monsters[i].y - py;
+        let dist = ((dx * dx + dy * dy) as f32).sqrt();
+        if dist > radius as f32 { continue; }
+        // Damage diminishes with distance
+        let falloff = 1.0 - (dist / (radius as f32 + 1.0));
+        let base = rng.gen_range(8..=max_damage);
+        let damage = (base as f32 * falloff).round() as i32;
+        if damage <= 0 { continue; }
+        state.level.monsters[i].hp -= damage;
+        let mon_name = state.level.monsters[i].name.clone();
+        state.log(&format!("  Bomb hits {} for {} damage!", mon_name, damage), "#ff6600");
+        hit_count += 1;
 
-            if state.level.monsters[i].hp <= 0 {
-                let xp = state.level.monsters[i].xp_value;
-                let is_boss = state.level.monsters[i].is_boss;
-                state.log(&format!("  {} destroyed! (+{} XP)", mon_name, xp), "#44ff44");
-                state.player.xp += xp;
-                check_level_up(state);
-                maybe_drop_loot(state, i);
-                if is_boss {
-                    state.log("THE BOSS IS SLAIN!", "#ffd700");
-                    state.victory = true;
-                }
+        if state.level.monsters[i].hp <= 0 {
+            let xp = state.level.monsters[i].xp_value;
+            let is_boss = state.level.monsters[i].is_boss;
+            state.log(&format!("  {} destroyed! (+{} XP)", mon_name, xp), "#44ff44");
+            state.player.xp += xp;
+            check_level_up(state);
+            maybe_drop_loot(state, i);
+            if is_boss {
+                state.log("THE BOSS IS SLAIN!", "#ffd700");
+                state.victory = true;
             }
         }
     }

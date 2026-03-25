@@ -13,8 +13,8 @@ const TILE: f32 = 24.0;
 
 // Entity colors — used in game rendering AND overworld particles
 const COLOR_BOSS: &str = "#e64545";
-const COLOR_MONSTER: &str = "#ffd700";
-const COLOR_SHIELD: &str = "#7388bf";
+const COLOR_MONSTER: &str = "#cc5500";
+const COLOR_SHIELD: &str = "#4488ff";
 const COLOR_WEAPON: &str = "#ff8844";
 const COLOR_POTION: &str = "#44ff44";
 const COLOR_GOLD: &str = "#ffd700";
@@ -36,14 +36,6 @@ enum Screen {
     Victory,
     GameWon,
     Store,
-}
-
-struct StoreItem {
-    name: &'static str,
-    description: &'static str,
-    price: i32,
-    item_type: &'static str,
-    stock: i32,
 }
 
 enum GenMsg {
@@ -202,8 +194,10 @@ async fn main() {
     let mut level_snapshot: Option<(usize, Level, [i32; 2])> = None; // (node_index, level, start) for retry
 
     // Store state
-    let mut store_items: Vec<StoreItem> = Vec::new();
     let mut store_selection: usize = 0;
+
+    // Cheat code state
+    let mut cheat_buf: Vec<char> = Vec::new();
 
     // Sound test state
     let mut st_root: usize = 0;
@@ -223,7 +217,6 @@ async fn main() {
 
     loop {
         clear_background(Color::new(0.04, 0.04, 0.04, 1.0));
-
         match screen {
             Screen::KeyEntry => {
                 draw_key_entry_screen(&ui_font, &ui_font_bold, &key_input, &key_error, key_validating);
@@ -328,10 +321,10 @@ async fn main() {
                 const SCALES: [&str; 7] = [
                     "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian",
                 ];
-                const SOUNDS: [&str; 14] = [
+                const SOUNDS: [&str; 18] = [
                     "footstep", "hit", "crit", "player_hurt", "miss", "kill", "death",
                     "victory", "pickup_gold", "pickup_potion", "pickup_weapon", "pickup_armor",
-                    "level_up", "trap",
+                    "pickup_key", "level_up", "trap", "bomb", "boss_kill", "cheat_fanfare",
                 ];
 
                 let scale = gen::build_scale(ROOTS[st_root], SCALES[st_scale]);
@@ -364,12 +357,12 @@ async fn main() {
                     st_smooth_on = !st_smooth_on;
                     if let Some(s) = &sfx { s.set_smooth_enabled(st_smooth_on); }
                 }
-                // Room size (reverb amount) with [ and ]
-                if is_key_pressed(KeyCode::LeftBracket) {
+                // Room size (reverb amount) with - and =
+                if is_key_pressed(KeyCode::Minus) || is_key_pressed(KeyCode::LeftBracket) {
                     st_reverb_room = (st_reverb_room - 0.1).max(0.0);
                     if let Some(s) = &sfx { s.update_room_acoustics(st_reverb_room); }
                 }
-                if is_key_pressed(KeyCode::RightBracket) {
+                if is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::RightBracket) {
                     st_reverb_room = (st_reverb_room + 0.1).min(1.0);
                     if let Some(s) = &sfx { s.update_room_acoustics(st_reverb_room); }
                 }
@@ -388,8 +381,12 @@ async fn main() {
                             "pickup_potion" => s.pickup_potion(&scale),
                             "pickup_weapon" => s.pickup_weapon(&scale),
                             "pickup_armor" => s.pickup_armor(&scale),
+                            "pickup_key" => s.pickup_key(&scale),
                             "level_up" => s.level_up(&scale),
                             "trap" => s.trap(&scale),
+                            "bomb" => s.bomb(&scale),
+                            "boss_kill" => s.boss_kill(&scale),
+                            "cheat_fanfare" => s.cheat_fanfare(),
                             _ => {}
                         }
                     }
@@ -468,7 +465,7 @@ async fn main() {
                 });
 
                 let room_text = format!(
-                    "ROOM SIZE [/]: {:.0}%  (corridor <---> cavern)",
+                    "ROOM SIZE [-/=]: {:.0}%  (corridor <---> cavern)",
                     st_reverb_room * 100.0
                 );
                 let rmw = measure_text(&room_text, Some(&ui_font), fx_size, 1.0).width;
@@ -566,6 +563,33 @@ async fn main() {
                 if let Some(ow) = &mut overworld {
                     draw_overworld(&*ow, &ui_font, &ui_font_bold, overworld_font.as_ref(), desc_font.as_ref(), label_font.as_ref(), &design_token_flashes);
 
+                    // Cheat code: xyzzy
+                    let cheat_keys = [
+                        (KeyCode::X, 'x'), (KeyCode::Y, 'y'), (KeyCode::Z, 'z'),
+                    ];
+                    for &(kc, ch) in &cheat_keys {
+                        if is_key_pressed(kc) { cheat_buf.push(ch); }
+                    }
+                    if cheat_buf.len() > 10 { cheat_buf.drain(..cheat_buf.len() - 10); }
+                    let buf_str: String = cheat_buf.iter().collect();
+                    if buf_str.contains("xyzzy") {
+                        cheat_buf.clear();
+                        state.player.gold += 1000;
+                        while state.player.level < 10 {
+                            state.player.level += 1;
+                            state.player.max_hp += 5;
+                            state.player.attack += 1;
+                            state.player.defense += 1;
+                            state.player.xp_to_next = (state.player.xp_to_next as f64 * 1.5) as i32;
+                        }
+                        state.player.hp = state.player.max_hp;
+                        for node in &mut ow.nodes {
+                            node.unlocked = true;
+                        }
+                        if let Some(s) = &sfx { s.cheat_fanfare(); }
+                        eprintln!("XYZZY cheat activated!");
+                    }
+
                     // Navigation with key repeat
                     let cur = ow.current_node;
                     let (dx, dy) = get_held_direction();
@@ -630,11 +654,6 @@ async fn main() {
                         let can_enter = node.unlocked && (node.node_type == NodeType::Store || !node.completed);
                         if can_enter && node.node_type == NodeType::Store {
                             if let Some(s) = &sfx { s.confirm(); }
-                            store_items = vec![
-                                StoreItem { name: "Healing Potion", description: "Heals 15-25% HP", price: 15, item_type: "potion", stock: 3 },
-                                StoreItem { name: "Speed Potion", description: "Monsters frozen 5 turns", price: 25, item_type: "speed_potion", stock: 2 },
-                                StoreItem { name: "Bomb", description: "Area damage to nearby monsters", price: 30, item_type: "bomb", stock: 2 },
-                            ];
                             store_selection = 0;
                             screen = Screen::Store;
                         } else if can_enter {
@@ -826,26 +845,31 @@ async fn main() {
             }
 
             Screen::Store => {
-                draw_store_screen(&ui_font, &ui_font_bold, &state, &store_items, store_selection);
+                if let Some(ow) = &overworld {
+                    draw_store_screen(&ui_font, &ui_font_bold, &state, &ow.store_stock, store_selection);
+                }
 
                 if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
                     if store_selection > 0 { store_selection -= 1; }
                 }
                 if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
-                    if store_selection < store_items.len().saturating_sub(1) { store_selection += 1; }
+                    let stock_len = overworld.as_ref().map_or(0, |ow| ow.store_stock.len());
+                    if store_selection < stock_len.saturating_sub(1) { store_selection += 1; }
                 }
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-                    if let Some(item) = store_items.get_mut(store_selection) {
-                        if item.stock > 0 && state.player.gold >= item.price {
-                            state.player.gold -= item.price;
-                            item.stock -= 1;
-                            match item.item_type {
-                                "potion" => state.player.potions += 1,
-                                "speed_potion" => state.player.speed_potions += 1,
-                                "bomb" => state.player.bombs += 1,
-                                _ => {}
+                    if let Some(ow) = &mut overworld {
+                        if let Some(item) = ow.store_stock.get_mut(store_selection) {
+                            if item.stock > 0 && state.player.gold >= item.price {
+                                state.player.gold -= item.price;
+                                item.stock -= 1;
+                                match item.item_type.as_str() {
+                                    "potion" => state.player.potions += 1,
+                                    "speed_potion" => state.player.speed_potions += 1,
+                                    "bomb" => state.player.bombs += 1,
+                                    _ => {}
+                                }
+                                if let Some(s) = &sfx { s.confirm(); }
                             }
-                            if let Some(s) = &sfx { s.confirm(); }
                         }
                     }
                 }
@@ -896,14 +920,16 @@ fn handle_playing_input(
     last_fire: &mut f64,
 ) {
     let sc = state.level.scale.clone();
-    if is_key_pressed(KeyCode::H) {
+    if is_key_pressed(KeyCode::C) {
         use_potion(state);
         if let Some(s) = sfx { s.pickup_potion(&sc); }
     }
-    if is_key_pressed(KeyCode::B) {
-        use_bomb(state);
+    if is_key_pressed(KeyCode::X) {
+        if use_bomb(state) {
+            if let Some(s) = sfx { s.bomb(&sc); }
+        }
     }
-    if is_key_pressed(KeyCode::V) {
+    if is_key_pressed(KeyCode::Z) {
         use_speed_potion(state);
     }
 
@@ -940,6 +966,7 @@ fn handle_playing_input(
         let potions_before = state.player.potions;
         let weapon_before = state.player.weapon.clone();
         let armor_before = state.player.armor.clone();
+        let keys_before = state.player.keys;
 
         let result = try_move(state, dx, dy);
         let moved = result["moved"].as_bool().unwrap_or(false);
@@ -981,6 +1008,7 @@ fn handle_playing_input(
             if state.player.potions > potions_before { s.pickup_potion(&sc); }
             if state.player.weapon != weapon_before { s.pickup_weapon(&sc); }
             if state.player.armor != armor_before { s.pickup_armor(&sc); }
+            if state.player.keys > keys_before { s.pickup_key(&sc); }
         }
 
         if state.victory {
@@ -2160,6 +2188,12 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
 
             draw_rectangle(screen_x, screen_y, TILE, TILE, hex_to_color(&def.color));
 
+            // Bomb scorch overlay
+            if let Some(&intensity) = state.level.char_marks.get(&(tx, ty)) {
+                let alpha = intensity * 0.6;
+                draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.05, 0.02, 0.0, alpha));
+            }
+
             if !def.char_display.is_empty() {
                 let alpha = if in_vision { 0.27 } else { 0.13 };
                 let font_size = (TILE * 0.55) as u16;
@@ -2311,18 +2345,12 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         }
     }
 
-    // Player — shield ring + HP pie + sword triangle, all within one tile
+    // Player — HP pie + shield outline + weapon line
     let px = map_left + (state.player.x - camera_x) as f32 * TILE + TILE / 2.0;
     let py = mid_top + (state.player.y - camera_y) as f32 * TILE + TILE / 2.0;
     let has_shield = state.player.armor != "None";
     let has_sword = state.player.weapon != "Fists";
-    let shield_color = { let c = hex_to_color(COLOR_SHIELD); Color::new(c.r, c.g, c.b, 0.9) };
-
-    let outer_r = TILE * 0.42;
-    let ring_w = 3.0;
-    let inner_r = outer_r - ring_w - 1.0;
-    let r = if has_shield { inner_r } else { TILE * 0.35 };
-    let shield_outer = if has_shield { outer_r } else { r };
+    let r = TILE * 0.38;
 
     let hp_pct = if state.player.max_hp > 0 {
         state.player.hp as f32 / state.player.max_hp as f32
@@ -2330,12 +2358,8 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         0.0
     };
 
-    // Soft shadow for player
-    draw_soft_circle_shadow(px, py, shield_outer);
-
-    if has_shield {
-        draw_circle(px, py, outer_r, shield_color);
-    }
+    // Soft shadow
+    draw_soft_circle_shadow(px, py, r);
 
     // Dark background + HP pie
     draw_circle(px, py, r, Color::new(0.15, 0.15, 0.15, 1.0));
@@ -2343,25 +2367,27 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         draw_pie(px, py, r, hp_pct, hp_bar_color(hp_pct), state.player.facing);
     }
 
-    // Sword triangle sticking out from the edge in facing direction
+    // Shield: bright blue outline ring
+    if has_shield {
+        let segments = 32;
+        let shield_color = hex_to_color(COLOR_SHIELD);
+        for i in 0..segments {
+            let a1 = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            let a2 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+            draw_line(
+                px + a1.cos() * r, py + a1.sin() * r,
+                px + a2.cos() * r, py + a2.sin() * r,
+                2.5, shield_color,
+            );
+        }
+    }
+
+    // Weapon: inner line from center to facing direction edge
     if has_sword {
-        let sword_r = r * 0.4;
-        let sword_base = shield_outer; // base of triangle sits at the outer edge
-        let sx = px + state.player.facing.cos() * sword_base;
-        let sy = py + state.player.facing.sin() * sword_base;
-        let tip_x = sx + state.player.facing.cos() * sword_r;
-        let tip_y = sy + state.player.facing.sin() * sword_r;
-        let perp = state.player.facing + std::f32::consts::FRAC_PI_2;
-        let base1_x = sx + perp.cos() * sword_r * 0.4;
-        let base1_y = sy + perp.sin() * sword_r * 0.4;
-        let base2_x = sx - perp.cos() * sword_r * 0.4;
-        let base2_y = sy - perp.sin() * sword_r * 0.4;
-        draw_triangle(
-            Vec2::new(tip_x, tip_y),
-            Vec2::new(base1_x, base1_y),
-            Vec2::new(base2_x, base2_y),
-            Color::new(0.8, 0.8, 0.8, 0.9),
-        );
+        let sword_color = hex_to_color(COLOR_WEAPON);
+        let tip_x = px + state.player.facing.cos() * (r - 1.0);
+        let tip_y = py + state.player.facing.sin() * (r - 1.0);
+        draw_line(px, py, tip_x, tip_y, 2.5, sword_color);
     }
 
     // ── Smooth radial light falloff (sub-tile grid, not aligned to tiles) ──
@@ -2399,7 +2425,8 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     // Word-wrap log entries into visual lines
     let entry_gap = 4.0_f32; // small gap between log entries
     let mut wrapped: Vec<(String, String, bool)> = Vec::new(); // (text, color, is_last_line_of_entry)
-    for entry in &state.log {
+    let log_start = state.log.len().saturating_sub(50);
+    for entry in &state.log[log_start..] {
         let mut current = String::new();
         for word in entry.text.split_whitespace() {
             let candidate = if current.is_empty() {
@@ -2438,39 +2465,144 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         if *last { y += entry_gap; }
     }
 
-    // ── BOTTOM ROW: Stats + keymap ──
+    // ── BOTTOM ROW: Status bar ──
     let bot_y = sh - bottom_height;
     draw_rectangle(0.0, bot_y, sw, bottom_height, Color::new(0.05, 0.05, 0.05, 1.0));
     draw_line(0.0, bot_y, sw, bot_y, 1.0, Color::new(0.13, 0.13, 0.13, 1.0));
 
-    let hp_pct = if state.player.max_hp > 0 {
-        state.player.hp as f32 / state.player.max_hp as f32
-    } else {
-        0.0
-    };
-    let stats = format!(
-        "HP {}/{}  LVL {}  ATK {}  DEF {}  {} / {}  ${}  P{}  S{}  B{}",
-        state.player.hp, state.player.max_hp, state.player.level,
-        state.player.attack + state.player.weapon_damage,
-        state.player.defense + state.player.armor_defense,
-        state.player.weapon, state.player.armor,
-        state.player.gold, state.player.potions,
-        state.player.speed_potions, state.player.bombs,
-    );
-    draw_text_ex(&stats, 16.0, bot_y + 19.0, TextParams {
-        font: Some(ui_font), font_size: 14, color: hp_bar_color(hp_pct), ..Default::default()
-    });
+    let cy = bot_y + bottom_height / 2.0;
+    let text_y = cy + 5.0;
+    let fs = 13u16;
+    let gap = 14.0;
+    let mut x = 12.0;
+    let dim = Color::new(0.3, 0.3, 0.3, 1.0);
 
-    let mut keys_str = "WASD: move  Bump: attack  H: potion  V: speed  B: bomb".to_string();
-    if state.player.speed_turns > 0 {
-        keys_str = format!("FAST ({} turns)  {}", state.player.speed_turns, keys_str);
-    }
-    let kw = measure_text(&keys_str, Some(ui_font), 13, 1.0).width;
-    draw_text_ex(&keys_str, sw - kw - 16.0, bot_y + 19.0, TextParams {
-        font: Some(ui_font), font_size: 13,
-        color: if state.player.speed_turns > 0 { hex_to_color("#44ddff") } else { WHITE },
-        ..Default::default()
+    let total_atk = state.player.attack + state.player.weapon_damage;
+    let total_def = state.player.defense + state.player.armor_defense;
+    let atk_color = hex_to_color(COLOR_WEAPON);
+    let def_color = hex_to_color(COLOR_SHIELD);
+    let gold_color = hex_to_color("#ffd700");
+    let potion_color = hex_to_color("#44ff44");
+    let speed_color = hex_to_color("#44ddff");
+    let bomb_color = hex_to_color("#ff6600");
+
+    // Sword icon + ATK (dim if no weapon)
+    let has_weapon = state.player.weapon != "Fists";
+    let sword_color = if has_weapon { atk_color } else { dim };
+    draw_line(x + 1.0, cy - 6.0, x + 1.0, cy + 6.0, 2.0, sword_color);
+    draw_line(x - 3.0, cy - 2.0, x + 5.0, cy - 2.0, 1.5, sword_color);
+    x += 10.0;
+    let atk_text = format!("{}", total_atk);
+    draw_text_ex(&atk_text, x, text_y, TextParams {
+        font: Some(ui_font), font_size: fs, color: atk_color, ..Default::default()
     });
+    x += measure_text(&atk_text, Some(ui_font), fs, 1.0).width + gap;
+
+    // Shield icon + DEF (dim icon if no armor, number always bright)
+    let has_armor = state.player.armor != "None";
+    let shield_color = if has_armor { def_color } else { dim };
+    draw_rectangle(x, cy - 5.0, 8.0, 10.0, shield_color);
+    draw_triangle(Vec2::new(x, cy + 5.0), Vec2::new(x + 8.0, cy + 5.0), Vec2::new(x + 4.0, cy + 9.0), shield_color);
+    x += 12.0;
+    let def_text = format!("{}", total_def);
+    draw_text_ex(&def_text, x, text_y, TextParams {
+        font: Some(ui_font), font_size: fs, color: def_color, ..Default::default()
+    });
+    x += measure_text(&def_text, Some(ui_font), fs, 1.0).width + gap;
+
+    // Level
+    let lvl_text = format!("L{}", state.player.level);
+    draw_text_ex(&lvl_text, x, text_y, TextParams {
+        font: Some(ui_font), font_size: fs, color: WHITE, ..Default::default()
+    });
+    x += measure_text(&lvl_text, Some(ui_font), fs, 1.0).width + gap;
+
+    // Gold diamond + count
+    draw_diamond(x + 4.0, cy, 4.0, gold_color);
+    x += 12.0;
+    let gold_text = format!("{}", state.player.gold);
+    draw_text_ex(&gold_text, x, text_y, TextParams {
+        font: Some(ui_font), font_size: fs, color: gold_color, ..Default::default()
+    });
+    x += measure_text(&gold_text, Some(ui_font), fs, 1.0).width + gap;
+
+    // Key indicator — same square shape as in-game
+    if state.player.keys > 0 {
+        let key_color = hex_to_color("#ffd700");
+        let half = 5.0;
+        draw_rectangle(x, cy - half, half * 2.0, half * 2.0, key_color);
+        x += half * 2.0 + 4.0;
+        if state.player.keys > 1 {
+            let kt = format!("{}", state.player.keys);
+            draw_text_ex(&kt, x, text_y, TextParams {
+                font: Some(ui_font), font_size: fs, color: key_color, ..Default::default()
+            });
+            x += measure_text(&kt, Some(ui_font), fs, 1.0).width;
+        }
+        x += gap;
+    }
+
+    // Potions: green dots + count
+    if state.player.potions > 0 {
+        draw_circle(x + 4.0, cy, 4.0, potion_color);
+        x += 12.0;
+        let pt = format!("{}", state.player.potions);
+        draw_text_ex(&pt, x, text_y, TextParams {
+            font: Some(ui_font), font_size: fs, color: potion_color, ..Default::default()
+        });
+        x += measure_text(&pt, Some(ui_font), fs, 1.0).width + gap;
+    }
+
+    // Speed potions: cyan triangle + count
+    if state.player.speed_potions > 0 {
+        draw_triangle(Vec2::new(x + 4.0, cy - 5.0), Vec2::new(x, cy + 4.0), Vec2::new(x + 8.0, cy + 4.0), speed_color);
+        x += 12.0;
+        let st = format!("{}", state.player.speed_potions);
+        draw_text_ex(&st, x, text_y, TextParams {
+            font: Some(ui_font), font_size: fs, color: speed_color, ..Default::default()
+        });
+        x += measure_text(&st, Some(ui_font), fs, 1.0).width + gap;
+    }
+
+    // Bombs: orange triangle + count
+    if state.player.bombs > 0 {
+        draw_triangle(Vec2::new(x + 4.0, cy - 5.0), Vec2::new(x, cy + 4.0), Vec2::new(x + 8.0, cy + 4.0), bomb_color);
+        x += 12.0;
+        let bt = format!("{}", state.player.bombs);
+        draw_text_ex(&bt, x, text_y, TextParams {
+            font: Some(ui_font), font_size: fs, color: bomb_color, ..Default::default()
+        });
+    }
+
+    // Speed effect indicator (right side)
+    if state.player.speed_turns > 0 {
+        let fast = format!("FAST {}", state.player.speed_turns);
+        let fw = measure_text(&fast, Some(ui_font), fs, 1.0).width;
+        draw_text_ex(&fast, sw - fw - 16.0, text_y, TextParams {
+            font: Some(ui_font), font_size: fs, color: speed_color, ..Default::default()
+        });
+    } else {
+        let keys = "WASD  C:heal  X:bomb  Z:speed";
+        let kw = measure_text(keys, Some(ui_font), 11, 1.0).width;
+        draw_text_ex(keys, sw - kw - 16.0, text_y - 1.0, TextParams {
+            font: Some(ui_font), font_size: 11, color: dim, ..Default::default()
+        });
+    }
+}
+
+fn draw_diamond(cx: f32, cy: f32, r: f32, color: Color) {
+    draw_triangle(
+        Vec2::new(cx, cy - r),
+        Vec2::new(cx - r, cy),
+        Vec2::new(cx, cy + r),
+        color,
+    );
+    draw_triangle(
+        Vec2::new(cx, cy - r),
+        Vec2::new(cx + r, cy),
+        Vec2::new(cx, cy + r),
+        color,
+    );
 }
 
 fn draw_pie(cx: f32, cy: f32, r: f32, pct: f32, color: Color, facing: f32) {
@@ -2499,7 +2631,7 @@ fn hp_bar_color(pct: f32) -> Color {
     }
 }
 
-fn draw_store_screen(font: &Font, bold: &Font, state: &GameState, items: &[StoreItem], selection: usize) {
+fn draw_store_screen(font: &Font, bold: &Font, state: &GameState, items: &[StoreSlot], selection: usize) {
     let sw = screen_width();
     let sh = screen_height();
     clear_background(Color::new(0.05, 0.04, 0.02, 1.0));
@@ -2520,12 +2652,48 @@ fn draw_store_screen(font: &Font, bold: &Font, state: &GameState, items: &[Store
         font: Some(font), font_size: gs, color: hex_to_color("#ffd700"), ..Default::default()
     });
 
-    // Inventory summary
-    let inv_text = format!("Potions: {}  Speed: {}  Bombs: {}",
-        state.player.potions, state.player.speed_potions, state.player.bombs);
-    let iw = measure_text(&inv_text, Some(font), 16, 1.0).width;
-    draw_text_ex(&inv_text, (sw - iw) / 2.0, sh * 0.24, TextParams {
-        font: Some(font), font_size: 16, color: Color::new(0.6, 0.6, 0.6, 1.0), ..Default::default()
+    // Inventory summary with icons
+    let inv_y = sh * 0.24;
+    let inv_fs = 16u16;
+    let potion_c = hex_to_color("#44ff44");
+    let speed_c = hex_to_color("#44ddff");
+    let bomb_c = hex_to_color("#ff6600");
+
+    // Measure total width to center: icon+num + gap + icon+num + gap + icon+num
+    let p_text = format!("{}", state.player.potions);
+    let s_text = format!("{}", state.player.speed_potions);
+    let b_text = format!("{}", state.player.bombs);
+    let icon_sz = 6.0;
+    let icon_gap = 6.0;
+    let group_gap = 20.0;
+    let total_w = (icon_sz * 2.0 + icon_gap + measure_text(&p_text, Some(font), inv_fs, 1.0).width) +
+        group_gap +
+        (icon_sz * 2.0 + icon_gap + measure_text(&s_text, Some(font), inv_fs, 1.0).width) +
+        group_gap +
+        (icon_sz * 2.0 + icon_gap + measure_text(&b_text, Some(font), inv_fs, 1.0).width);
+    let mut ix = (sw - total_w) / 2.0;
+
+    // Potion: green circle
+    draw_circle(ix + icon_sz, inv_y - 4.0, icon_sz, potion_c);
+    ix += icon_sz * 2.0 + icon_gap;
+    draw_text_ex(&p_text, ix, inv_y, TextParams {
+        font: Some(font), font_size: inv_fs, color: potion_c, ..Default::default()
+    });
+    ix += measure_text(&p_text, Some(font), inv_fs, 1.0).width + group_gap;
+
+    // Speed: cyan triangle
+    draw_triangle(Vec2::new(ix + icon_sz, inv_y - icon_sz - 4.0), Vec2::new(ix, inv_y + 2.0), Vec2::new(ix + icon_sz * 2.0, inv_y + 2.0), speed_c);
+    ix += icon_sz * 2.0 + icon_gap;
+    draw_text_ex(&s_text, ix, inv_y, TextParams {
+        font: Some(font), font_size: inv_fs, color: speed_c, ..Default::default()
+    });
+    ix += measure_text(&s_text, Some(font), inv_fs, 1.0).width + group_gap;
+
+    // Bomb: orange triangle
+    draw_triangle(Vec2::new(ix + icon_sz, inv_y - icon_sz - 4.0), Vec2::new(ix, inv_y + 2.0), Vec2::new(ix + icon_sz * 2.0, inv_y + 2.0), bomb_c);
+    ix += icon_sz * 2.0 + icon_gap;
+    draw_text_ex(&b_text, ix, inv_y, TextParams {
+        font: Some(font), font_size: inv_fs, color: bomb_c, ..Default::default()
     });
 
     // Items
@@ -2539,9 +2707,9 @@ fn draw_store_screen(font: &Font, bold: &Font, state: &GameState, items: &[Store
 
         // Selection indicator
         if selected {
-            draw_rectangle(item_x - 15.0, y - 18.0, sw * 0.5 + 30.0, line_h - 6.0,
+            draw_rectangle(item_x - 20.0, y - 18.0, sw * 0.5 + 40.0, line_h - 6.0,
                 Color::new(0.15, 0.12, 0.05, 1.0));
-            draw_text_ex(">", item_x - 12.0, y + 5.0, TextParams {
+            draw_text_ex(">", item_x - 16.0, y + 5.0, TextParams {
                 font: Some(bold), font_size: 20, color: hex_to_color("#ffd700"), ..Default::default()
             });
         }
@@ -2552,13 +2720,42 @@ fn draw_store_screen(font: &Font, bold: &Font, state: &GameState, items: &[Store
             Color::new(0.4, 0.4, 0.4, 1.0)
         };
 
-        // Name
-        draw_text_ex(item.name, item_x + 5.0, y + 5.0, TextParams {
+        // Item icon (matches status bar shapes, full row height)
+        let icon_cx = item_x + 20.0;
+        let icon_cy = y + 2.0;
+        let icon_r = 14.0;
+        let icon_color = if can_buy {
+            match item.item_type.as_str() {
+                "potion" => hex_to_color("#44ff44"),
+                "speed_potion" => hex_to_color("#44ddff"),
+                "bomb" => hex_to_color("#ff6600"),
+                _ => WHITE,
+            }
+        } else {
+            Color::new(0.25, 0.25, 0.25, 1.0)
+        };
+        match item.item_type.as_str() {
+            "potion" => {
+                draw_circle(icon_cx, icon_cy, icon_r, icon_color);
+            }
+            "speed_potion" | "bomb" => {
+                draw_triangle(
+                    Vec2::new(icon_cx, icon_cy - icon_r),
+                    Vec2::new(icon_cx - icon_r, icon_cy + icon_r),
+                    Vec2::new(icon_cx + icon_r, icon_cy + icon_r),
+                    icon_color,
+                );
+            }
+            _ => {}
+        }
+
+        // Name (shifted right to make room for icon)
+        draw_text_ex(&item.name, item_x + 46.0, y + 5.0, TextParams {
             font: Some(bold), font_size: 20, color: name_color, ..Default::default()
         });
 
         // Description
-        draw_text_ex(item.description, item_x + 5.0, y + 22.0, TextParams {
+        draw_text_ex(&item.description, item_x + 46.0, y + 22.0, TextParams {
             font: Some(font), font_size: 14, color: Color::new(0.5, 0.5, 0.5, 1.0), ..Default::default()
         });
 

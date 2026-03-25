@@ -132,7 +132,8 @@ impl Sfx {
     pub fn new() -> Option<Self> {
         let (stream, handle) = OutputStream::try_default().ok()?;
         Some(Self {
-            _stream: stream, handle, drone: RefCell::new(None),
+            _stream: stream, handle,
+            drone: RefCell::new(None),
             bass_pos: RefCell::new(0), beat: RefCell::new(0),
             reverb: RefCell::new(ReverbParams { delay_ms: 20.0, feedback: 0.3, wet: 0.15 }),
             reverb_enabled: RefCell::new(true),
@@ -141,22 +142,23 @@ impl Sfx {
     }
 
     fn play(&self, source: impl Source<Item = f32> + Send + 'static) {
-        if let Ok(sink) = Sink::try_new(&self.handle) {
-            let do_smooth = *self.smooth_enabled.borrow();
-            let do_reverb = *self.reverb_enabled.borrow();
-            let smoothed: Box<dyn Source<Item = f32> + Send> = if do_smooth {
-                Box::new(source.smooth(3))
-            } else {
-                Box::new(source)
-            };
-            if do_reverb {
-                let r = *self.reverb.borrow();
-                sink.append(Reverb::new(smoothed, r.delay_ms, r.feedback, r.wet));
-            } else {
-                sink.append(smoothed);
-            }
-            sink.detach();
-        }
+        let do_smooth = *self.smooth_enabled.borrow();
+        let do_reverb = *self.reverb_enabled.borrow();
+        let smoothed: Box<dyn Source<Item = f32> + Send> = if do_smooth {
+            Box::new(source.smooth(5))
+        } else {
+            Box::new(source)
+        };
+        let processed: Box<dyn Source<Item = f32> + Send> = if do_reverb {
+            let r = *self.reverb.borrow();
+            Box::new(Reverb::new(smoothed, r.delay_ms, r.feedback, r.wet))
+        } else {
+            smoothed
+        };
+
+        let samples: Vec<f32> = processed.collect();
+        let buf = rodio::buffer::SamplesBuffer::new(1, 44100, samples);
+        let _ = self.handle.play_raw(buf.convert_samples());
     }
 
     pub fn set_reverb_enabled(&self, on: bool) { *self.reverb_enabled.borrow_mut() = on; }
@@ -172,9 +174,9 @@ impl Sfx {
     pub fn update_room_acoustics(&self, openness: f32) {
         let o = openness.clamp(0.0, 1.0);
         *self.reverb.borrow_mut() = ReverbParams {
-            delay_ms: 8.0 + o * 70.0,       // 8ms (corridor) → 78ms (cavern)
-            feedback: 0.15 + o * 0.45,       // 0.15 (tight) → 0.60 (cavernous)
-            wet: 0.08 + o * 0.30,            // 0.08 (dry corridor) → 0.38 (washy room)
+            delay_ms: 12.0 + o * 80.0,      // 12ms (corridor) → 92ms (cavern)
+            feedback: 0.25 + o * 0.45,      // 0.25 (tight) → 0.70 (cavernous)
+            wet: 0.40 + o * 0.30,           // 0.40 (corridor) → 0.70 (washy cavern)
         };
     }
 
@@ -501,211 +503,194 @@ impl Sfx {
     }
 
     pub fn victory(&self, scale: &[f32]) {
-        // Sousa-style military march — oom-pah rhythm, bright brass, major triads
-        // Each performance randomizes: tempo, number of bars, melody contour,
-        // which bars get fills vs oom-pah, and the big finish style.
+        // Early Beatles rock — jangly rhythm guitar, uses the level's actual scale/mode
+        // Dark modes get minor feel, bright modes get major feel
         let mut rng = ::rand::thread_rng();
         let npo = notes_per_octave(scale);
 
-        // March tempo — quarter note in ms (marches are 110-130 BPM)
-        let quarter = rng.gen_range(220..320) as u64;
+        // Rock tempo — 140-180 BPM (varies per performance)
+        let quarter = rng.gen_range(160..230) as u64;
         let eighth = quarter / 2;
-        let sixteenth = quarter / 4;
 
-        // Force major triads for that bright Sousa sound
-        // root, major 3rd (4 semitones), perfect 5th (7 semitones)
-        let make_major = |freq: f32| -> [f32; 3] {
-            [freq, freq * 2.0_f32.powf(4.0 / 12.0), freq * 2.0_f32.powf(7.0 / 12.0)]
+        // Use the actual scale for chords — triads built from scale degrees
+        // This makes dark modes (phrygian, aeolian) sound darker,
+        // bright modes (ionian, lydian) sound brighter
+        let triad_at = |deg: usize| -> Vec<f32> {
+            let r = scale[deg % scale.len()];
+            let t = scale[(deg + 2) % scale.len()];
+            let f = scale[(deg + 4) % scale.len()];
+            // Ensure third and fifth are above root
+            let t = if t < r { t * 2.0 } else { t };
+            let f = if f < t { f * 2.0 } else { f };
+            vec![r, t, f]
         };
 
-        // Brass timbre: saw wave (bright, brassy overtones)
-        let brass = Waveform::Saw;
-        // Bass: square wave (tuba-like)
-        let tuba = Waveform::Square;
-
-        // Number of bars in the march (4-8)
-        let num_bars = rng.gen_range(4..9);
-
-        // Build a random melody contour — which scale degrees to visit
-        let mut melody_degrees: Vec<usize> = Vec::new();
-        let mut deg = rng.gen_range(0..npo);
-        for _ in 0..num_bars {
-            melody_degrees.push(deg);
-            // March melodies move by steps and small leaps
-            let jump: i32 = match rng.gen_range(0..10) {
-                0..=3 => 1,    // step up
-                4..=5 => 2,    // leap up (third)
-                6..=7 => -1,   // step down
-                8 => 3,        // big leap up (fourth)
-                _ => 0,        // repeat
-            };
-            deg = ((deg as i32 + jump).rem_euclid(npo as i32)) as usize;
-        }
-
-        // Choose a march style for this performance
+        // Random rhythm style
         let style = rng.gen_range(0..4);
+        let guitar = match style {
+            0 => Waveform::Square,  // jangly Rickenbacker
+            1 => Waveform::Saw,     // rawer, more aggressive
+            _ => Waveform::Square,
+        };
+
+        // Build a progression using actual scale degrees
+        // Varies based on random choice — not always I-IV-V
+        let prog_patterns: [[usize; 4]; 5] = [
+            [0, 3, 4, 0],   // I-IV-V-I (classic)
+            [0, 5, 3, 4],   // I-vi-IV-V (doo-wop)
+            [0, 2, 4, 0],   // I-iii-V-I (open)
+            [0, 4, 3, 4],   // I-V-IV-V (rock)
+            [0, 3, 0, 4],   // I-IV-I-V (simple)
+        ];
+        let pattern = &prog_patterns[rng.gen_range(0..prog_patterns.len())];
+
+        // 6-10 bars
+        let num_bars = rng.gen_range(6..11);
 
         let mut song: Box<dyn Source<Item = f32> + Send> = Box::new(
             silence(Duration::from_millis(1))
         );
 
-        for (bar, &degree) in melody_degrees.iter().enumerate() {
-            // Get the root frequency for this bar's chord
-            let root_idx = degree.min(scale.len() - 1);
-            let root = scale[root_idx];
-            let chord = make_major(root);
-            // Bass note — one octave down
-            let bass = root * 0.5;
-            // Neighboring chord for "pah" (fifth above or fourth below)
-            let pah_root = scale[(degree + 4).min(scale.len() - 1).min(npo - 1)];
-            let pah_chord = make_major(pah_root);
-
-            let vol = 0.10;
-            let bass_vol = 0.08;
-            let is_last_two = bar >= num_bars - 2;
-
-            // Rubato per bar
-            let rubato: f64 = rng.gen_range(0.92..1.08);
-            let q = (quarter as f64 * rubato) as u64;
-            let e = (eighth as f64 * rubato) as u64;
-            let s = (sixteenth as f64 * rubato) as u64;
+        for bar in 0..num_bars {
+            let degree = pattern[bar % pattern.len()] % npo;
+            let chord = triad_at(degree);
+            let is_last = bar == num_bars - 1;
 
             match style {
                 0 => {
-                    // Classic oom-pah: bass on 1, chord on 2
-                    // OOM (bass note, strong)
-                    song = Box::new(song
-                        .then(Osc::new(bass, tuba)
-                            .take_duration(Duration::from_millis(q))
-                            .amplify(bass_vol + if is_last_two { 0.03 } else { 0.0 })
-                            .fade_out(Duration::from_millis(q))));
-                    // PAH (staccato chord)
-                    let stac = e + rng.gen_range(0..s);
-                    song = Box::new(song
-                        .then(Chord::new(&chord, brass)
-                            .take_duration(Duration::from_millis(stac))
-                            .amplify(vol))
-                        .then(silence(Duration::from_millis(q.saturating_sub(stac)))));
+                    // Driving eighths — chunk chunk chunk chunk
+                    for beat in 0..4 {
+                        let dur = eighth - rng.gen_range(8..18);
+                        let gap = eighth - dur;
+                        let vol = if beat % 2 == 0 { 0.10 } else { 0.07 };
+                        song = Box::new(song
+                            .then(Chord::new(&chord, guitar)
+                                .take_duration(Duration::from_millis(dur))
+                                .amplify(vol)
+                                .fade_out(Duration::from_millis(dur)))
+                            .then(silence(Duration::from_millis(gap))));
+                    }
                 }
                 1 => {
-                    // Oom-pah-pah (3-feel, like a Sousa trio section)
-                    let triplet = q * 2 / 3;
+                    // Syncopated — long-short-long
+                    let long = quarter + eighth;
+                    let short = eighth;
                     song = Box::new(song
-                        .then(Osc::new(bass, tuba)
-                            .take_duration(Duration::from_millis(triplet))
-                            .amplify(bass_vol)
-                            .fade_out(Duration::from_millis(triplet)))
-                        .then(Chord::new(&chord, brass)
-                            .take_duration(Duration::from_millis(triplet / 2))
-                            .amplify(vol * 0.7))
-                        .then(silence(Duration::from_millis(s / 2)))
-                        .then(Chord::new(&pah_chord, brass)
-                            .take_duration(Duration::from_millis(triplet / 2))
-                            .amplify(vol * 0.7))
-                        .then(silence(Duration::from_millis(s / 2))));
+                        .then(Chord::new(&chord, guitar)
+                            .take_duration(Duration::from_millis(long))
+                            .amplify(0.10)
+                            .fade_out(Duration::from_millis(long)))
+                        .then(Chord::new(&chord, guitar)
+                            .take_duration(Duration::from_millis(short))
+                            .amplify(0.07)
+                            .fade_out(Duration::from_millis(short))));
                 }
                 2 => {
-                    // Melody-forward: dotted eighth + sixteenth pickup pattern
-                    // DA-da DA-da (dotted rhythm, very Sousa)
-                    let dotted_e = e + s;  // dotted eighth
-                    song = Box::new(song
-                        .then(Chord::new(&chord, brass)
-                            .take_duration(Duration::from_millis(dotted_e))
-                            .amplify(vol + 0.02)
-                            .fade_out(Duration::from_millis(dotted_e)))
-                        .then(Osc::new(pah_root, brass)
-                            .take_duration(Duration::from_millis(s))
-                            .amplify(vol * 0.6))
-                        .then(Chord::new(&chord, brass)
-                            .take_duration(Duration::from_millis(dotted_e))
-                            .amplify(vol)
-                            .fade_out(Duration::from_millis(dotted_e)))
-                        .then(Osc::new(bass, tuba)
-                            .take_duration(Duration::from_millis(s))
-                            .amplify(bass_vol)));
+                    // Staccato stabs with rests — punchy
+                    for _ in 0..2 {
+                        let stab = rng.gen_range(40..80);
+                        let rest = quarter - stab;
+                        song = Box::new(song
+                            .then(Chord::new(&chord, guitar)
+                                .take_duration(Duration::from_millis(stab))
+                                .amplify(0.12))
+                            .then(silence(Duration::from_millis(rest))));
+                    }
                 }
                 _ => {
-                    // Call-and-response: loud brass, then echo quieter
-                    let call_dur = q + rng.gen_range(0..e);
-                    let resp_dur = q.saturating_sub(rng.gen_range(0..s));
-                    song = Box::new(song
-                        .then(Chord::new(&chord, brass)
-                            .take_duration(Duration::from_millis(call_dur))
-                            .amplify(vol + 0.03)
-                            .fade_out(Duration::from_millis(call_dur)))
-                        .then(Chord::new(&pah_chord, Waveform::Sine)
-                            .take_duration(Duration::from_millis(resp_dur))
-                            .amplify(vol * 0.5)
-                            .fade_out(Duration::from_millis(resp_dur))));
+                    // Arpeggiated — pick individual notes of the chord
+                    for &note in &chord {
+                        let dur = rng.gen_range(60..100);
+                        let gap = rng.gen_range(10..30);
+                        song = Box::new(song
+                            .then(Osc::new(note, guitar)
+                                .take_duration(Duration::from_millis(dur))
+                                .amplify(0.08)
+                                .fade_out(Duration::from_millis(dur)))
+                            .then(silence(Duration::from_millis(gap))));
+                    }
+                    // Fill remaining time
+                    song = Box::new(song.then(silence(Duration::from_millis(
+                        (quarter * 2).saturating_sub(chord.len() as u64 * 100)
+                    ))));
                 }
             }
 
-            // Occasional snare-like fill on even bars (staccato high notes)
-            if bar % 2 == 1 && bar < num_bars - 2 && rng.gen_bool(0.4) {
-                let fill_note = scale[(degree + npo).min(scale.len() - 1)];
+            // Fill every 4th bar — ascending scale run
+            if bar % 4 == 3 && !is_last {
+                let fill_len = rng.gen_range(3..6);
                 let fill_dur = rng.gen_range(30..60);
-                song = Box::new(song
-                    .then(Osc::new(fill_note, brass)
-                        .take_duration(Duration::from_millis(fill_dur))
-                        .amplify(0.05))
-                    .then(silence(Duration::from_millis(fill_dur))));
+                for i in 0..fill_len {
+                    let n = scale[(degree + i) % scale.len()];
+                    let n = if i > 0 && n < scale[degree % scale.len()] { n * 2.0 } else { n };
+                    song = Box::new(song
+                        .then(Osc::new(n, guitar)
+                            .take_duration(Duration::from_millis(fill_dur))
+                            .amplify(0.06 + i as f32 * 0.005)
+                            .fade_out(Duration::from_millis(fill_dur))));
+                }
             }
         }
 
-        // BIG FINISH — Sousa marches end with repeated staccato chords
-        // Pick from a few different endings
-        let final_root = scale[0]; // tonic
-        let final_chord = make_major(final_root);
-        let final_bass = final_root * 0.25;
-        let ending = rng.gen_range(0..3);
-        let pause = rng.gen_range(80..200);
-        song = Box::new(song.then(silence(Duration::from_millis(pause))));
+        // Finish: variable number of stabs then resolve
+        let resolve_deg = if rng.gen_bool(0.5) { 3 } else { 4 };
+        let resolve_chord = triad_at(resolve_deg % npo);
+        let hit_chord = triad_at(0);
+        let gap = rng.gen_range(50..90);
+        let hold = rng.gen_range(500..900);
+        song = Box::new(song.then(silence(Duration::from_millis(gap))));
 
+        let ending = rng.gen_range(0..4);
         match ending {
             0 => {
-                // Three staccato hits: BAM BAM BAAAAM
-                let hit_dur = rng.gen_range(60..100);
-                let gap = rng.gen_range(40..80);
-                let hold = rng.gen_range(800..1400);
+                // Single big resolve
                 song = Box::new(song
-                    .then(Chord::new(&final_chord, brass)
-                        .take_duration(Duration::from_millis(hit_dur)).amplify(0.14))
-                    .then(silence(Duration::from_millis(gap)))
-                    .then(Chord::new(&final_chord, brass)
-                        .take_duration(Duration::from_millis(hit_dur)).amplify(0.14))
-                    .then(silence(Duration::from_millis(gap)))
-                    .then(Chord::new(&[final_bass, final_chord[0], final_chord[1], final_chord[2]], brass)
-                        .take_duration(Duration::from_millis(hold)).amplify(0.18)
+                    .then(Chord::new(&resolve_chord, Waveform::Saw)
+                        .take_duration(Duration::from_millis(hold)).amplify(0.16)
                         .fade_out(Duration::from_millis(hold))));
             }
             1 => {
-                // Ascending run into final chord
-                let run_notes = rng.gen_range(3..6);
-                let run_dur = rng.gen_range(40..70);
-                for i in 0..run_notes {
-                    let n = scale[i.min(scale.len() - 1)];
-                    song = Box::new(song
-                        .then(Osc::new(n, brass)
-                            .take_duration(Duration::from_millis(run_dur))
-                            .amplify(0.08 + i as f32 * 0.01)));
-                }
-                let hold = rng.gen_range(900..1500);
+                // Two hits: stab → resolve
+                let hit = rng.gen_range(70..120);
                 song = Box::new(song
-                    .then(Chord::new(&[final_bass, final_chord[0], final_chord[1], final_chord[2]], brass)
-                        .take_duration(Duration::from_millis(hold)).amplify(0.18)
+                    .then(Chord::new(&hit_chord, guitar)
+                        .take_duration(Duration::from_millis(hit)).amplify(0.13))
+                    .then(silence(Duration::from_millis(gap)))
+                    .then(Chord::new(&resolve_chord, Waveform::Saw)
+                        .take_duration(Duration::from_millis(hold)).amplify(0.16)
+                        .fade_out(Duration::from_millis(hold))));
+            }
+            2 => {
+                // Three hits: stab stab → resolve
+                let hit = rng.gen_range(70..120);
+                song = Box::new(song
+                    .then(Chord::new(&hit_chord, guitar)
+                        .take_duration(Duration::from_millis(hit)).amplify(0.13))
+                    .then(silence(Duration::from_millis(gap)))
+                    .then(Chord::new(&hit_chord, guitar)
+                        .take_duration(Duration::from_millis(hit)).amplify(0.14))
+                    .then(silence(Duration::from_millis(gap)))
+                    .then(Chord::new(&resolve_chord, Waveform::Saw)
+                        .take_duration(Duration::from_millis(hold)).amplify(0.16)
                         .fade_out(Duration::from_millis(hold))));
             }
             _ => {
-                // Two big chords with dramatic pause: BAM ... BAAAAM!
-                let hit = rng.gen_range(100..180);
-                let dramatic_pause = rng.gen_range(200..400);
-                let hold = rng.gen_range(1000..1600);
+                // Ascending run into resolve
+                let run_len = rng.gen_range(3..6);
+                let run_dur = rng.gen_range(40..70);
+                for i in 0..run_len {
+                    let n = scale[i % scale.len()];
+                    let n = if i > 0 && n < scale[0] { n * 2.0 } else { n };
+                    song = Box::new(song
+                        .then(Osc::new(n, guitar)
+                            .take_duration(Duration::from_millis(run_dur))
+                            .amplify(0.07 + i as f32 * 0.01)
+                            .fade_out(Duration::from_millis(run_dur))));
+                }
                 song = Box::new(song
-                    .then(Chord::new(&final_chord, brass)
-                        .take_duration(Duration::from_millis(hit)).amplify(0.15))
-                    .then(silence(Duration::from_millis(dramatic_pause)))
-                    .then(Chord::new(&[final_bass, final_chord[0], final_chord[1], final_chord[2]], brass)
-                        .take_duration(Duration::from_millis(hold)).amplify(0.18)
+                    .then(silence(Duration::from_millis(gap)))
+                    .then(Chord::new(&resolve_chord, Waveform::Saw)
+                        .take_duration(Duration::from_millis(hold)).amplify(0.16)
                         .fade_out(Duration::from_millis(hold))));
             }
         }
@@ -839,6 +824,48 @@ impl Sfx {
                     .then(silence(Duration::from_millis(gap))));
             }
         }
+        self.play(song);
+    }
+
+    pub fn pickup_key(&self, scale: &[f32]) {
+        // Squarepusher-inspired: frenetic drill'n'bass glitch — rapid-fire bass stabs
+        // with irregular timing, pitch bends, and a final low thud
+        let mut rng = ::rand::thread_rng();
+        let sq = Waveform::Square;
+
+        let mut song: Box<dyn Source<Item = f32> + Send> = Box::new(
+            silence(Duration::from_millis(1))
+        );
+
+        // Rapid glitch burst: 8-12 very short bass stabs at irregular intervals
+        let num_stabs = rng.gen_range(8..13);
+        for _ in 0..num_stabs {
+            let idx = rng.gen_range(0..scale.len());
+            let freq = scale[idx] * if rng.gen_bool(0.5) { 0.5 } else { 1.0 };
+            let dur = rng.gen_range(20..60);
+            let gap_ms = rng.gen_range(10..40);
+            let note = Osc::new(freq, sq)
+                .take_duration(Duration::from_millis(dur))
+                .amplify(0.09)
+                .fade_out(Duration::from_millis(dur.min(30)));
+            song = Box::new(song.then(note).then(silence(Duration::from_millis(gap_ms))));
+        }
+
+        // Brief pause
+        song = Box::new(song.then(silence(Duration::from_millis(rng.gen_range(30..60)))));
+
+        // Final: descending bass slide (3 rapid notes going down)
+        for i in 0..3 {
+            let idx = (scale.len() / 2).saturating_sub(i);
+            let freq = scale[idx.min(scale.len() - 1)] * 0.25;
+            let dur = 40 + i as u64 * 20;
+            let note = Osc::new(freq, sq)
+                .take_duration(Duration::from_millis(dur))
+                .amplify(0.12)
+                .fade_out(Duration::from_millis(dur));
+            song = Box::new(song.then(note));
+        }
+
         self.play(song);
     }
 
@@ -1170,49 +1197,59 @@ impl Sfx {
         );
     }
 
-    pub fn boss_kill(&self, scale: &[f32]) {
-        // Descending crash + ascending fanfare — random structure each time
+    pub fn bomb(&self, scale: &[f32]) {
+        // Explosion: low thud + noise burst fading out
         let mut rng = ::rand::thread_rng();
-        let lo = pick_low(scale, &mut rng) * 0.25;
-        let hi = pick_high(scale, &mut rng);
-        let sweep_dur = rng.gen_range(400..800);
-        let pause = rng.gen_range(150..350);
-        let num_chords = rng.gen_range(3..6);
-        let notes = pick_ascending(scale, num_chords * 2, &mut rng);
+        let root = pick_low(scale, &mut rng) * 0.25;
 
-        let mut song: Box<dyn Source<Item = f32> + Send> = Box::new(
-            Sweep::new(hi, lo, Duration::from_millis(sweep_dur), Waveform::Saw)
-                .amplify(0.18)
-                .fade_out(Duration::from_millis(sweep_dur))
-        );
-        song = Box::new(song.then(silence(Duration::from_millis(pause))));
-
-        for i in 0..num_chords {
-            let n0 = notes[i.min(notes.len() - 1)];
-            let n1 = notes[(i + 2).min(notes.len() - 1)];
-            let is_last = i == num_chords - 1;
-            let dur = if is_last {
-                rng.gen_range(600..1100)
-            } else if i < 2 {
-                rng.gen_range(100..200) // quick pickups
-            } else {
-                rng.gen_range(200..400)
-            };
-            let vol = 0.11 + i as f32 * 0.01;
-            if is_last {
-                song = Box::new(song
-                    .then(Chord::sine(&[n0, n1])
-                        .take_duration(Duration::from_millis(dur)).amplify(vol + 0.03)
-                        .fade_out(Duration::from_millis(dur))));
-            } else {
-                let gap = rng.gen_range(0..60);
-                song = Box::new(song
-                    .then(Chord::sine(&[n0, n1])
-                        .take_duration(Duration::from_millis(dur)).amplify(vol))
-                    .then(silence(Duration::from_millis(gap))));
-            }
+        // Pre-render noise burst to a buffer (Noise uses ThreadRng which isn't Send)
+        let boom_dur = rng.gen_range(300..500);
+        let boom_samples = (44100.0 * boom_dur as f32 / 1000.0) as usize;
+        let mut noise_buf: Vec<f32> = Vec::with_capacity(boom_samples);
+        for i in 0..boom_samples {
+            let t = i as f32 / boom_samples as f32;
+            let fade = 1.0 - t; // linear fade out
+            noise_buf.push(rng.gen_range(-1.0_f32..1.0) * 0.18 * fade);
         }
+        let boom = rodio::buffer::SamplesBuffer::new(1, 44100, noise_buf);
+
+        // Initial impact: very short low thud → noise explosion
+        let thud_dur = rng.gen_range(40..70);
+        let thud = Osc::new(root, Waveform::Square)
+            .take_duration(Duration::from_millis(thud_dur))
+            .amplify(0.25);
+        let song = thud.then(boom);
+
+        // Low rumble underneath
+        let rumble_dur = boom_dur + 100;
+        let rumble = Osc::new(root * 0.5, Waveform::Saw)
+            .take_duration(Duration::from_millis(rumble_dur))
+            .amplify(0.10)
+            .fade_out(Duration::from_millis(rumble_dur));
+
         self.play(song);
+        self.play(rumble);
+    }
+
+    pub fn boss_kill(&self, scale: &[f32]) {
+        // Shriek: high dissonant sweep descending into silence
+        let mut rng = ::rand::thread_rng();
+        let hi = pick_high(scale, &mut rng) * 4.0;
+        let lo = pick_low(scale, &mut rng);
+        let shriek_dur = rng.gen_range(400..700);
+
+        // Main shriek: high saw sweep down
+        let shriek = Sweep::new(hi, lo, Duration::from_millis(shriek_dur), Waveform::Saw)
+            .amplify(0.20)
+            .fade_out(Duration::from_millis(shriek_dur));
+
+        // Dissonant overtone slightly detuned
+        let shriek2 = Sweep::new(hi * 1.03, lo * 0.97, Duration::from_millis(shriek_dur), Waveform::Square)
+            .amplify(0.10)
+            .fade_out(Duration::from_millis(shriek_dur));
+
+        self.play(shriek);
+        self.play(shriek2);
     }
 
     /// Start a looping low drone for boss proximity. Call once when a level begins.
@@ -1266,6 +1303,68 @@ impl Sfx {
                 .then(Osc::sine(900.0).take_duration(Duration::from_millis(80)).amplify(0.08)
                     .fade_out(Duration::from_millis(80)))
         );
+    }
+
+    pub fn cheat_fanfare(&self) {
+        // Devo-style new wave fanfare — staccato square wave, mechanical, punchy
+        let beat = 120u64; // ms per note — fast and robotic
+        let gap = 30u64;
+        let sq = Waveform::Square;
+
+        // "Whip It" inspired riff: rhythmic staccato ascending then big finish
+        let notes: &[(f32, u64)] = &[
+            // Staccato intro — E4 E4 E4 G4 (robotic stabs)
+            (329.6, beat), (329.6, beat), (329.6, beat), (392.0, beat),
+            // Gap
+            (0.0, gap * 2),
+            // Ascending chromatic run — A4 Bb4 B4 C5
+            (440.0, beat), (466.2, beat), (493.9, beat), (523.3, beat),
+            // Gap
+            (0.0, gap * 2),
+            // Big finish — E5 stab, rest, E5-G5 power chord
+            (659.3, beat * 2),
+            (0.0, gap * 3),
+            (659.3, beat * 3), // held final note
+        ];
+
+        let mut song: Box<dyn Source<Item = f32> + Send> = Box::new(
+            silence(Duration::from_millis(1))
+        );
+
+        for &(freq, dur) in notes {
+            if freq < 1.0 {
+                song = Box::new(song.then(silence(Duration::from_millis(dur))));
+            } else {
+                let note_dur = Duration::from_millis(dur.saturating_sub(gap));
+                let note = Osc::new(freq, sq)
+                    .take_duration(note_dur)
+                    .amplify(0.10)
+                    .fade_out(Duration::from_millis(gap.min(dur)));
+                let rest = silence(Duration::from_millis(gap));
+                song = Box::new(song.then(note).then(rest));
+            }
+        }
+
+        // Layer a low octave doubling for thickness
+        let mut bass: Box<dyn Source<Item = f32> + Send> = Box::new(
+            silence(Duration::from_millis(1))
+        );
+        for &(freq, dur) in notes {
+            if freq < 1.0 {
+                bass = Box::new(bass.then(silence(Duration::from_millis(dur))));
+            } else {
+                let note_dur = Duration::from_millis(dur.saturating_sub(gap));
+                let note = Osc::new(freq * 0.5, sq)
+                    .take_duration(note_dur)
+                    .amplify(0.06)
+                    .fade_out(Duration::from_millis(gap.min(dur)));
+                let rest = silence(Duration::from_millis(gap));
+                bass = Box::new(bass.then(note).then(rest));
+            }
+        }
+
+        self.play(song);
+        self.play(bass);
     }
 }
 
@@ -1539,9 +1638,10 @@ impl<S: Source<Item = f32>> Source for FadeOut<S> {
 struct Smooth<S> {
     source: S,
     sample_rate: u32,
-    ramp_samples: u64,   // number of samples for both attack and release ramp
+    ramp_samples: u64,
     sample_idx: u64,
-    total_samples: Option<u64>, // if known, used for release ramp
+    total_samples: Option<u64>,
+    prev_val: f32, // for DC-blocking / click suppression
 }
 
 trait SmoothExt: Source<Item = f32> + Sized {
@@ -1553,7 +1653,7 @@ impl<S: Source<Item = f32>> SmoothExt for S {
         let sr = self.sample_rate();
         let ramp = (ramp_ms as f32 * sr as f32 / 1000.0) as u64;
         let total = self.total_duration().map(|d| (d.as_secs_f32() * sr as f32) as u64);
-        Smooth { source: self, sample_rate: sr, ramp_samples: ramp, sample_idx: 0, total_samples: total }
+        Smooth { source: self, sample_rate: sr, ramp_samples: ramp, sample_idx: 0, total_samples: total, prev_val: 0.0 }
     }
 }
 
@@ -1583,7 +1683,11 @@ impl<S: Source<Item = f32>> Iterator for Smooth<S> {
             1.0
         };
 
-        Some(val * attack * release)
+        // One-pole lowpass to suppress clicks from abrupt transitions
+        let ramped = val * attack * release;
+        let smoothed = self.prev_val + 0.3 * (ramped - self.prev_val);
+        self.prev_val = smoothed;
+        Some(smoothed)
     }
 }
 

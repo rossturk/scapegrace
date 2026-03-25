@@ -140,6 +140,14 @@ pub struct OverworldResult {
     pub bg_color: Option<String>,
     pub text_color: Option<String>,
     pub levels: Vec<OverworldNodeRaw>,
+    pub store: Option<StoreRaw>,
+}
+
+#[derive(Deserialize)]
+pub struct StoreRaw {
+    pub healing_potions: Option<i32>,
+    pub speed_potions: Option<i32>,
+    pub bombs: Option<i32>,
 }
 
 /// Config passed from overworld node to level generation
@@ -205,10 +213,11 @@ where F: Fn()
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.9,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "stream": on_token.is_some(),
+            "options": { "num_predict": 8192 },
         }))
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(180))
         .send()
         .map_err(|e| format!("HTTP error: {}", e))?;
 
@@ -263,7 +272,33 @@ fn clean_llm_content(mut content: String) -> String {
             }
         }
     }
-    content
+    // Strip C-style comments (/* ... */ and // ...) that some models add
+    // Remove block comments
+    while let Some(start) = content.find("/*") {
+        if let Some(end) = content[start..].find("*/") {
+            content = format!("{}{}", &content[..start], &content[start + end + 2..]);
+        } else {
+            break;
+        }
+    }
+    // Remove line comments (but not inside strings — simple heuristic: only if // is not preceded by :)
+    let mut cleaned = String::new();
+    let mut in_string = false;
+    let mut chars = content.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '"' { in_string = !in_string; }
+        if !in_string && ch == '/' {
+            if chars.peek() == Some(&'/') {
+                // Skip until end of line
+                for c in chars.by_ref() {
+                    if c == '\n' { cleaned.push('\n'); break; }
+                }
+                continue;
+            }
+        }
+        cleaned.push(ch);
+    }
+    cleaned
 }
 
 // ── Tile def expansion ──
@@ -500,6 +535,18 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
     let bg_color = result.bg_color.unwrap_or_else(|| "#0a0a0a".into());
     let text_color = result.text_color.unwrap_or_else(|| "#e0d5c0".into());
 
+    // Build store stock from LLM allocation (with fallback defaults)
+    let store_raw = result.store;
+    let hp = store_raw.as_ref().and_then(|s| s.healing_potions).unwrap_or(3).max(0).min(10);
+    let sp = store_raw.as_ref().and_then(|s| s.speed_potions).unwrap_or(2).max(0).min(5);
+    let bo = store_raw.as_ref().and_then(|s| s.bombs).unwrap_or(2).max(0).min(5);
+    let store_stock = vec![
+        crate::game::StoreSlot { name: "Healing Potion".into(), description: "Heals 15-25% HP".into(), item_type: "potion".into(), price: 15, stock: hp },
+        crate::game::StoreSlot { name: "Speed Potion".into(), description: "Monsters frozen 5 turns".into(), item_type: "speed_potion".into(), price: 25, stock: sp },
+        crate::game::StoreSlot { name: "Bomb".into(), description: "Area damage to nearby monsters".into(), item_type: "bomb".into(), price: 30, stock: bo },
+    ];
+    eprintln!("Store stock: {} healing, {} speed, {} bombs", hp, sp, bo);
+
     let mut overworld = crate::game::Overworld {
         name: result.name,
         font: ow_font,
@@ -511,6 +558,7 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
         connections,
         current_node: 0,
         nodes,
+        store_stock,
     };
 
     layout_overworld(&mut overworld, main_path_end);
@@ -617,10 +665,10 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, ti
 
     p.push_str("Return a JSON object with:\n");
     p.push_str("- tile_defs: array of {name, char (display char or empty)}. First entry is the wall tile, rest are walkable. Include 3-5 tiles total (wall, floor, and 1-3 thematic). Colors are assigned by the engine from the palette.\n");
-    p.push_str("- boss: {name, description}. Stats are computed by the engine from budget.\n");
-    p.push_str("- monster_types: array of 2-3 templates {name, description}. Stats are computed by the engine.\n");
-    p.push_str("- weapon: {name, description}\n");
-    p.push_str("- armor: {name, description}\n");
+    p.push_str("- boss: {name, description (max 10 words)}. Stats are computed by the engine.\n");
+    p.push_str("- monster_types: array of 2-3 templates {name, description (max 10 words)}.\n");
+    p.push_str("- weapon: {name, description (max 10 words)}\n");
+    p.push_str("- armor: {name, description (max 10 words)}\n");
     p.push_str("- traps: array of {name}. The engine decides count and damage from budget.\n");
     p.push_str("- mode: {root, scale} — a musical mode for the level's ambient sound. root is a note name (e.g. \"C\", \"F#\", \"Bb\"), scale is one of: \"ionian\", \"dorian\", \"phrygian\", \"lydian\", \"mixolydian\", \"aeolian\", \"locrian\", \"pentatonic_major\", \"pentatonic_minor\", \"blues\", \"whole_tone\", \"chromatic\". Choose a mode that fits the level's mood.\n");
     p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n- defeat_message: one short atmospheric sentence shown when the player dies in this level\n\n");
@@ -639,10 +687,10 @@ pub fn build_single_level_design_prompt(
     p.push_str("You are ADVERSARIAL — your goal is to kill the player.\n\n");
     p.push_str("Return a JSON object with:\n");
     p.push_str("- tile_defs: array of {name, char (display char or empty)}. First entry is the wall tile, rest are walkable. Include 3-5 tiles total (wall, floor, and 1-3 thematic). Colors are assigned by the engine from the palette.\n");
-    p.push_str("- boss: {name, description}. Stats are computed by the engine from budget.\n");
-    p.push_str("- monster_types: array of 2-3 templates {name, description}. Stats are computed by the engine.\n");
-    p.push_str("- weapon: {name, description}\n");
-    p.push_str("- armor: {name, description}\n");
+    p.push_str("- boss: {name, description (max 10 words)}. Stats are computed by the engine.\n");
+    p.push_str("- monster_types: array of 2-3 templates {name, description (max 10 words)}.\n");
+    p.push_str("- weapon: {name, description (max 10 words)}\n");
+    p.push_str("- armor: {name, description (max 10 words)}\n");
     p.push_str("- traps: array of {name}. The engine decides count and damage from budget.\n");
     p.push_str("- mode: {root, scale} — musical mode. root = note name, scale = one of: ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian\n");
     p.push_str("- victory_message: one short atmospheric sentence shown when the player beats this level\n- defeat_message: one short atmospheric sentence shown when the player dies in this level\n\n");
@@ -670,7 +718,7 @@ fn build_overworld_prompt() -> String {
     p.push_str("- description_font: a Google Fonts font family for the description text (readable, elegant)\n");
     p.push_str("- label_font: a Google Fonts font family for level name labels on the map\n");
     p.push_str("- description: one atmospheric sentence about the campaign\n");
-    p.push_str("- bg_color: hex background color for the overworld screen (e.g. '#0a0a0a', '#1a0a2e')\n");
+    p.push_str("- bg_color: hex background color — must be DARK. Pick from varied palettes: near-black '#0a0a0a', dark teal '#0d1f2d', deep green '#0a1a0a', charcoal blue '#0d1117', dark brown '#1a0f0a', deep red '#1a0505', dark slate '#1a1a2e'. Do NOT always pick purple.\n");
     p.push_str("- text_color: hex color for title and label text — must have strong contrast against bg_color\n");
     p.push_str("- levels: array of exactly 6 level objects, each with:\n");
     p.push_str("  - name: level title (2-4 words)\n");
@@ -686,6 +734,13 @@ fn build_overworld_prompt() -> String {
     p.push_str("- Total budget across ALL 6 levels: approximately 1200 scapebux.\n");
     p.push_str("- Early levels ~120-160, middle ~180-220, boss ~250-300, optional ~150.\n");
     p.push_str("- Each level theme should be distinct but all should feel part of the same campaign.\n\n");
+    p.push_str("Also include a \"store\" object with the shop inventory for the whole campaign.\n");
+    p.push_str("You have a STORE BUDGET of 150 scapebux to spend on stock:\n");
+    p.push_str("  - healing_potions: cost 10 each\n");
+    p.push_str("  - speed_potions: cost 25 each\n");
+    p.push_str("  - bombs: cost 30 each\n");
+    p.push_str("Decide how many of each to stock. Once bought, they're gone forever. Be adversarial — don't be generous.\n");
+    p.push_str("Example: {\"healing_potions\": 5, \"speed_potions\": 2, \"bombs\": 2}\n\n");
     p.push_str("Respond in ENGLISH ONLY. Return ONLY valid JSON, no commentary.");
     p
 }
@@ -926,6 +981,7 @@ fn assemble_level(
         defeat_message: p2.defeat_message.clone().unwrap_or_default(),
         revealed: HashSet::new(),
         visible: HashSet::new(),
+        char_marks: Default::default(),
     };
 
     Ok((level, player_start, remaining_budget))
