@@ -805,9 +805,9 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
     let sp = store_raw.as_ref().and_then(|s| s.speed_potions).unwrap_or(2).max(0).min(5);
     let bo = store_raw.as_ref().and_then(|s| s.bombs).unwrap_or(2).max(0).min(5);
     let store_stock = vec![
-        crate::game::StoreSlot { name: "Healing Potion".into(), description: "Heals 15-25% HP".into(), item_type: "potion".into(), price: 15, stock: hp },
+        crate::game::StoreSlot { name: "Healing Potion".into(), description: "Heals 15-25% HP".into(), item_type: "potion".into(), price: 5, stock: hp },
         crate::game::StoreSlot { name: "Speed Potion".into(), description: "Monsters frozen 5 turns".into(), item_type: "speed_potion".into(), price: 25, stock: sp },
-        crate::game::StoreSlot { name: "Bomb".into(), description: "Area damage to nearby monsters".into(), item_type: "bomb".into(), price: 30, stock: bo },
+        crate::game::StoreSlot { name: "Bomb".into(), description: "Kills nearby monsters, heavy boss damage".into(), item_type: "bomb".into(), price: 30, stock: bo },
     ];
     eprintln!("Store stock: {} healing, {} speed, {} bombs", hp, sp, bo);
 
@@ -1124,8 +1124,8 @@ fn assemble_level_with_settings(
     let mut remaining_budget = budget;
 
     // Scaling factors
-    let hp_per_point = 1.5 + floor as f32 * 0.5;
-    let atk_scale = 2 + floor;
+    let hp_per_point = 2.0 + floor as f32 * 0.7;
+    let atk_scale = 3 + floor;
     let def_scale = floor;
 
     // ── Boss: 15-25% of budget ──
@@ -1166,8 +1166,8 @@ fn assemble_level_with_settings(
         while remaining_budget >= 5 {
             let mon_cost = rng.gen_range(5..=8.min(remaining_budget));
             remaining_budget -= mon_cost;
-            let mon_hp = (mon_cost as f32 * (1.0 + floor as f32 * 0.3)).round() as i32;
-            let mon_atk = (atk_scale - 1).max(1) + mon_cost / 10;
+            let mon_hp = (mon_cost as f32 * (1.2 + floor as f32 * 0.4)).round() as i32;
+            let mon_atk = atk_scale + mon_cost / 8;
             let mon_def = (def_scale / 2).max(0);
             let mon_xp = mon_cost + floor * 2;
 
@@ -1248,7 +1248,7 @@ fn assemble_level_with_settings(
             });
         }
         let mon_count = monsters.iter().filter(|m| !m.is_boss).count();
-        let potion_count = (mon_count / 4).max(2);
+        let potion_count = (mon_count / 6).max(1);
         for i in 0..potion_count {
             if let Some(&(px, py)) = pick_random_reachable(&reachable_vec, player_start, 2, &monsters, &mut rng) {
                 items.push(Item {

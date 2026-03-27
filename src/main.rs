@@ -27,6 +27,7 @@ const GAME_REPEAT_RATE: f64 = 0.10;
 
 enum Screen {
     KeyEntry,
+    CampaignSelect,
     Start,
     SoundTest,
     GenOverworld,
@@ -252,6 +253,47 @@ fn clear_campaign_progress() {
     let _ = std::fs::remove_file(campaign_save_path());
 }
 
+// ── Campaign completion records (loot tracking) ──
+
+fn completions_path() -> std::path::PathBuf {
+    config_dir().join("campaign_completions.json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct CampaignCompletion {
+    campaign_id: String,
+    potions: i32,
+    speed_potions: i32,
+    bombs: i32,
+    gold: i32,
+    level: i32,
+}
+
+fn load_completions() -> Vec<CampaignCompletion> {
+    std::fs::read_to_string(completions_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_completion(player: &game::Player, campaign_id: &str) {
+    let mut completions = load_completions();
+    // Don't duplicate
+    if completions.iter().any(|c| c.campaign_id == campaign_id) { return; }
+    completions.push(CampaignCompletion {
+        campaign_id: campaign_id.to_string(),
+        potions: player.potions,
+        speed_potions: player.speed_potions,
+        bombs: player.bombs,
+        gold: player.gold,
+        level: player.level,
+    });
+    let _ = std::fs::create_dir_all(config_dir());
+    if let Ok(json) = serde_json::to_string(&completions) {
+        let _ = std::fs::write(completions_path(), json);
+    }
+}
+
 fn save_config(value: &str) {
     let dir = config_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -358,7 +400,7 @@ async fn main() {
     println!("[config] has_bundled={}, has_llm={} → screen={}",
         has_bundled, has_llm,
         if has_bundled || has_llm { "Start" } else { "KeyEntry" });
-    let mut screen = if has_bundled || has_llm { Screen::Start } else { Screen::KeyEntry };
+    let mut screen = if has_bundled { Screen::CampaignSelect } else if has_llm { Screen::Start } else { Screen::KeyEntry };
     let mut key_input = saved_config_value();
     let mut key_error: Option<String> = None;
     let mut key_validating = false;
@@ -382,6 +424,13 @@ async fn main() {
     let mut bg_gen_rx: Option<mpsc::Receiver<GenMsg>> = None;
     let mut player_snapshot: Option<Player> = None;
     let mut level_snapshot: Option<(usize, Level, [i32; 2])> = None; // (node_index, level, start) for retry
+
+    // Campaign select state
+    let mut campaign_select_idx: usize = pick_next_campaign(&bundled_campaigns).unwrap_or(0);
+    let mut ghost_town: bool = false; // viewing a completed campaign
+    let mut cheat_active: bool = false;
+    let mut cs_hold_time: f64 = 0.0;
+    let mut cs_last_fire: f64 = 0.0;
 
     // Store state
     let mut store_selection: usize = 0;
@@ -511,6 +560,188 @@ async fn main() {
                 }
             }
 
+            Screen::CampaignSelect => {
+                // Cheat code: xyzzy — unlock all campaigns
+                let cheat_keys = [
+                    (KeyCode::X, 'x'), (KeyCode::Y, 'y'), (KeyCode::Z, 'z'),
+                ];
+                for &(kc, ch) in &cheat_keys {
+                    if is_key_pressed(kc) { cheat_buf.push(ch); }
+                }
+                if cheat_buf.len() > 10 { cheat_buf.drain(..cheat_buf.len() - 10); }
+                let buf_str: String = cheat_buf.iter().collect();
+                if buf_str.contains("xyzzy") {
+                    cheat_buf.clear();
+                    cheat_active = true;
+                    if let Some(s) = &sfx { s.cheat_fanfare(); }
+                    eprintln!("XYZZY cheat: all campaigns unlocked!");
+                }
+
+                let played = load_played_campaigns();
+                let comps = load_completions();
+                let save = load_campaign_progress();
+                let save_id = save.as_ref().map(|s| s.campaign_id.as_str());
+                draw_campaign_select(&ui_font, &ui_font_bold, &bundled_campaigns, &comps, &played, campaign_select_idx, save_id, &pack_strings, cheat_active);
+
+                // Navigation — clamp to unlocked campaigns only
+                let max_selectable = if cheat_active {
+                    bundled_campaigns.len() - 1
+                } else {
+                    let mut max = 0usize;
+                    for (i, c) in bundled_campaigns.iter().enumerate() {
+                        let unlocked = i == 0
+                            || played.contains(&bundled_campaigns[i - 1].id)
+                            || save_id == Some(c.id.as_str());
+                        if unlocked { max = i; } else { break; }
+                    }
+                    max
+                };
+                // Navigation with key repeat
+                // Up/Down = prev/next in linear order
+                // Left/Right = spatial (move to adjacent column in same row)
+                let cols = 5usize;
+                let press_down = is_key_down(KeyCode::Down) || is_key_down(KeyCode::S);
+                let press_up = is_key_down(KeyCode::Up) || is_key_down(KeyCode::W);
+                let press_right = is_key_down(KeyCode::Right) || is_key_down(KeyCode::D);
+                let press_left = is_key_down(KeyCode::Left) || is_key_down(KeyCode::A);
+                let any_dir = press_down || press_up || press_right || press_left;
+                let now = get_time();
+                let nav_fire = if any_dir {
+                    if cs_hold_time == 0.0 {
+                        cs_hold_time = now;
+                        cs_last_fire = now;
+                        true
+                    } else if now - cs_hold_time > 0.3 && now - cs_last_fire > 0.08 {
+                        cs_last_fire = now;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    cs_hold_time = 0.0;
+                    false
+                };
+                if nav_fire {
+                    if press_down && campaign_select_idx < max_selectable {
+                        campaign_select_idx += 1;
+                    }
+                    if press_up && campaign_select_idx > 0 {
+                        campaign_select_idx -= 1;
+                    }
+                    if press_right || press_left {
+                        // Spatial: find the visual neighbor in the pressed direction
+                        let cur_row = campaign_select_idx / cols;
+                        let cur_col_in_row = campaign_select_idx % cols;
+                        let cur_visual_col = if cur_row % 2 == 0 { cur_col_in_row } else { cols - 1 - cur_col_in_row };
+                        let target_visual_col = if press_right {
+                            if cur_visual_col < cols - 1 { cur_visual_col + 1 } else { cur_visual_col }
+                        } else {
+                            if cur_visual_col > 0 { cur_visual_col - 1 } else { cur_visual_col }
+                        };
+                        // Convert back to linear index
+                        let target_col_in_row = if cur_row % 2 == 0 { target_visual_col } else { cols - 1 - target_visual_col };
+                        let target_idx = cur_row * cols + target_col_in_row;
+                        if target_idx <= max_selectable && target_idx < bundled_campaigns.len() {
+                            campaign_select_idx = target_idx;
+                        }
+                    }
+                }
+
+                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
+                    let campaign = &bundled_campaigns[campaign_select_idx];
+                    let is_played = played.contains(&campaign.id);
+                    let is_in_progress = save_id == Some(campaign.id.as_str());
+                    let is_unlocked = cheat_active || campaign_select_idx == 0 || played.contains(&bundled_campaigns[campaign_select_idx - 1].id) || is_in_progress;
+
+                    if is_unlocked {
+                        let resuming = is_in_progress;
+                        let entering_ghost = is_played;
+                        eprintln!("CampaignSelect: launching campaign {}: \"{}\"{}{}",
+                            campaign_select_idx, campaign.overworld.name,
+                            if resuming { " (RESUMING)" } else { "" },
+                            if entering_ghost { " (GHOST TOWN)" } else { "" });
+
+                        match gen::build_overworld_from_result(campaign.overworld.clone()) {
+                            Ok(mut ow) => {
+                                if entering_ghost {
+                                    // Ghost town: mark all nodes completed and unlocked
+                                    for node in &mut ow.nodes {
+                                        node.completed = true;
+                                        node.unlocked = true;
+                                    }
+                                    ghost_town = true;
+                                    state = GameState::new();
+                                } else if let (true, Some(progress)) = (resuming, save) {
+                                    ghost_town = false;
+                                    state.player = progress.player;
+                                    for &i in &progress.completed_nodes {
+                                        if i < ow.nodes.len() { ow.nodes[i].completed = true; }
+                                    }
+                                    for &i in &progress.unlocked_nodes {
+                                        if i < ow.nodes.len() { ow.nodes[i].unlocked = true; }
+                                    }
+                                    ow.current_node = progress.current_node;
+                                    if !progress.connections.is_empty() {
+                                        ow.connections = progress.connections;
+                                    }
+                                } else {
+                                    ghost_town = false;
+                                    state = GameState::new();
+                                }
+
+                                if let Some(bytes) = fetch_google_font(&ow.font) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { overworld_font = Some(f); }
+                                }
+                                if let Some(bytes) = fetch_google_font(&ow.description_font) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { desc_font = Some(f); }
+                                }
+                                if let Some(bytes) = fetch_google_font(&ow.label_font) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { label_font = Some(f); }
+                                }
+
+                                // Load all designs (including completed ones for ghost town viewing)
+                                let level_nodes: Vec<usize> = ow.nodes.iter().enumerate()
+                                    .filter(|(_, n)| n.node_type == NodeType::Level)
+                                    .map(|(i, _)| i)
+                                    .collect();
+                                level_designs = campaign.designs.iter()
+                                    .take(level_nodes.len())
+                                    .map(|d| Some(d.clone()))
+                                    .collect();
+                                while level_designs.len() < level_nodes.len() {
+                                    level_designs.push(None);
+                                }
+                                design_token_flashes = vec![Vec::new(); level_nodes.len()];
+                                bg_gen_rx = None;
+
+                                current_campaign_id = Some(campaign.id.clone());
+                                current_campaign_settings = campaign.settings.clone();
+
+                                if !resuming && !entering_ghost && !cheat_active {
+                                    save_campaign_progress(&campaign.id, &state.player, &ow);
+                                }
+
+                                if entering_ghost {
+                                    for slot in &mut ow.store_stock {
+                                        slot.stock = 0;
+                                    }
+                                }
+
+                                overworld = Some(ow);
+                                screen = Screen::Overworld;
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to build overworld: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                if is_key_pressed(KeyCode::T) {
+                    screen = Screen::SoundTest;
+                }
+            }
+
             Screen::Start => {
                 if has_bundled {
                     let has_save = load_campaign_progress().is_some();
@@ -594,7 +825,7 @@ async fn main() {
                                 current_campaign_settings = campaign.settings.clone();
 
                                 // Save initial progress (captures connections/topology)
-                                if !resuming {
+                                if !resuming && !cheat_active {
                                     save_campaign_progress(&campaign.id, &state.player, &ow);
                                 }
 
@@ -880,8 +1111,9 @@ async fn main() {
                     }
                     if cheat_buf.len() > 10 { cheat_buf.drain(..cheat_buf.len() - 10); }
                     let buf_str: String = cheat_buf.iter().collect();
-                    if buf_str.contains("xyzzy") {
+                    if buf_str.contains("xyzzy") && !cheat_active {
                         cheat_buf.clear();
+                        cheat_active = true;
                         state.player.gold += 1000;
                         while state.player.level < 10 {
                             state.player.level += 1;
@@ -958,12 +1190,22 @@ async fn main() {
 
                     if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
                         let node = &ow.nodes[ow.current_node];
-                        // Store nodes are always re-enterable
                         let can_enter = node.unlocked && (node.node_type == NodeType::Store || !node.completed);
+                        let can_view = ghost_town && node.unlocked && node.node_type == NodeType::Level;
                         if can_enter && node.node_type == NodeType::Store {
                             if let Some(s) = &sfx { s.confirm(); }
                             store_selection = 0;
                             screen = Screen::Store;
+                        } else if can_view {
+                            // Ghost town: generate level then strip monsters/items
+                            if let Some(s) = &sfx { s.confirm(); }
+                            player_snapshot = Some(state.player.clone());
+                            level_snapshot = None;
+                            start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), true);
+                            screen = Screen::GenLevel;
+                            phase_text = overworld_loading_phrase();
+                            phase_detail.clear();
+                            loading_tiles = 0;
                         } else if can_enter {
                             if let Some(s) = &sfx { s.confirm(); }
                             player_snapshot = Some(state.player.clone());
@@ -996,13 +1238,23 @@ async fn main() {
                                 }
                                 screen = Screen::Playing;
                             } else {
-                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone());
+                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town);
                                 screen = Screen::GenLevel;
                                 phase_text = overworld_loading_phrase();
                                 phase_detail.clear();
                                 loading_tiles = 0;
                             }
                         }
+                    }
+
+                    // ESC: back to campaign select
+                    if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q) {
+                        overworld = None;
+                        overworld_font = None;
+                        title_font = None;
+                        campaign_select_idx = pick_next_campaign(&bundled_campaigns).unwrap_or(0);
+                        ghost_town = false;
+                        screen = Screen::CampaignSelect;
                     }
                 }
             }
@@ -1019,24 +1271,45 @@ async fn main() {
                             GenMsg::Phase(_p, _d) => {
                                 // Keep loading phrase and blob visible
                             }
-                            GenMsg::LevelDone(level, start, font_bytes) => {
+                            GenMsg::LevelDone(mut level, start, font_bytes) => {
+                                if ghost_town {
+                                    // Strip all monsters, items, and traps for ghost town viewing
+                                    level.monsters.clear();
+                                    level.items.clear();
+                                    level.traps.clear();
+                                    // Reveal entire map
+                                    for y in 0..level.height {
+                                        for x in 0..level.width {
+                                            level.revealed.insert((x, y));
+                                            level.visible.insert((x, y));
+                                        }
+                                    }
+                                }
                                 // Snapshot for death retry (clean level state)
                                 let snap_node = overworld.as_ref().map_or(0, |ow| ow.current_node);
-                                level_snapshot = Some((snap_node, level.clone(), start));
+                                if !ghost_town {
+                                    level_snapshot = Some((snap_node, level.clone(), start));
+                                }
                                 state.level = level;
                                 state.player.x = start[0];
                                 state.player.y = start[1];
                                 state.game_over = false;
                                 state.victory = false;
                                 state.log.clear();
-                                reveal_around(
-                                    &mut state.level,
-                                    state.player.x,
-                                    state.player.y,
-                                    state.vision_radius,
-                                );
+                                if !ghost_town {
+                                    reveal_around(
+                                        &mut state.level,
+                                        state.player.x,
+                                        state.player.y,
+                                        state.vision_radius,
+                                    );
+                                }
                                 state.log(&state.level.description.clone(), "#888");
-                                state.log("Your task: find and defeat the boss.", "#666");
+                                if ghost_town {
+                                    state.log("Nothing stirs. The halls are empty.", "#666");
+                                } else {
+                                    state.log("Your task: find and defeat the boss.", "#666");
+                                }
                                 if let Some(bytes) = font_bytes {
                                     match load_ttf_font_from_bytes(&bytes) {
                                         Ok(f) => title_font = Some(f),
@@ -1063,7 +1336,7 @@ async fn main() {
 
                 if phase_detail == "Press ENTER to retry" && is_key_pressed(KeyCode::Enter) {
                     if let Some(ow) = &overworld {
-                        start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone());
+                        start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town);
                         phase_text = "creating universe".into();
                         phase_detail.clear();
                     }
@@ -1071,6 +1344,10 @@ async fn main() {
             }
 
             Screen::Playing => {
+                if ghost_town && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q)) {
+                    if let Some(s) = &sfx { s.stop_boss_drone(); }
+                    screen = Screen::Overworld;
+                }
                 handle_playing_input(&mut state, &mut screen, &mut confetti, &sfx,
                     &mut game_hold_time, &mut game_last_fire);
                 // Update boss drone volume based on distance to nearest living boss
@@ -1143,17 +1420,22 @@ async fn main() {
 
                         // Beating the final level wins the game
                         if ow.nodes[completed_node].is_final {
-                            if let Some(id) = &current_campaign_id {
-                                mark_campaign_played(id);
-                                eprintln!("Campaign \"{}\" marked as played", ow.name);
+                            if !cheat_active {
+                                if let Some(id) = &current_campaign_id {
+                                    save_completion(&state.player, id);
+                                    mark_campaign_played(id);
+                                    eprintln!("Campaign \"{}\" marked as played", ow.name);
+                                }
+                                clear_campaign_progress();
                             }
-                            clear_campaign_progress();
                             spawn_confetti(&mut confetti);
                             screen = Screen::GameWon;
                         } else {
                             // Save progress after completing a level
-                            if let Some(id) = &current_campaign_id {
-                                save_campaign_progress(id, &state.player, ow);
+                            if !cheat_active {
+                                if let Some(id) = &current_campaign_id {
+                                    save_campaign_progress(id, &state.player, ow);
+                                }
                             }
                             screen = Screen::Overworld;
                         }
@@ -1220,7 +1502,8 @@ async fn main() {
                     confetti.clear();
                     overworld_font = None;
                     title_font = None;
-                    screen = Screen::Start;
+                    campaign_select_idx = pick_next_campaign(&bundled_campaigns).unwrap_or(0);
+                    screen = if has_bundled { Screen::CampaignSelect } else { Screen::Start };
                 }
             }
         }
@@ -1442,6 +1725,7 @@ fn start_level_generation(
     designs: &[Option<gen::Phase2Result>],
     gen_rx: &mut Option<mpsc::Receiver<GenMsg>>,
     campaign_settings: gen::CampaignSettings,
+    ghost: bool,
 ) {
     let (tx, rx) = mpsc::channel();
     *gen_rx = Some(rx);
@@ -1458,9 +1742,14 @@ fn start_level_generation(
     };
 
     // Design index = count of Level nodes before this one (skip Start/Store)
-    let design_idx = ow.nodes[..node_idx].iter()
-        .filter(|n| n.node_type == NodeType::Level && !n.completed)
-        .count();
+    let design_idx = if ghost {
+        // Ghost town: all designs loaded, count all Level nodes before this
+        ow.nodes[..node_idx].iter().filter(|n| n.node_type == NodeType::Level).count()
+    } else {
+        ow.nodes[..node_idx].iter()
+            .filter(|n| n.node_type == NodeType::Level && !n.completed)
+            .count()
+    };
     if let Some(Some(design)) = designs.get(design_idx) {
         // Use pre-generated design — no LLM call needed
         let design = design.clone();
@@ -1760,6 +2049,280 @@ fn draw_bundled_start_screen(font: &Font, bold: &Font, total: usize, played: &st
     draw_text_ex(prompt, (sw - pw) / 2.0, sh * 0.82, TextParams {
         font: Some(font), font_size: ps, color: Color::new(0.7, 0.7, 0.7, alpha), ..Default::default()
     });
+}
+
+fn campaign_card_pos(i: usize, cols: usize, card_w: f32, card_h: f32, gap: f32, grid_left: f32, grid_top: f32, row_h: f32, time: f64) -> (f32, f32) {
+    let row = i / cols;
+    let col_in_row = i % cols;
+    // Zigzag: even rows go left-to-right, odd rows go right-to-left
+    let col = if row % 2 == 0 { col_in_row } else { cols - 1 - col_in_row };
+    let cx = grid_left + col as f32 * (card_w + gap);
+    let cy = grid_top + row as f32 * row_h;
+    // Gentle bobbing per card
+    let phase = i as f64 * 1.7;
+    let bob_x = (time * 0.4 + phase).sin() * 4.0;
+    let bob_y = (time * 0.6 + phase * 1.3).cos() * 3.0;
+    (cx + bob_x as f32, cy + bob_y as f32)
+}
+
+/// Same as campaign_card_pos but without bobbing (for scroll calculation)
+fn campaign_card_pos_static(i: usize, cols: usize, card_w: f32, card_h: f32, gap: f32, grid_left: f32, grid_top: f32, row_h: f32) -> (f32, f32) {
+    let row = i / cols;
+    let col_in_row = i % cols;
+    let col = if row % 2 == 0 { col_in_row } else { cols - 1 - col_in_row };
+    let cx = grid_left + col as f32 * (card_w + gap);
+    let cy = grid_top + row as f32 * row_h;
+    (cx, cy)
+}
+
+fn draw_campaign_select(
+    font: &Font, bold: &Font,
+    campaigns: &[gen::BundledCampaign],
+    completions: &[CampaignCompletion],
+    played: &std::collections::HashSet<String>,
+    selected: usize,
+    has_save: Option<&str>,
+    strings: &gen::PackStrings,
+    all_unlocked: bool,
+) {
+    let sw = screen_width();
+    let sh = screen_height();
+    let time = get_time();
+
+    // Grid layout
+    let tile_px = 12.0f32;
+    let card_tiles_w = 14;
+    let card_tiles_h = 10;
+    let card_w = card_tiles_w as f32 * tile_px;
+    let card_h = card_tiles_h as f32 * tile_px;
+    let gap = 40.0f32;
+    let cols = 5usize;
+    let total_w = cols as f32 * card_w + (cols - 1) as f32 * gap;
+    let grid_left = (sw - total_w) / 2.0;
+    let header_h = 120.0; // space for title+subtitle
+    let footer_h = 70.0;  // space for prompt+progress
+    let grid_top = header_h + 10.0;
+    let row_h = card_h + 80.0; // card + name + status + spacing
+
+    // Total content height
+    let total_rows = (campaigns.len() + cols - 1) / cols;
+    let content_h = total_rows as f32 * row_h;
+    let viewport_h = sh - header_h - footer_h;
+
+    // Camera: selected card's Y position determines scroll
+    let (_, sel_y) = campaign_card_pos_static(selected, cols, card_w, card_h, gap, grid_left, 0.0, row_h);
+    let sel_center = sel_y + card_h / 2.0;
+
+    // Scroll offset (how far the grid content is shifted up)
+    let max_scroll = (content_h - viewport_h).max(0.0);
+    let scroll = if content_h <= viewport_h {
+        0.0 // everything fits, no scroll
+    } else {
+        // Target: keep selection at center of viewport
+        let target = sel_center - viewport_h / 2.0;
+        target.clamp(0.0, max_scroll)
+    };
+
+    // Title (fixed, not scrolled)
+    let title_size = 48u16;
+    let tw = measure_text(&strings.title, Some(bold), title_size, 1.0).width;
+    draw_text_ex(&strings.title, (sw - tw) / 2.0, 60.0, TextParams {
+        font: Some(bold), font_size: title_size, color: hex_to_color("#e94560"), ..Default::default()
+    });
+
+    let sub_size = 16u16;
+    let subw = measure_text(&strings.subtitle, Some(font), sub_size, 1.0).width;
+    draw_text_ex(&strings.subtitle, (sw - subw) / 2.0, 88.0, TextParams {
+        font: Some(font), font_size: sub_size, color: hex_to_color("#888899"), ..Default::default()
+    });
+
+    // Draw connecting lines between consecutive campaigns (behind cards)
+    let conn_tile = 7.0f32;
+    for i in 0..campaigns.len().saturating_sub(1) {
+        let (ax, ay) = campaign_card_pos(i, cols, card_w, card_h, gap, grid_left, grid_top - scroll, row_h, time);
+        let (bx, by) = campaign_card_pos(i + 1, cols, card_w, card_h, gap, grid_left, grid_top - scroll, row_h, time);
+
+        let a_center_x = ax + card_w / 2.0;
+        let a_center_y = ay + card_h / 2.0;
+        let b_center_x = bx + card_w / 2.0;
+        let b_center_y = by + card_h / 2.0;
+
+        // Color based on whether the connection is "active"
+        let a_played = played.contains(&campaigns[i].id);
+        let conn_color = if a_played {
+            hex_to_color("#555555")
+        } else {
+            hex_to_color("#383838")
+        };
+
+        // Draw tiled path between centers
+        let dx = b_center_x - a_center_x;
+        let dy = b_center_y - a_center_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let steps = (dist / conn_tile) as i32;
+        if steps > 0 {
+            for s in 0..=steps {
+                let t = s as f32 / steps as f32;
+                let px = a_center_x + dx * t;
+                let py = a_center_y + dy * t;
+                draw_rectangle(px - conn_tile / 2.0, py - conn_tile / 2.0, conn_tile, conn_tile, conn_color);
+            }
+        }
+    }
+
+    // Draw campaign cards
+    for (i, campaign) in campaigns.iter().enumerate() {
+        let (cx, cy) = campaign_card_pos(i, cols, card_w, card_h, gap, grid_left, grid_top - scroll, row_h, time);
+
+        // Skip if fully off screen
+        if cy + card_h + 40.0 < header_h || cy > sh - footer_h { continue; }
+
+        let is_played = played.contains(&campaign.id);
+        let is_in_progress = has_save == Some(campaign.id.as_str());
+        let is_unlocked = all_unlocked || i == 0 || played.contains(&campaigns[i.saturating_sub(1)].id) || is_in_progress;
+        let is_selected = i == selected;
+
+        // Get palette from first level node
+        let palette: Vec<Color> = campaign.overworld.levels.first()
+            .and_then(|l| l.palette.as_ref())
+            .map(|p| p.iter().map(|c| hex_to_color(c)).collect())
+            .unwrap_or_else(|| vec![hex_to_color("#446688"), hex_to_color("#668844")]);
+
+        // Seeded RNG for deterministic tile colors
+        let mut seed = (i as u32).wrapping_mul(2654435761);
+        let next = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            (*s >> 16) & 0x7FFF
+        };
+
+        // Draw rectangular tile grid
+        for gy in 0..card_tiles_h {
+            for gx in 0..card_tiles_w {
+                let ci = next(&mut seed) as usize % palette.len();
+                let brightness = 0.7 + (next(&mut seed) % 300) as f32 / 1000.0;
+                let mut c = palette[ci];
+                c.r *= brightness;
+                c.g *= brightness;
+                c.b *= brightness;
+
+                if is_played {
+                    c = Color::new(c.r * 0.4, c.g * 0.4, c.b * 0.4, 1.0);
+                } else if !is_unlocked {
+                    c = Color::new(c.r * 0.15, c.g * 0.15, c.b * 0.15, 1.0);
+                }
+
+                let tx = cx + gx as f32 * tile_px;
+                let ty = cy + gy as f32 * tile_px;
+                draw_rectangle(tx, ty, tile_px, tile_px, c);
+            }
+        }
+
+        // Outline
+        if is_selected && is_unlocked {
+            let pulse = ((time * 3.0).sin() * 0.3 + 0.7) as f32;
+            let outline_color = if is_played {
+                Color::new(0.4, 0.4, 0.4, pulse)
+            } else {
+                Color::new(0.27, 1.0, 0.27, pulse)
+            };
+            draw_rectangle_lines(cx - 4.0, cy - 4.0, card_w + 8.0, card_h + 8.0, 4.0, outline_color);
+        } else if is_played {
+            draw_rectangle_lines(cx - 1.0, cy - 1.0, card_w + 2.0, card_h + 2.0, 1.0, hex_to_color("#333333"));
+        } else if !is_unlocked {
+            draw_rectangle_lines(cx - 1.0, cy - 1.0, card_w + 2.0, card_h + 2.0, 1.0, hex_to_color("#2a2a2a"));
+        }
+
+        // Campaign name (floating on top of card, centered) — hidden for locked
+        let ns = 14u16;
+        let name_y = cy + card_h / 2.0 + 5.0;
+        if is_unlocked {
+            let name = &campaign.overworld.name;
+            let name_w = measure_text(name, Some(font), ns, 1.0).width;
+            let name_x = cx + (card_w - name_w) / 2.0;
+            let name_color = if is_played {
+                hex_to_color("#999999")
+            } else {
+                hex_to_color("#ffffff")
+            };
+            draw_text_ex(name, name_x + 1.0, name_y + 1.0, TextParams {
+                font: Some(bold), font_size: ns, color: Color::new(0.0, 0.0, 0.0, 0.7), ..Default::default()
+            });
+            draw_text_ex(name, name_x, name_y, TextParams {
+                font: Some(bold), font_size: ns, color: name_color, ..Default::default()
+            });
+        } else {
+            let label = "locked";
+            let label_w = measure_text(label, Some(font), ns, 1.0).width;
+            let label_x = cx + (card_w - label_w) / 2.0;
+            draw_text_ex(label, label_x, name_y, TextParams {
+                font: Some(font), font_size: ns, color: hex_to_color("#444444"), ..Default::default()
+            });
+        }
+
+        // Status line (below card)
+        let status_y = cy + card_h + 16.0;
+        let ss = 11u16;
+        if is_played {
+            if let Some(comp) = completions.iter().find(|c| c.campaign_id == campaign.id) {
+                let mut parts: Vec<String> = Vec::new();
+                if comp.potions > 0 { parts.push(format!("{}hp", comp.potions)); }
+                if comp.speed_potions > 0 { parts.push(format!("{}spd", comp.speed_potions)); }
+                if comp.bombs > 0 { parts.push(format!("{}bomb", comp.bombs)); }
+                if comp.gold > 0 { parts.push(format!("{}g", comp.gold)); }
+                let loot = if parts.is_empty() { "cleared".into() } else { parts.join(" ") };
+                let lw = measure_text(&loot, Some(font), ss, 1.0).width;
+                draw_text_ex(&loot, cx + (card_w - lw) / 2.0, status_y, TextParams {
+                    font: Some(font), font_size: ss, color: hex_to_color("#66aa88"), ..Default::default()
+                });
+            } else {
+                let t = "cleared";
+                let tw = measure_text(t, Some(font), ss, 1.0).width;
+                draw_text_ex(t, cx + (card_w - tw) / 2.0, status_y, TextParams {
+                    font: Some(font), font_size: ss, color: hex_to_color("#66aa88"), ..Default::default()
+                });
+            }
+        } else if is_in_progress {
+            let t = "in progress";
+            let tw = measure_text(t, Some(font), ss, 1.0).width;
+            draw_text_ex(t, cx + (card_w - tw) / 2.0, status_y, TextParams {
+                font: Some(font), font_size: ss, color: hex_to_color("#e9a845"), ..Default::default()
+            });
+        }
+    }
+
+    // Cover header/footer areas so scrolling content doesn't bleed through
+    draw_rectangle(0.0, 0.0, sw, header_h, Color::new(0.04, 0.04, 0.04, 1.0));
+    draw_rectangle(0.0, sh - footer_h, sw, footer_h, Color::new(0.04, 0.04, 0.04, 1.0));
+
+    // Redraw title/subtitle on top of cover
+    let tw = measure_text(&strings.title, Some(bold), title_size, 1.0).width;
+    draw_text_ex(&strings.title, (sw - tw) / 2.0, 60.0, TextParams {
+        font: Some(bold), font_size: title_size, color: hex_to_color("#e94560"), ..Default::default()
+    });
+    let subw = measure_text(&strings.subtitle, Some(font), sub_size, 1.0).width;
+    draw_text_ex(&strings.subtitle, (sw - subw) / 2.0, 88.0, TextParams {
+        font: Some(font), font_size: sub_size, color: hex_to_color("#888899"), ..Default::default()
+    });
+
+    // Bottom prompt (fixed)
+    let prompt = "ENTER to embark    \u{2190}\u{2192} to browse    ESC to return";
+    let ps = 14u16;
+    let pw = measure_text(prompt, Some(font), ps, 1.0).width;
+    let alpha = ((time * 2.0).sin() * 0.3 + 0.7) as f32;
+    draw_text_ex(prompt, (sw - pw) / 2.0, sh - 30.0, TextParams {
+        font: Some(font), font_size: ps, color: Color::new(0.5, 0.5, 0.5, alpha), ..Default::default()
+    });
+
+    // Progress
+    let cleared = played.len();
+    if cleared > 0 {
+        let progress = format!("{}/{} cleared", cleared, campaigns.len());
+        let ps = 13u16;
+        let pw = measure_text(&progress, Some(font), ps, 1.0).width;
+        draw_text_ex(&progress, (sw - pw) / 2.0, sh - 52.0, TextParams {
+            font: Some(font), font_size: ps, color: hex_to_color("#66aa88"), ..Default::default()
+        });
+    }
 }
 
 fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_count: usize) {

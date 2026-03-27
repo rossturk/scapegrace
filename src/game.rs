@@ -310,7 +310,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
     let xp_val = mon.xp_value;
 
     let roll: f64 = rng.gen();
-    let item = if roll < 0.5 {
+    let item = if roll < 0.75 {
         let gold = rng.gen_range(1..=xp_val.max(1));
         Item {
             id: format!("drop_{}", mon_id),
@@ -489,7 +489,6 @@ pub fn use_bomb(state: &mut GameState) -> bool {
     let px = state.player.x;
     let py = state.player.y;
     let radius = 3;
-    let max_damage = 15;
     let mut hit_count = 0;
 
     state.log("You throw a bomb!", "#ff6600");
@@ -517,27 +516,36 @@ pub fn use_bomb(state: &mut GameState) -> bool {
         let dy = state.level.monsters[i].y - py;
         let dist = ((dx * dx + dy * dy) as f32).sqrt();
         if dist > radius as f32 { continue; }
-        // Damage diminishes with distance
-        let falloff = 1.0 - (dist / (radius as f32 + 1.0));
-        let base = rng.gen_range(8..=max_damage);
-        let damage = (base as f32 * falloff).round() as i32;
-        if damage <= 0 { continue; }
-        state.level.monsters[i].hp -= damage;
+
         let mon_name = state.level.monsters[i].name.clone();
-        state.log(&format!("  Bomb hits {} for {} damage!", mon_name, damage), "#ff6600");
+        let is_boss = state.level.monsters[i].is_boss;
         hit_count += 1;
 
-        if state.level.monsters[i].hp <= 0 {
-            let xp = state.level.monsters[i].xp_value;
-            let is_boss = state.level.monsters[i].is_boss;
-            state.log(&format!("  {} destroyed! (+{} XP)", mon_name, xp), "#44ff44");
-            state.player.xp += xp;
-            check_level_up(state);
-            maybe_drop_loot(state, i);
-            if is_boss {
+        if is_boss {
+            // Bosses take heavy damage but survive
+            let falloff = 1.0 - (dist / (radius as f32 + 1.0));
+            let base = rng.gen_range(8..=15);
+            let damage = ((base as f32 * falloff).round() as i32 * 2).max(1);
+            state.level.monsters[i].hp -= damage;
+            state.log(&format!("  Bomb hits {} for {} damage!", mon_name, damage), "#ff6600");
+
+            if state.level.monsters[i].hp <= 0 {
+                let xp = state.level.monsters[i].xp_value;
+                state.log(&format!("  {} destroyed! (+{} XP)", mon_name, xp), "#44ff44");
+                state.player.xp += xp;
+                check_level_up(state);
+                maybe_drop_loot(state, i);
                 state.log("THE BOSS IS SLAIN!", "#ffd700");
                 state.victory = true;
             }
+        } else {
+            // Non-bosses are instantly killed
+            let xp = state.level.monsters[i].xp_value;
+            state.level.monsters[i].hp = 0;
+            state.log(&format!("  Bomb obliterates {}! (+{} XP)", mon_name, xp), "#ff6600");
+            state.player.xp += xp;
+            check_level_up(state);
+            maybe_drop_loot(state, i);
         }
     }
 
