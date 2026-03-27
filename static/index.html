@@ -537,23 +537,33 @@
                 const sy = (mon.y - cameraY) * TILE;
 
                 if (mon.is_boss) {
-                    // Boss renders as 2x2
-                    ctx.shadowColor = '#ffd700';
-                    ctx.shadowBlur = 16;
-                    ctx.font = `${TILE * 1.5}px serif`;
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(mon.sprite, sx + TILE, sy + TILE);
-                    ctx.shadowBlur = 0;
-
-                    // HP bar spans 2 tiles
+                    // Boss renders across dynamic body tiles
+                    const body = mon.boss_body || [[mon.x, mon.y], [mon.x+1, mon.y], [mon.x, mon.y+1], [mon.x+1, mon.y+1]];
+                    const pulse = Math.sin(performance.now() / 1000 * 1.2 * Math.PI * 2) * 0.5 + 0.5;
                     const pct = mon.hp / mon.max_hp;
-                    if (pct < 1) {
-                        const barW = TILE * 2 - 4;
-                        ctx.fillStyle = '#000';
-                        ctx.fillRect(sx + 2, sy + TILE * 2 - 5, barW, 4);
-                        ctx.fillStyle = pct > 0.5 ? '#66bb6a' : pct > 0.25 ? '#ffa726' : '#ef5350';
-                        ctx.fillRect(sx + 2, sy + TILE * 2 - 5, barW * pct, 4);
+                    const bright = 0.7 + pulse * 0.3;
+                    for (const [bx, by] of body) {
+                        const tsx = (bx - cameraX) * TILE;
+                        const tsy = (by - cameraY) * TILE;
+                        ctx.fillStyle = `rgba(30, 20, 20, 1)`;
+                        ctx.fillRect(tsx, tsy, TILE, TILE);
+                        if (pct > 0) {
+                            const fillH = TILE * pct;
+                            ctx.fillStyle = `rgba(${Math.round(230*bright)}, ${Math.round(69*bright*0.3)}, ${Math.round(69*bright*0.3)}, 1)`;
+                            ctx.fillRect(tsx, tsy + TILE - fillH, TILE, fillH);
+                        }
+                    }
+                    // Border on outer edges only
+                    const bodySet = new Set(body.map(([x,y]) => `${x},${y}`));
+                    ctx.strokeStyle = `rgba(230, 69, 69, ${0.4 + pulse * 0.6})`;
+                    ctx.lineWidth = 2;
+                    for (const [bx, by] of body) {
+                        const tsx = (bx - cameraX) * TILE;
+                        const tsy = (by - cameraY) * TILE;
+                        if (!bodySet.has(`${bx},${by-1}`)) { ctx.beginPath(); ctx.moveTo(tsx, tsy); ctx.lineTo(tsx+TILE, tsy); ctx.stroke(); }
+                        if (!bodySet.has(`${bx},${by+1}`)) { ctx.beginPath(); ctx.moveTo(tsx, tsy+TILE); ctx.lineTo(tsx+TILE, tsy+TILE); ctx.stroke(); }
+                        if (!bodySet.has(`${bx-1},${by}`)) { ctx.beginPath(); ctx.moveTo(tsx, tsy); ctx.lineTo(tsx, tsy+TILE); ctx.stroke(); }
+                        if (!bodySet.has(`${bx+1},${by}`)) { ctx.beginPath(); ctx.moveTo(tsx+TILE, tsy); ctx.lineTo(tsx+TILE, tsy+TILE); ctx.stroke(); }
                     }
                 } else {
                     ctx.font = `${TILE * 0.7}px serif`;

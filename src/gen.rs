@@ -1149,6 +1149,10 @@ fn assemble_level_with_settings(
         xp_value: boss_xp,
         description: p2.boss.description.clone().unwrap_or_default(),
         is_boss: true,
+        boss_enraged_turns: 0,
+        boss_has_seen_player: false,
+        boss_attacked_this_turn: false,
+        boss_body: vec![(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)],
     }];
 
     // Helper: pick a random side for spawning (40% chance locked side if it exists)
@@ -1183,6 +1187,10 @@ fn assemble_level_with_settings(
                     xp_value: mon_xp,
                     description: tmpl.description.clone().unwrap_or_default(),
                     is_boss: false,
+                    boss_enraged_turns: 0,
+                    boss_has_seen_player: false,
+                    boss_attacked_this_turn: false,
+                    boss_body: vec![],
                 });
             }
             i += 1;

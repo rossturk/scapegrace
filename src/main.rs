@@ -1354,11 +1354,11 @@ async fn main() {
                 if let Some(s) = &sfx {
                     let dist = state.level.monsters.iter()
                         .filter(|m| m.is_boss && m.is_alive())
-                        .map(|m| {
-                            let dx = state.player.x as f32 - (m.x as f32 + 0.5);
-                            let dy = state.player.y as f32 - (m.y as f32 + 0.5);
+                        .flat_map(|m| m.boss_body.iter().map(|&(bx, by)| {
+                            let dx = state.player.x as f32 - bx as f32;
+                            let dy = state.player.y as f32 - by as f32;
                             (dx * dx + dy * dy).sqrt()
-                        })
+                        }))
                         .fold(f32::MAX, f32::min);
                     s.update_boss_drone(dist);
                 }
@@ -3250,12 +3250,9 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
     // Monsters — hexagons
     for mon in &state.level.monsters {
         if !mon.is_alive() { continue; }
-        // Boss is 2x2 — visible if any of its tiles are visible
+        // Boss uses dynamic body tiles for visibility
         let mon_visible = if mon.is_boss {
-            state.level.visible.contains(&(mon.x, mon.y))
-                || state.level.visible.contains(&(mon.x + 1, mon.y))
-                || state.level.visible.contains(&(mon.x, mon.y + 1))
-                || state.level.visible.contains(&(mon.x + 1, mon.y + 1))
+            mon.boss_body.iter().any(|&(bx, by)| state.level.visible.contains(&(bx, by)))
         } else {
             state.level.visible.contains(&(mon.x, mon.y))
         };
@@ -3269,17 +3266,129 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
         let mon_facing = ((state.player.y - mon.y) as f32).atan2((state.player.x - mon.x) as f32);
 
         if mon.is_boss {
-            let cx = sx + TILE;
-            let cy = sy + TILE;
-            let r = TILE * 0.85;
-            let pct = mon.hp as f32 / mon.max_hp as f32;
             let base_color = hex_to_color(COLOR_BOSS);
-            draw_soft_circle_shadow(cx, cy, r);
-            draw_circle(cx, cy, r + 6.0, Color::new(base_color.r, base_color.g, base_color.b, 0.06));
-            draw_circle(cx, cy, r + 3.0, Color::new(base_color.r, base_color.g, base_color.b, 0.12));
-            draw_circle(cx, cy, r, Color::new(0.15, 0.15, 0.15, 1.0));
-            if pct > 0.0 {
-                draw_pie(cx, cy, r, pct, base_color, mon_facing);
+            let pct = mon.hp as f32 / mon.max_hp as f32;
+            let body = &mon.boss_body;
+
+            // Pulse
+            let time = get_time() as f32;
+            let pulse = (time * 1.2 * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+            let expand = pulse * 1.5;
+
+            let body_set: std::collections::HashSet<(i32,i32)> = body.iter().copied().collect();
+
+            // Helper: expand only on outer edges (internal edges seamless)
+            let tile_edges = |bx: i32, by: i32| -> (f32, f32, f32, f32) {
+                (
+                    if body_set.contains(&(bx - 1, by)) { 0.0 } else { expand },
+                    if body_set.contains(&(bx + 1, by)) { 0.0 } else { expand },
+                    if body_set.contains(&(bx, by - 1)) { 0.0 } else { expand },
+                    if body_set.contains(&(bx, by + 1)) { 0.0 } else { expand },
+                )
+            };
+
+            // Illuminate surrounding tiles
+            let glow_alpha = pulse * 0.15;
+            let glow_range = 2i32;
+            for &(bx, by) in body {
+                for oy in -glow_range..=glow_range {
+                    for ox in -glow_range..=glow_range {
+                        if ox == 0 && oy == 0 { continue; }
+                        let tx = bx + ox;
+                        let ty = by + oy;
+                        if body_set.contains(&(tx, ty)) { continue; }
+                        if !state.level.visible.contains(&(tx, ty)) { continue; }
+                        let tile_sx = map_left + (tx - camera_x) as f32 * TILE;
+                        let tile_sy = mid_top + (ty - camera_y) as f32 * TILE;
+                        let min_dist = body.iter()
+                            .map(|&(bbx, bby)| ((tx - bbx) as f32).hypot((ty - bby) as f32))
+                            .fold(f32::MAX, f32::min);
+                        let falloff = 1.0 - (min_dist / (glow_range as f32 + 1.0));
+                        if falloff > 0.0 {
+                            draw_rectangle(tile_sx, tile_sy, TILE, TILE,
+                                Color::new(base_color.r, base_color.g, base_color.b, glow_alpha * falloff));
+                        }
+                    }
+                }
+            }
+
+            let brightness = 0.7 + pulse * 0.3;
+            let dark_core = Color::new(0.12, 0.08, 0.08, 1.0);
+            let fill_color = Color::new(
+                base_color.r * brightness,
+                base_color.g * brightness * 0.3,
+                base_color.b * brightness * 0.3,
+                1.0,
+            );
+
+            // ── Draw boss as one connected shape ──
+
+            // Shadow pass
+            for &(bx, by) in body {
+                let tsx = map_left + (bx - camera_x) as f32 * TILE;
+                let tsy = mid_top + (by - camera_y) as f32 * TILE;
+                let (el, er, et, eb) = tile_edges(bx, by);
+                let layers: [(f32, f32); 3] = [(1.5, 0.16), (3.0, 0.10), (5.0, 0.04)];
+                for &(off, alpha) in &layers {
+                    draw_rectangle(tsx - el + off, tsy - et + off,
+                        TILE + el + er + off * 0.5, TILE + et + eb + off * 0.5,
+                        Color::new(0.0, 0.0, 0.0, alpha));
+                }
+            }
+
+            // Unified HP fill height
+            let min_y = body.iter().map(|t| t.1).min().unwrap();
+            let max_y = body.iter().map(|t| t.1).max().unwrap();
+            let shape_top = mid_top + (min_y - camera_y) as f32 * TILE - expand;
+            let shape_bottom = mid_top + (max_y - camera_y) as f32 * TILE + TILE + expand;
+            let total_h = shape_bottom - shape_top;
+            let fill_h = total_h * pct;
+            let fill_top = shape_bottom - fill_h;
+
+            // Dark core + HP fill
+            for &(bx, by) in body {
+                let tsx = map_left + (bx - camera_x) as f32 * TILE;
+                let tsy = mid_top + (by - camera_y) as f32 * TILE;
+                let (el, er, et, eb) = tile_edges(bx, by);
+                let rx = tsx - el;
+                let ry = tsy - et;
+                let rw = TILE + el + er;
+                let rh = TILE + et + eb;
+
+                draw_rectangle(rx, ry, rw, rh, dark_core);
+
+                if pct > 0.0 {
+                    let tile_bottom = ry + rh;
+                    if fill_top < tile_bottom {
+                        let clip_top = fill_top.max(ry);
+                        let clip_h = tile_bottom - clip_top;
+                        if clip_h > 0.0 {
+                            draw_rectangle(rx, clip_top, rw, clip_h, fill_color);
+                        }
+                    }
+                }
+            }
+
+            // Border: pulsing, outer edges only
+            let border_alpha = 0.4 + pulse * 0.6;
+            let border_color = Color::new(base_color.r, base_color.g * 0.4, base_color.b * 0.4, border_alpha);
+            let t = 2.0;
+            for &(bx, by) in body {
+                let tsx = map_left + (bx - camera_x) as f32 * TILE;
+                let tsy = mid_top + (by - camera_y) as f32 * TILE;
+                let (el, er, et, eb) = tile_edges(bx, by);
+                if !body_set.contains(&(bx, by - 1)) {
+                    draw_rectangle(tsx - el, tsy - et, TILE + el + er, t, border_color);
+                }
+                if !body_set.contains(&(bx, by + 1)) {
+                    draw_rectangle(tsx - el, tsy + TILE + eb - t, TILE + el + er, t, border_color);
+                }
+                if !body_set.contains(&(bx - 1, by)) {
+                    draw_rectangle(tsx - el, tsy - et, t, TILE + et + eb, border_color);
+                }
+                if !body_set.contains(&(bx + 1, by)) {
+                    draw_rectangle(tsx + TILE + er - t, tsy - et, t, TILE + et + eb, border_color);
+                }
             }
         } else {
             let cx = sx + TILE / 2.0;

@@ -35,6 +35,14 @@ pub struct Monster {
     pub description: String,
     #[serde(default)]
     pub is_boss: bool,
+    #[serde(default)]
+    pub boss_enraged_turns: i32,     // turns of 2x speed remaining (set on first sight)
+    #[serde(default)]
+    pub boss_has_seen_player: bool,   // whether boss has ever spotted the player
+    #[serde(default)]
+    pub boss_attacked_this_turn: bool, // set each turn to track regen eligibility
+    #[serde(default)]
+    pub boss_body: Vec<(i32, i32)>,  // dynamic body tiles (4 tiles, can reshape to squeeze)
 }
 
 impl Monster {
@@ -367,11 +375,11 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
         }
     }
 
-    // Check monster (bosses occupy 2x2: [x,y], [x+1,y], [x,y+1], [x+1,y+1])
+    // Check monster collision (bosses use dynamic body tiles)
     let monster_idx = state.level.monsters.iter().position(|m| {
         if !m.is_alive() { return false; }
         if m.is_boss {
-            nx >= m.x && nx <= m.x + 1 && ny >= m.y && ny <= m.y + 1
+            m.boss_body.iter().any(|&(bx, by)| bx == nx && by == ny)
         } else {
             m.x == nx && m.y == ny
         }
@@ -512,9 +520,20 @@ pub fn use_bomb(state: &mut GameState) -> bool {
 
     for i in 0..state.level.monsters.len() {
         if !state.level.monsters[i].is_alive() { continue; }
-        let dx = state.level.monsters[i].x - px;
-        let dy = state.level.monsters[i].y - py;
-        let dist = ((dx * dx + dy * dy) as f32).sqrt();
+        // For bosses, use distance to closest body tile
+        let dist = if state.level.monsters[i].is_boss {
+            state.level.monsters[i].boss_body.iter()
+                .map(|&(bx, by)| {
+                    let dx = bx - px;
+                    let dy = by - py;
+                    ((dx * dx + dy * dy) as f32).sqrt()
+                })
+                .fold(f32::MAX, f32::min)
+        } else {
+            let dx = state.level.monsters[i].x - px;
+            let dy = state.level.monsters[i].y - py;
+            ((dx * dx + dy * dy) as f32).sqrt()
+        };
         if dist > radius as f32 { continue; }
 
         let mon_name = state.level.monsters[i].name.clone();
@@ -594,6 +613,229 @@ fn has_line_of_sight(level: &Level, x0: i32, y0: i32, x1: i32, y1: i32) -> bool 
     true
 }
 
+/// Check if player is adjacent to any boss body tile (not on one)
+fn boss_body_adjacent(body: &[(i32, i32)], px: i32, py: i32) -> bool {
+    let on_body = body.iter().any(|&(bx, by)| px == bx && py == by);
+    if on_body { return false; }
+    body.iter().any(|&(bx, by)| (px - bx).abs() <= 1 && (py - by).abs() <= 1)
+}
+
+/// Check if a tile is walkable and in bounds
+fn tile_ok(state: &GameState, tx: i32, ty: i32) -> bool {
+    tx >= 0 && ty >= 0 && tx < state.level.width && ty < state.level.height
+        && state.level.tile_defs
+            .get(&state.level.tiles[ty as usize][tx as usize])
+            .map_or(false, |t| t.walkable)
+}
+
+/// Check if a tile is free of the player and other monsters (not counting boss_idx)
+fn tile_free(state: &GameState, boss_idx: usize, tx: i32, ty: i32) -> bool {
+    if tx == state.player.x && ty == state.player.y { return false; }
+    for (j, m) in state.level.monsters.iter().enumerate() {
+        if j == boss_idx || !m.is_alive() { continue; }
+        if m.is_boss {
+            if m.boss_body.iter().any(|&(bx, by)| bx == tx && by == ty) { return false; }
+        } else if m.x == tx && m.y == ty {
+            return false;
+        }
+    }
+    true
+}
+
+/// Try to reform boss body into a 2x2 block around the head.
+/// Picks the arrangement that puts the block closest to (target_x, target_y).
+fn try_reform_2x2(state: &GameState, boss_idx: usize, head: (i32, i32), tx: i32, ty: i32) -> Option<Vec<(i32, i32)>> {
+    // 4 possible 2x2 arrangements: head in each corner
+    let arrangements: [[(i32, i32); 4]; 4] = [
+        [(0,0), (1,0), (0,1), (1,1)],     // head top-left
+        [(-1,0), (0,0), (-1,1), (0,1)],   // head top-right
+        [(0,-1), (1,-1), (0,0), (1,0)],   // head bottom-left
+        [(-1,-1), (0,-1), (-1,0), (0,0)], // head bottom-right
+    ];
+    let mut best: Option<(Vec<(i32, i32)>, i32)> = None;
+    for arr in &arrangements {
+        let tiles: Vec<(i32, i32)> = arr.iter()
+            .map(|&(ox, oy)| (head.0 + ox, head.1 + oy))
+            .collect();
+        let all_ok = tiles.iter().all(|&(x, y)| tile_ok(state, x, y) && tile_free(state, boss_idx, x, y));
+        if !all_ok { continue; }
+        // Score: minimize distance from block center to target
+        let cx = tiles.iter().map(|t| t.0).sum::<i32>();
+        let cy = tiles.iter().map(|t| t.1).sum::<i32>();
+        let dist = (cx - tx * 4).abs() + (cy - ty * 4).abs();
+        if best.as_ref().map_or(true, |b| dist < b.1) {
+            // Put head first
+            let mut ordered = vec![head];
+            for &t in &tiles { if t != head { ordered.push(t); } }
+            best = Some((ordered, dist));
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// Check if tiles form a connected group via cardinal adjacency.
+fn is_body_connected(tiles: &[(i32, i32)]) -> bool {
+    if tiles.len() <= 1 { return true; }
+    let set: std::collections::HashSet<(i32,i32)> = tiles.iter().copied().collect();
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![tiles[0]];
+    visited.insert(tiles[0]);
+    while let Some((x, y)) = stack.pop() {
+        for &(nx, ny) in &[(x-1,y),(x+1,y),(x,y-1),(x,y+1)] {
+            if set.contains(&(nx, ny)) && visited.insert((nx, ny)) {
+                stack.push((nx, ny));
+            }
+        }
+    }
+    visited.len() == tiles.len()
+}
+
+/// Check if body forms a 2x2 block.
+fn body_is_2x2(body: &[(i32, i32)]) -> bool {
+    if body.len() != 4 { return false; }
+    let min_x = body.iter().map(|t| t.0).min().unwrap();
+    let min_y = body.iter().map(|t| t.1).min().unwrap();
+    let max_x = body.iter().map(|t| t.0).max().unwrap();
+    let max_y = body.iter().map(|t| t.1).max().unwrap();
+    max_x - min_x == 1 && max_y - min_y == 1
+}
+
+/// Try to slide the boss as a 2x2 block. Returns true if successful.
+fn try_2x2_slide(state: &mut GameState, i: usize, dx: i32, dy: i32, tx: i32, ty: i32) -> bool {
+    let body = &state.level.monsters[i].boss_body;
+    if !body_is_2x2(body) { return false; }
+    let min_x = body.iter().map(|t| t.0).min().unwrap();
+    let min_y = body.iter().map(|t| t.1).min().unwrap();
+
+    // Try dominant axis first, then fallback
+    let steps: [(i32,i32); 2] = if dx.abs() >= dy.abs() {
+        [(dx.signum(), 0), (0, dy.signum())]
+    } else {
+        [(0, dy.signum()), (dx.signum(), 0)]
+    };
+
+    for (sx, sy) in steps {
+        if sx == 0 && sy == 0 { continue; }
+        let na = (min_x + sx, min_y + sy);
+        let tiles = [(na.0,na.1),(na.0+1,na.1),(na.0,na.1+1),(na.0+1,na.1+1)];
+        let ok = tiles.iter().all(|&(x,y)| tile_ok(state, x, y) && tile_free(state, i, x, y));
+        if ok {
+            // Order with closest to target first
+            let mut new_body = tiles.to_vec();
+            new_body.sort_by_key(|&(bx,by)| (bx-tx).abs() + (by-ty).abs());
+            state.level.monsters[i].boss_body = new_body;
+            state.level.monsters[i].x = state.level.monsters[i].boss_body[0].0;
+            state.level.monsters[i].y = state.level.monsters[i].boss_body[0].1;
+            return true;
+        }
+    }
+    false
+}
+
+/// Amoeba movement: relocate the farthest removable body tile to a position
+/// adjacent to the remaining body that's closest to the target.
+fn amoeba_step(state: &GameState, boss_idx: usize, body: &[(i32, i32)], tx: i32, ty: i32) -> Option<Vec<(i32, i32)>> {
+    // Find tiles that can be removed without disconnecting the body ("leaves")
+    let removable: Vec<usize> = (0..body.len()).filter(|&i| {
+        let remaining: Vec<_> = body.iter().enumerate()
+            .filter(|(j, _)| *j != i).map(|(_, &t)| t).collect();
+        is_body_connected(&remaining)
+    }).collect();
+    if removable.is_empty() { return None; }
+
+    // Pick the removable tile farthest from target
+    let &far_idx = removable.iter()
+        .max_by_key(|&&i| {
+            let (bx, by) = body[i];
+            (bx - tx).abs() + (by - ty).abs()
+        })?;
+
+    let remaining: Vec<(i32,i32)> = body.iter().enumerate()
+        .filter(|(j, _)| *j != far_idx).map(|(_, &t)| t).collect();
+    let body_set: std::collections::HashSet<_> = body.iter().copied().collect();
+
+    // Collect candidate positions: adjacent to remaining, walkable, free, not in body
+    let mut candidates = std::collections::HashSet::new();
+    for &(rx, ry) in &remaining {
+        for &(nx, ny) in &[(rx-1,ry),(rx+1,ry),(rx,ry-1),(rx,ry+1)] {
+            if body_set.contains(&(nx, ny)) { continue; }
+            if !tile_ok(state, nx, ny) { continue; }
+            if !tile_free(state, boss_idx, nx, ny) { continue; }
+            candidates.insert((nx, ny));
+        }
+    }
+
+    // Pick candidate closest to target that keeps body connected
+    let best = candidates.iter()
+        .filter(|&&(cx, cy)| {
+            let mut new_body = remaining.clone();
+            new_body.push((cx, cy));
+            is_body_connected(&new_body)
+        })
+        .min_by_key(|&&(cx, cy)| (cx - tx).abs() + (cy - ty).abs())?;
+
+    // Check that the overall body gets closer (sum of distances decreases)
+    let old_sum: i32 = body.iter().map(|&(bx,by)| (bx-tx).abs() + (by-ty).abs()).sum();
+    let mut new_body = remaining;
+    new_body.push(*best);
+    let new_sum: i32 = new_body.iter().map(|&(bx,by)| (bx-tx).abs() + (by-ty).abs()).sum();
+    if new_sum >= old_sum { return None; }
+
+    Some(new_body)
+}
+
+/// Update boss body[0] and monster x,y to be the tile closest to target.
+fn update_boss_head(state: &mut GameState, i: usize, tx: i32, ty: i32) {
+    let body = &state.level.monsters[i].boss_body;
+    if body.is_empty() { return; }
+    let best = body.iter().enumerate()
+        .min_by_key(|(_, &(bx, by))| (bx - tx).abs() + (by - ty).abs())
+        .map(|(idx, _)| idx).unwrap();
+    if best != 0 { state.level.monsters[i].boss_body.swap(0, best); }
+    let head = state.level.monsters[i].boss_body[0];
+    state.level.monsters[i].x = head.0;
+    state.level.monsters[i].y = head.1;
+}
+
+/// Move boss toward or away from a target. Returns true if moved.
+fn try_boss_move(state: &mut GameState, i: usize, dx: i32, dy: i32, events: &mut Vec<serde_json::Value>) -> bool {
+    // Compute target point (player for charging, away-from-player for fleeing)
+    let body = &state.level.monsters[i].boss_body;
+    let cx = body.iter().map(|t| t.0).sum::<i32>() / body.len().max(1) as i32;
+    let cy = body.iter().map(|t| t.1).sum::<i32>() / body.len().max(1) as i32;
+    let tx = cx + dx;
+    let ty = cy + dy;
+
+    // Try 2x2 block slide first (normal movement in open space)
+    if try_2x2_slide(state, i, dx, dy, tx, ty) {
+        events.push(serde_json::json!({"id": state.level.monsters[i].id,
+            "x": state.level.monsters[i].x, "y": state.level.monsters[i].y}));
+        return true;
+    }
+
+    // Amoeba squeeze: relocate farthest tile closer to target
+    let body = state.level.monsters[i].boss_body.clone();
+    if let Some(new_body) = amoeba_step(state, i, &body, tx, ty) {
+        state.level.monsters[i].boss_body = new_body;
+        update_boss_head(state, i, tx, ty);
+
+        // Try to reform 2x2 if we're no longer squeezed
+        if !body_is_2x2(&state.level.monsters[i].boss_body) {
+            let head = state.level.monsters[i].boss_body[0];
+            if let Some(reformed) = try_reform_2x2(state, i, head, tx, ty) {
+                state.level.monsters[i].boss_body = reformed;
+                update_boss_head(state, i, tx, ty);
+            }
+        }
+
+        events.push(serde_json::json!({"id": state.level.monsters[i].id,
+            "x": state.level.monsters[i].x, "y": state.level.monsters[i].y}));
+        return true;
+    }
+
+    false
+}
+
 pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
     let mut events = vec![];
     let px = state.player.x;
@@ -601,29 +843,101 @@ pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
 
     for i in 0..state.level.monsters.len() {
         if !state.level.monsters[i].is_alive() { continue; }
+        state.level.monsters[i].boss_attacked_this_turn = false;
+
         let mon = &state.level.monsters[i];
+
+        if mon.is_boss {
+            // Use closest body tile for distance and LOS checks
+            let body = mon.boss_body.clone();
+            let closest = body.iter()
+                .min_by_key(|&&(bx, by)| (bx - px).abs() + (by - py).abs())
+                .copied().unwrap_or((mon.x, mon.y));
+            let dist = (closest.0 - px).abs() + (closest.1 - py).abs();
+            if dist > 8 { continue; }
+            let has_los = body.iter()
+                .any(|&(bx, by)| has_line_of_sight(&state.level, bx, by, px, py));
+            if !has_los { continue; }
+
+            // ── Boss AI ──
+            let hp_pct = mon.hp as f32 / mon.max_hp as f32;
+
+            // First sight: enrage for a burst of 2x speed
+            if !mon.boss_has_seen_player {
+                state.level.monsters[i].boss_has_seen_player = true;
+                state.level.monsters[i].boss_enraged_turns = 8;
+            }
+
+            // Adjacent? Attack (unless fleeing)
+            let adjacent = boss_body_adjacent(&body, px, py);
+            if adjacent && hp_pct > 0.3 {
+                monster_attack(state, i);
+                state.level.monsters[i].boss_attacked_this_turn = true;
+                if state.game_over { return events; }
+                continue;
+            }
+
+            // Fleeing: run away when hurt
+            let mut boss_moved = false;
+            if hp_pct <= 0.3 {
+                let dx = -(px - closest.0); // away from player
+                let dy = -(py - closest.1);
+                boss_moved = try_boss_move(state, i, dx, dy, &mut events);
+                if !boss_moved {
+                    // Cornered — regenerate instead of moving
+                    let regen = (state.level.monsters[i].max_hp / 20).max(1);
+                    state.level.monsters[i].hp = (state.level.monsters[i].hp + regen)
+                        .min(state.level.monsters[i].max_hp);
+                }
+                continue;
+            }
+
+            // Charge toward player
+            let steps = if state.level.monsters[i].boss_enraged_turns > 0 {
+                state.level.monsters[i].boss_enraged_turns -= 1;
+                2 // double speed while enraged
+            } else {
+                1
+            };
+            for _ in 0..steps {
+                let body = &state.level.monsters[i].boss_body;
+                if boss_body_adjacent(body, px, py) {
+                    monster_attack(state, i);
+                    state.level.monsters[i].boss_attacked_this_turn = true;
+                    if state.game_over { return events; }
+                    boss_moved = true;
+                    break;
+                }
+                let dx = px - closest.0;
+                let dy = py - closest.1;
+                if try_boss_move(state, i, dx, dy, &mut events) {
+                    boss_moved = true;
+                } else {
+                    break;
+                }
+            }
+
+            // Regenerate only when standing still (no move, no attack)
+            if !boss_moved && !state.level.monsters[i].boss_attacked_this_turn {
+                let regen = (state.level.monsters[i].max_hp / 20).max(1);
+                state.level.monsters[i].hp = (state.level.monsters[i].hp + regen)
+                    .min(state.level.monsters[i].max_hp);
+            }
+            continue;
+        }
+
+        // ── Regular monster AI ──
         let dist = (mon.x - px).abs() + (mon.y - py).abs();
         if dist > 8 { continue; }
         if !has_line_of_sight(&state.level, mon.x, mon.y, px, py) { continue; }
 
-        // Adjacent? Attack.
-        let adjacent = if mon.is_boss {
-            // Boss is 2x2: check if player is adjacent to any of the 4 tiles
-            let bx = mon.x;
-            let by = mon.y;
-            (px >= bx - 1 && px <= bx + 2 && py >= by - 1 && py <= by + 2)
-                && !(px >= bx && px <= bx + 1 && py >= by && py <= by + 1) // not inside the boss
-        } else {
-            (mon.x - px).abs() <= 1 && (mon.y - py).abs() <= 1 && dist == 1
-        };
+        let adjacent = (mon.x - px).abs() <= 1 && (mon.y - py).abs() <= 1 && dist == 1;
         if adjacent {
             monster_attack(state, i);
             if state.game_over { return events; }
             continue;
         }
 
-
-        // Move toward player
         let dx = if px > mon.x { 1 } else if px < mon.x { -1 } else { 0 };
         let dy = if py > mon.y { 1 } else if py < mon.y { -1 } else { 0 };
 
@@ -638,7 +952,14 @@ pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
             let walkable = state.level.tile_defs.get(tile).map_or(false, |t| t.walkable);
             if walkable {
                 let blocked = state.level.monsters.iter().enumerate()
-                    .any(|(j, m)| j != i && m.x == nx && m.y == ny && m.is_alive());
+                    .any(|(j, m)| {
+                        if j == i || !m.is_alive() { return false; }
+                        if m.is_boss {
+                            m.boss_body.iter().any(|&(bx, by)| bx == nx && by == ny)
+                        } else {
+                            m.x == nx && m.y == ny
+                        }
+                    });
                 if !blocked && !(nx == px && ny == py) {
                     state.level.monsters[i].x = nx;
                     state.level.monsters[i].y = ny;
