@@ -2,6 +2,7 @@
 name = "scapegrace"
 version = "0.1.0"
 edition = "2021"
+default-run = "scapegrace"
 
 [dependencies]
 macroquad = "0.4"

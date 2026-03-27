@@ -333,7 +333,7 @@ fn find_lock_position(
 ) -> Option<(i32, i32)> {
     let mut blocked_defs = tile_def_map.clone();
     blocked_defs.insert("__blocked__".into(), crate::game::TileDef {
-        name: "__blocked__".into(), color: "#000".into(), walkable: false, char_display: String::new(),
+        name: "__blocked__".into(), color: "#000".into(), walkable: false, char_display: String::new(), damage: 0,
     });
 
     let is_walkable = |x: i32, y: i32| -> bool {
@@ -382,6 +382,10 @@ fn find_lock_position(
 }
 
 pub fn generate_map(tile_defs: &HashMap<String, TileDefRaw>) -> MapGenResult {
+    generate_map_with_options(tile_defs, false)
+}
+
+pub fn generate_map_with_options(tile_defs: &HashMap<String, TileDefRaw>, skip_locked_door: bool) -> MapGenResult {
     let mut rng = rand::thread_rng();
     let width = 60i32;
     let height = 36i32;
@@ -433,6 +437,7 @@ pub fn generate_map(tile_defs: &HashMap<String, TileDefRaw>) -> MapGenResult {
             color: td.color.clone(),
             walkable: td.walkable,
             char_display: td.char.clone().unwrap_or_default(),
+            damage: 0,
         })
     }).collect();
 
@@ -445,6 +450,7 @@ pub fn generate_map(tile_defs: &HashMap<String, TileDefRaw>) -> MapGenResult {
 
     // Place locked door at a chokepoint that separates the player from the boss
     let mut key_position = None;
+    if !skip_locked_door {
     if let Some((mx, my)) = find_lock_position(
         &grid, &tile_def_map, player_start, boss_pos, width, height
     ) {
@@ -454,7 +460,7 @@ pub fn generate_map(tile_defs: &HashMap<String, TileDefRaw>) -> MapGenResult {
         // Find key position: a reachable tile on the player's side (reachable without the door)
         let mut blocked_defs = tile_def_map.clone();
         blocked_defs.insert(LOCKED_DOOR_TILE.into(), crate::game::TileDef {
-            name: LOCKED_DOOR_TILE.into(), color: "#000".into(), walkable: false, char_display: String::new(),
+            name: LOCKED_DOOR_TILE.into(), color: "#000".into(), walkable: false, char_display: String::new(), damage: 0,
         });
         let player_side = flood_fill(&grid, &blocked_defs, player_start[0], player_start[1], width, height);
 
@@ -478,6 +484,7 @@ pub fn generate_map(tile_defs: &HashMap<String, TileDefRaw>) -> MapGenResult {
             grid[my as usize][mx as usize] = floor_name.clone();
         }
     }
+    } // !skip_locked_door
 
     MapGenResult {
         tiles: grid,

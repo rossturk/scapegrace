@@ -1,10 +1,10 @@
 use crate::game::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 // ── Phase 1: Universe (title, description, font, colors, tile_defs) ──
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Phase1Result {
     pub title: String,
     pub description: String,
@@ -12,7 +12,7 @@ pub struct Phase1Result {
     pub tile_defs: HashMap<String, TileDefRaw>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TileDefRaw {
     pub name: String,
     pub color: String,
@@ -23,14 +23,14 @@ pub struct TileDefRaw {
 
 // ── Phase 2: Objects (boss, monsters, weapon, armor, traps, budget) ──
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TileDefSlim {
     pub name: String,
     #[serde(default)]
     pub char: Option<String>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Phase2Result {
     pub tile_defs: Vec<TileDefSlim>,
     pub boss: MonsterRaw,
@@ -45,13 +45,13 @@ pub struct Phase2Result {
     pub defeat_message: Option<String>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ModeRaw {
     pub root: String,
     pub scale: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct MonsterRaw {
     pub name: String,
@@ -64,7 +64,7 @@ pub struct MonsterRaw {
     pub description: Option<String>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct MonsterTemplateRaw {
     pub name: String,
@@ -77,13 +77,13 @@ pub struct MonsterTemplateRaw {
     pub description: Option<String>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ItemTemplateRaw {
     pub name: String,
     pub description: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Serialize, Clone)]
 #[allow(dead_code)]
 pub struct TrapRaw {
     pub x: Option<i32>,
@@ -119,7 +119,7 @@ impl<'de> Deserialize<'de> for TrapRaw {
 
 // ── Overworld result ──
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct OverworldNodeRaw {
     pub name: String,
     pub font: Option<String>,
@@ -130,7 +130,7 @@ pub struct OverworldNodeRaw {
     pub budget: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct OverworldResult {
     pub name: String,
     pub font: Option<String>,
@@ -143,7 +143,7 @@ pub struct OverworldResult {
     pub store: Option<StoreRaw>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct StoreRaw {
     pub healing_potions: Option<i32>,
     pub speed_potions: Option<i32>,
@@ -151,6 +151,7 @@ pub struct StoreRaw {
 }
 
 /// Config passed from overworld node to level generation
+#[derive(Serialize, Deserialize, Clone)]
 pub struct LevelConfig {
     pub title: String,
     pub font: String,
@@ -167,6 +168,247 @@ pub struct LevelConfig {
 pub struct PhaseUpdate {
     pub phase: String,
     pub detail: String,
+}
+
+// ── Bundled campaign format ──
+
+#[derive(Serialize, Deserialize)]
+pub struct BundledCampaign {
+    pub id: String,
+    pub overworld: OverworldResult,
+    pub designs: Vec<Phase2Result>,
+    pub quality: CampaignQuality,
+    #[serde(default)]
+    pub settings: CampaignSettings,
+}
+
+/// Per-campaign difficulty settings. Controls when mechanics appear within a campaign.
+/// Level numbers are 1-indexed (level 1 = first station, level 5 = boss, level 6 = optional).
+/// Set to 99 to disable a mechanic entirely for that campaign.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CampaignSettings {
+    pub locked_doors_from_level: u8,
+    pub traps_from_level: u8,
+    pub damage_tiles_from_level: u8,
+    pub damage_tile_damage: i32,
+}
+
+impl Default for CampaignSettings {
+    fn default() -> Self {
+        Self {
+            locked_doors_from_level: 3,
+            traps_from_level: 2,
+            damage_tiles_from_level: 4,
+            damage_tile_damage: 3,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CampaignQuality {
+    pub score: u32,
+    pub breakdown: QualityBreakdown,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QualityBreakdown {
+    pub completeness: u32,
+    pub tile_variety: u32,
+    pub monster_variety: u32,
+    pub color_quality: u32,
+    pub name_quality: u32,
+    pub description_quality: u32,
+    pub mode_validity: u32,
+    pub budget_distribution: u32,
+    pub theme_coherence: u32,
+}
+
+/// A pack of campaigns in a single file, ready to ship.
+#[derive(Serialize, Deserialize)]
+pub struct BundledPack {
+    pub theme: Option<String>,
+    pub campaigns: Vec<BundledCampaign>,
+    #[serde(default)]
+    pub strings: PackStrings,
+}
+
+/// UI strings that change with the theme/setting.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PackStrings {
+    pub title: String,
+    pub subtitle: String,
+    pub intro: Vec<String>,
+    pub campaign_cleared: String,
+    pub campaign_conquered: String, // "{name} conquered!" — {name} replaced at runtime
+    pub prompt_first: String,
+    pub prompt_next: String,
+    pub prompt_resume: String,
+    pub prompt_restart: String,
+    pub prompt_after_clear: String,
+}
+
+impl Default for PackStrings {
+    fn default() -> Self {
+        Self {
+            title: "SCAPEGRACE".into(),
+            subtitle: "A journey through space".into(),
+            intro: vec![
+                "You are a spacefarer on the edge of known space.".into(),
+                "Each star system is a chain of stations.".into(),
+                "Clear them all, or die trying.".into(),
+            ],
+            campaign_cleared: "SYSTEM CLEARED".into(),
+            campaign_conquered: "{name} conquered!".into(),
+            prompt_first: "Press ENTER for the first star system".into(),
+            prompt_next: "Press ENTER for the next star system".into(),
+            prompt_resume: "Press ENTER to resume your journey".into(),
+            prompt_restart: "Press ENTER to begin the journey again".into(),
+            prompt_after_clear: "Press ENTER for next star system".into(),
+        }
+    }
+}
+
+// ── Bundled campaign loading ──
+
+/// Parse campaign data from JSON string (supports BundledPack or bare array).
+fn parse_campaign_data(content: &str) -> Option<Vec<BundledCampaign>> {
+    // Try BundledPack format first
+    if let Ok(pack) = serde_json::from_str::<BundledPack>(content) {
+        return Some(pack.campaigns);
+    }
+    // Try bare array
+    if let Ok(campaigns) = serde_json::from_str::<Vec<BundledCampaign>>(content) {
+        return Some(campaigns);
+    }
+    None
+}
+
+/// Embedded campaigns — baked into the binary at compile time.
+/// Generate with: cargo run --release --bin generate_campaigns -- -o campaigns.json
+/// If the file doesn't exist at compile time, this is an empty string and we fall back to external files.
+const EMBEDDED_CAMPAIGNS: &str = include_str!("../campaigns.json");
+
+/// Load bundled campaigns. Priority:
+/// 1. SCAPEGRACE_CAMPAIGNS env var (external file override)
+/// 2. Embedded campaigns (compiled into binary)
+/// 3. campaigns.json next to executable
+/// 4. campaigns.json in macOS Resources bundle
+/// 5. campaigns.json in cwd
+pub fn load_bundled_pack() -> Option<BundledPack> {
+    let campaigns = load_bundled_campaigns();
+    if campaigns.is_empty() { return None; }
+
+    // Try to get the full pack (with strings) from embedded data
+    if !EMBEDDED_CAMPAIGNS.is_empty() {
+        if let Ok(pack) = serde_json::from_str::<BundledPack>(EMBEDDED_CAMPAIGNS) {
+            return Some(BundledPack { campaigns, ..pack });
+        }
+    }
+
+    Some(BundledPack { theme: None, campaigns, strings: PackStrings::default() })
+}
+
+fn load_bundled_campaigns() -> Vec<BundledCampaign> {
+    // Env var overrides everything (external file)
+    if let Ok(path) = std::env::var("SCAPEGRACE_CAMPAIGNS") {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Some(campaigns) = parse_campaign_data(&content) {
+                eprintln!("Loaded {} campaigns from {} (env override)", campaigns.len(), path);
+                return campaigns;
+            }
+        }
+    }
+
+    // Try embedded campaigns (compiled into binary)
+    if !EMBEDDED_CAMPAIGNS.is_empty() {
+        eprintln!("[campaigns] embedded data: {} bytes", EMBEDDED_CAMPAIGNS.len());
+        match serde_json::from_str::<BundledPack>(EMBEDDED_CAMPAIGNS) {
+            Ok(pack) => {
+                eprintln!("Loaded {} embedded campaigns (batteries included)", pack.campaigns.len());
+                return pack.campaigns;
+            }
+            Err(e) => eprintln!("[campaigns] pack parse failed: {}", e),
+        }
+        match serde_json::from_str::<Vec<BundledCampaign>>(EMBEDDED_CAMPAIGNS) {
+            Ok(c) => {
+                eprintln!("Loaded {} embedded campaigns (array)", c.len());
+                return c;
+            }
+            Err(e) => eprintln!("[campaigns] array parse failed: {}", e),
+        }
+    } else {
+        eprintln!("[campaigns] no embedded data");
+    }
+
+    // Fall back to external files
+    let mut search_files = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            search_files.push(exe_dir.join("campaigns.json"));
+            // macOS .app bundle
+            if let Some(contents) = exe_dir.parent() {
+                search_files.push(contents.join("Resources").join("campaigns.json"));
+            }
+        }
+    }
+    search_files.push(std::path::PathBuf::from("campaigns.json"));
+
+    // Try external pack files
+    for path in &search_files {
+        if !path.is_file() { continue; }
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Some(campaigns) = parse_campaign_data(&content) {
+                eprintln!("Loaded {} campaigns from {}", campaigns.len(), path.display());
+                return campaigns;
+            }
+            eprintln!("Warning: {} exists but couldn't parse as campaign pack", path.display());
+        }
+    }
+
+    // Legacy: campaigns/ directory with individual files
+    let mut search_dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            search_dirs.push(exe_dir.join("campaigns"));
+            if let Some(contents) = exe_dir.parent() {
+                search_dirs.push(contents.join("Resources").join("campaigns"));
+            }
+        }
+    }
+    search_dirs.push(std::path::PathBuf::from("campaigns"));
+
+    for dir in &search_dirs {
+        if !dir.is_dir() { continue; }
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .filter(|e| e.file_name().to_str().map_or(false, |n| n.starts_with("campaign_")))
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+
+        let mut campaigns = Vec::new();
+        for entry in entries {
+            match std::fs::read_to_string(entry.path()) {
+                Ok(content) => {
+                    match serde_json::from_str::<BundledCampaign>(&content) {
+                        Ok(c) => campaigns.push(c),
+                        Err(e) => eprintln!("Warning: failed to parse {}: {}", entry.path().display(), e),
+                    }
+                }
+                Err(e) => eprintln!("Warning: failed to read {}: {}", entry.path().display(), e),
+            }
+        }
+
+        if !campaigns.is_empty() {
+            eprintln!("Loaded {} bundled campaigns from {}/", campaigns.len(), dir.display());
+            return campaigns;
+        }
+    }
+
+    Vec::new()
 }
 
 // ── LLM caller ──
@@ -190,7 +432,7 @@ pub fn llm_model() -> String {
         .unwrap_or_else(|_| "anthropic/claude-sonnet-4".into())
 }
 
-fn call_llm_streaming<F>(
+pub fn call_llm_streaming<F>(
     client: &reqwest::blocking::Client, api_key: &str, model: &str, prompt: &str,
     on_token: Option<F>,
 ) -> Result<String, String>
@@ -254,7 +496,7 @@ where F: Fn()
     Ok(clean_llm_content(content))
 }
 
-fn clean_llm_content(mut content: String) -> String {
+pub fn clean_llm_content(mut content: String) -> String {
     if content.starts_with("```") {
         if let Some(rest) = content.split_once('\n') {
             content = rest.1.to_string();
@@ -409,20 +651,28 @@ fn layout_overworld(ow: &mut crate::game::Overworld, main_path_len: usize) {
 
 // ── Overworld generation ──
 
+/// Build an Overworld from a pre-generated OverworldResult (no LLM call).
+pub fn build_overworld_from_result(result: OverworldResult) -> Result<crate::game::Overworld, String> {
+    if result.levels.len() < 5 || result.levels.len() > 7 {
+        return Err(format!("Expected 5-7 levels, got {}", result.levels.len()));
+    }
+
+    let ow_font = result.font.clone().ok_or("No overworld font")?;
+
+    build_overworld_inner(result, ow_font)
+}
+
 pub fn generate_overworld<F, T>(
     mut on_phase: F,
     on_token: T,
 ) -> Result<crate::game::Overworld, String>
 where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
 {
-    use crate::game::{NodeType, OverworldNode};
-    use rand::Rng;
-
     let api_key = llm_api_key();
     let model = llm_model();
     let client = reqwest::blocking::Client::new();
 
-    let prompt = build_overworld_prompt();
+    let prompt = build_overworld_prompt_themed(None);
     let content = call_llm_streaming(&client, &api_key, &model, &prompt, Some(on_token))?;
     let result: OverworldResult = serde_json::from_str(&content)
         .map_err(|e| format!("Overworld parse error: {}\n\nRaw: {}", e, &content[..content.len().min(500)]))?;
@@ -431,7 +681,21 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
         return Err(format!("Expected 5-7 levels, got {}", result.levels.len()));
     }
 
-    let ow_font = result.font.ok_or("LLM did not provide an overworld font")?;
+    let ow_font = result.font.clone().ok_or("LLM did not provide an overworld font")?;
+
+    let overworld = build_overworld_inner(result, ow_font)?;
+
+    on_phase(PhaseUpdate {
+        phase: "overworld designed".into(),
+        detail: format!("{} — {} levels", overworld.name, overworld.nodes.len()),
+    });
+
+    Ok(overworld)
+}
+
+fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<crate::game::Overworld, String> {
+    use crate::game::{NodeType, OverworldNode};
+    use rand::Rng;
 
     // Split: first N-1 levels = main path, last level = optional branch
     let n = result.levels.len();
@@ -563,11 +827,6 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
 
     layout_overworld(&mut overworld, main_path_end);
 
-    on_phase(PhaseUpdate {
-        phase: "overworld designed".into(),
-        detail: format!("{} — {} levels", overworld.name, overworld.nodes.len()),
-    });
-
     Ok(overworld)
 }
 
@@ -576,8 +835,17 @@ pub fn build_level_from_design(
     config: &LevelConfig,
     design: &Phase2Result,
 ) -> Result<(Level, [i32; 2], i32), String> {
+    build_level_from_design_with_settings(config, design, &CampaignSettings::default())
+}
+
+pub fn build_level_from_design_with_settings(
+    config: &LevelConfig,
+    design: &Phase2Result,
+    settings: &CampaignSettings,
+) -> Result<(Level, [i32; 2], i32), String> {
     let floor = config.floor;
     let budget = config.budget;
+    let level_num = floor as u8; // 1-indexed level number within campaign
 
     let full_defs = expand_tile_defs(&design.tile_defs, &config.palette);
     let p1 = Phase1Result {
@@ -587,8 +855,9 @@ pub fn build_level_from_design(
         tile_defs: full_defs.clone(),
     };
 
-    let map = crate::mapgen::generate_map(&full_defs);
-    assemble_level(floor, budget, &p1, design, &map)
+    let skip_locked_door = level_num < settings.locked_doors_from_level;
+    let map = crate::mapgen::generate_map_with_options(&full_defs, skip_locked_door);
+    assemble_level_with_settings(floor, budget, &p1, design, &map, settings)
 }
 
 // ── Three-phase generation (legacy, still used if no pre-generated design) ──
@@ -679,11 +948,22 @@ fn build_phase2_prompt(floor: i32, player: &Player, budget: i32, theme: &str, ti
 pub fn build_single_level_design_prompt(
     campaign_name: &str, campaign_desc: &str, config: &LevelConfig,
 ) -> String {
+    build_single_level_design_prompt_themed(campaign_name, campaign_desc, config, None)
+}
+
+pub fn build_single_level_design_prompt_themed(
+    campaign_name: &str, campaign_desc: &str, config: &LevelConfig, theme: Option<&str>,
+) -> String {
     let mut p = String::new();
     p.push_str(&format!("Generate TILE DEFINITIONS and OBJECTS for one level of a roguelike campaign.\n\n"));
     p.push_str(&format!("Campaign: \"{}\"\n{}\n\n", campaign_name, campaign_desc));
     p.push_str(&format!("Level: \"{}\" (theme: {}, budget: {})\n", config.title, config.theme, config.budget));
     p.push_str(&format!("{}\nPalette: {}\n\n", config.description, config.palette.join(", ")));
+    if let Some(theme) = theme {
+        p.push_str(&format!("MANDATORY: All names MUST reference \"{}\".\n", theme));
+        p.push_str("Boss, monsters, weapon, armor, traps — name them after specific characters, items, or concepts from the source material. A fan should immediately recognize the references.\n");
+        p.push_str("DO NOT use generic fantasy/sci-fi names like \"Shadow Beast\" or \"Dark Blade\".\n\n");
+    }
     p.push_str("You are ADVERSARIAL — your goal is to kill the player.\n\n");
     p.push_str("Return a JSON object with:\n");
     p.push_str("- tile_defs: array of {name, char (display char or empty)}. First entry is the wall tile, rest are walkable. Include 3-5 tiles total (wall, floor, and 1-3 thematic). Colors are assigned by the engine from the palette.\n");
@@ -707,11 +987,22 @@ pub fn call_llm_for_design<F: Fn()>(
         .map_err(|e| format!("Design parse error: {}\n\nRaw: {}", e, &content[..content.len().min(500)]))
 }
 
-fn build_overworld_prompt() -> String {
+pub fn build_overworld_prompt_themed(theme: Option<&str>) -> String {
     let mut p = String::new();
     p.push_str("Design a CAMPAIGN for a roguelike game.\n\n");
-    p.push_str("Be wildly creative with the setting. Invent something original and unexpected — the weirder the better.\n");
-    p.push_str("Think more like: a sentient library that reshelves itself, a civilization built inside frozen music, a war between rival paint colors, a detective agency run by ghosts, an opera house where the architecture argues with the performers, a postal service that delivers to parallel dimensions, a courtroom where gravity is on trial.\n\n");
+    if let Some(theme) = theme {
+        p.push_str(&format!("CRITICAL — MANDATORY THEME: \"{}\"\n\n", theme));
+        p.push_str("EVERY element of this campaign MUST be directly inspired by this source material.\n");
+        p.push_str("- Campaign name: reference or pun from the source\n");
+        p.push_str("- Level names: named after specific locations, events, or concepts from the source\n");
+        p.push_str("- Level themes: describe scenarios using characters, places, and lore from the source\n");
+        p.push_str("- Descriptions: written in the tone and style of the source material\n\n");
+        p.push_str("DO NOT use generic sci-fi/fantasy names. USE specific names, places, and references that a fan would recognize.\n");
+        p.push_str(&format!("If the theme is a book/movie/game, name levels after actual locations and reference actual characters. For example, if the theme were \"Lord of the Rings\" you'd have levels like \"Mines of Moria\", \"Fangorn Forest\", boss \"Balrog of Morgoth\", weapon \"Sting\", etc.\n\n"));
+    } else {
+        p.push_str("Be wildly creative with the setting. Invent something original and unexpected — the weirder the better.\n");
+        p.push_str("Think more like: a sentient library that reshelves itself, a civilization built inside frozen music, a war between rival paint colors, a detective agency run by ghosts, an opera house where the architecture argues with the performers, a postal service that delivers to parallel dimensions, a courtroom where gravity is on trial.\n\n");
+    }
     p.push_str("Return a JSON object with:\n");
     p.push_str("- name: campaign name (2-4 words, evocative)\n");
     p.push_str("- font: a Google Fonts font family for the campaign title\n");
@@ -751,22 +1042,40 @@ fn assemble_level(
     floor: i32, budget: i32,
     p1: &Phase1Result, p2: &Phase2Result, map: &crate::mapgen::MapGenResult,
 ) -> Result<(Level, [i32; 2], i32), String> {
+    assemble_level_with_settings(floor, budget, p1, p2, map, &CampaignSettings::default())
+}
+
+fn assemble_level_with_settings(
+    floor: i32, budget: i32,
+    p1: &Phase1Result, p2: &Phase2Result, map: &crate::mapgen::MapGenResult,
+    settings: &CampaignSettings,
+) -> Result<(Level, [i32; 2], i32), String> {
     let width = 60_i32;
     let height = 36_i32;
 
     // Build tile defs lookup
+    let level_num = floor as u8;
+    let damage_tiles_enabled = level_num >= settings.damage_tiles_from_level;
+    let traps_enabled = level_num >= settings.traps_from_level;
+
     let mut tile_defs: HashMap<String, TileDef> = HashMap::new();
+    let mut thematic_count = 0u32;
+    let total_tile_types = p1.tile_defs.len();
     for (_ch, raw) in &p1.tile_defs {
+        thematic_count += 1;
+        // Make the last walkable thematic tile a damage tile if enabled
+        let is_last_thematic = thematic_count == total_tile_types as u32 && raw.walkable && damage_tiles_enabled;
         tile_defs.insert(raw.name.clone(), TileDef {
             name: raw.name.clone(),
             color: raw.color.clone(),
             walkable: raw.walkable,
             char_display: raw.char.clone().unwrap_or_default(),
+            damage: if is_last_thematic { settings.damage_tile_damage } else { 0 },
         });
     }
     if !tile_defs.contains_key("wall") {
         tile_defs.insert("wall".into(), TileDef {
-            name: "wall".into(), color: "#444".into(), walkable: false, char_display: String::new(),
+            name: "wall".into(), color: "#444".into(), walkable: false, char_display: String::new(), damage: 0,
         });
     }
 
@@ -774,7 +1083,7 @@ fn assemble_level(
     if map.key_position.is_some() {
         tile_defs.insert("locked_door".into(), TileDef {
             name: "locked_door".into(), color: "#aa6622".into(), walkable: false,
-            char_display: "🔒".into(),
+            char_display: "🔒".into(), damage: 0,
         });
     }
 
@@ -791,7 +1100,7 @@ fn assemble_level(
     if map.key_position.is_some() {
         full_defs.insert("locked_door".into(), TileDef {
             name: "locked_door".into(), color: "#aa6622".into(), walkable: true,
-            char_display: "🔒".into(),
+            char_display: "🔒".into(), damage: 0,
         });
     }
     let full_reachable = flood_fill(&tiles, &full_defs, player_start[0], player_start[1], width, height);
@@ -882,6 +1191,7 @@ fn assemble_level(
 
     // ── Traps: 3-8 cost each from remaining budget ──
     let mut traps: Vec<Trap> = Vec::new();
+    if traps_enabled {
     if let Some(trap_defs) = &p2.traps {
         for td in trap_defs.iter() {
             let trap_cost = rng.gen_range(3..=8.min(remaining_budget.max(3)));
@@ -898,6 +1208,7 @@ fn assemble_level(
             }
         }
     }
+    } // traps_enabled
 
     // ── Gold: 2-5 cost each from remaining budget ──
     let mut items: Vec<Item> = Vec::new();

@@ -17,6 +17,8 @@ pub struct TileDef {
     pub color: String,
     pub walkable: bool,
     pub char_display: String,
+    #[serde(default)]
+    pub damage: i32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -395,6 +397,18 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
     for &idx in items_here.iter().rev() {
         let item = state.level.items.remove(idx);
         pickup_item(state, &item);
+    }
+
+    // Check damage tiles (lava, acid, etc.)
+    if let Some(td) = state.level.tile_defs.get(&state.level.tiles[ny as usize][nx as usize]) {
+        if td.damage > 0 {
+            state.player.hp -= td.damage;
+            state.log(&format!("{} deals {} damage!", td.name, td.damage), "#ff6644");
+            if state.player.hp <= 0 {
+                state.log("You have died.", "#ff0000");
+                state.game_over = true;
+            }
+        }
     }
 
     // Check traps

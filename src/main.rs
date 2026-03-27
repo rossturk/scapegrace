@@ -1,3 +1,4 @@
+mod fonts;
 mod game;
 mod gen;
 mod mapgen;
@@ -167,6 +168,90 @@ fn config_path() -> std::path::PathBuf {
     config_dir().join("config")
 }
 
+fn played_campaigns_path() -> std::path::PathBuf {
+    config_dir().join("played_campaigns")
+}
+
+fn load_played_campaigns() -> std::collections::HashSet<String> {
+    std::fs::read_to_string(played_campaigns_path())
+        .unwrap_or_default()
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn mark_campaign_played(id: &str) {
+    let _ = std::fs::create_dir_all(config_dir());
+    let mut played = load_played_campaigns();
+    played.insert(id.to_string());
+    let content: Vec<String> = played.into_iter().collect();
+    let _ = std::fs::write(played_campaigns_path(), content.join("\n"));
+}
+
+fn pick_next_campaign(campaigns: &[gen::BundledCampaign]) -> Option<usize> {
+    let played = load_played_campaigns();
+
+    // Play campaigns in order — find the first unplayed one
+    for (i, c) in campaigns.iter().enumerate() {
+        if !played.contains(&c.id) {
+            return Some(i);
+        }
+    }
+
+    // All played — reset and start from the beginning
+    let _ = std::fs::remove_file(played_campaigns_path());
+    eprintln!("All {} campaigns completed! Starting the journey again.", campaigns.len());
+    Some(0)
+}
+
+// ── In-progress campaign save/restore ──
+
+fn campaign_save_path() -> std::path::PathBuf {
+    config_dir().join("campaign_progress.json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CampaignProgress {
+    campaign_id: String,
+    player: game::Player,
+    completed_nodes: Vec<usize>,
+    unlocked_nodes: Vec<usize>,
+    current_node: usize,
+    connections: Vec<(usize, usize)>,
+}
+
+fn save_campaign_progress(campaign_id: &str, player: &game::Player, overworld: &game::Overworld) {
+    let completed: Vec<usize> = overworld.nodes.iter().enumerate()
+        .filter(|(_, n)| n.completed).map(|(i, _)| i).collect();
+    let unlocked: Vec<usize> = overworld.nodes.iter().enumerate()
+        .filter(|(_, n)| n.unlocked).map(|(i, _)| i).collect();
+
+    let progress = CampaignProgress {
+        campaign_id: campaign_id.to_string(),
+        player: player.clone(),
+        completed_nodes: completed,
+        unlocked_nodes: unlocked,
+        current_node: overworld.current_node,
+        connections: overworld.connections.clone(),
+    };
+
+    let _ = std::fs::create_dir_all(config_dir());
+    if let Ok(json) = serde_json::to_string(&progress) {
+        let _ = std::fs::write(campaign_save_path(), json);
+        eprintln!("Campaign progress saved");
+    }
+}
+
+fn load_campaign_progress() -> Option<CampaignProgress> {
+    let content = std::fs::read_to_string(campaign_save_path()).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn clear_campaign_progress() {
+    let _ = std::fs::remove_file(campaign_save_path());
+}
+
 fn save_config(value: &str) {
     let dir = config_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -265,9 +350,15 @@ async fn main() {
     let sfx = sfx::Sfx::new();
 
     let mut state = GameState::new();
-    let has_llm = !gen::llm_api_key().is_empty() || std::env::var("LLM_BASE_URL").is_ok();
-    println!("[config] has_llm={} → screen={}", has_llm, if has_llm { "Start" } else { "KeyEntry" });
-    let mut screen = if has_llm { Screen::Start } else { Screen::KeyEntry };
+    let bundled_pack = gen::load_bundled_pack();
+    let pack_strings = bundled_pack.as_ref().map(|p| p.strings.clone()).unwrap_or_default();
+    let bundled_campaigns: Vec<gen::BundledCampaign> = bundled_pack.map(|p| p.campaigns).unwrap_or_default();
+    let has_bundled = !bundled_campaigns.is_empty();
+    let has_llm = !has_bundled && (!gen::llm_api_key().is_empty() || std::env::var("LLM_BASE_URL").is_ok());
+    println!("[config] has_bundled={}, has_llm={} → screen={}",
+        has_bundled, has_llm,
+        if has_bundled || has_llm { "Start" } else { "KeyEntry" });
+    let mut screen = if has_bundled || has_llm { Screen::Start } else { Screen::KeyEntry };
     let mut key_input = saved_config_value();
     let mut key_error: Option<String> = None;
     let mut key_validating = false;
@@ -283,6 +374,8 @@ async fn main() {
     let mut label_font: Option<Font> = None;
 
     // Overworld state
+    let mut current_campaign_id: Option<String> = None;
+    let mut current_campaign_settings = gen::CampaignSettings::default();
     let mut overworld: Option<Overworld> = None;
     let mut level_designs: Vec<Option<gen::Phase2Result>> = Vec::new();
     let mut design_token_flashes: Vec<Vec<f64>> = Vec::new(); // per-node flash times
@@ -419,13 +512,112 @@ async fn main() {
             }
 
             Screen::Start => {
-                draw_start_screen(&ui_font, &ui_font_bold);
+                if has_bundled {
+                    let has_save = load_campaign_progress().is_some();
+                    draw_bundled_start_screen(&ui_font, &ui_font_bold, bundled_campaigns.len(), &load_played_campaigns(), has_save, &pack_strings);
+                } else {
+                    draw_start_screen(&ui_font, &ui_font_bold);
+                }
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-                    start_overworld_generation(&mut gen_rx);
-                    screen = Screen::GenOverworld;
-                    phase_text = overworld_loading_phrase();
-                    phase_detail.clear();
-                    loading_tiles = 0;
+                    if !bundled_campaigns.is_empty() {
+                        // Check for saved in-progress campaign first
+                        let saved = load_campaign_progress();
+                        let (idx, resuming) = if let Some(ref progress) = saved {
+                            // Find the campaign by ID
+                            if let Some(i) = bundled_campaigns.iter().position(|c| c.id == progress.campaign_id) {
+                                eprintln!("Resuming campaign {}: \"{}\"", i, bundled_campaigns[i].overworld.name);
+                                (i, true)
+                            } else {
+                                eprintln!("Saved campaign not found, starting fresh");
+                                clear_campaign_progress();
+                                (pick_next_campaign(&bundled_campaigns).unwrap(), false)
+                            }
+                        } else {
+                            (pick_next_campaign(&bundled_campaigns).unwrap(), false)
+                        };
+
+                        let campaign = &bundled_campaigns[idx];
+                        let played = load_played_campaigns();
+                        eprintln!("Using bundled campaign {}: \"{}\" (score: {}, {}/{} played{})",
+                            idx, campaign.overworld.name, campaign.quality.score,
+                            played.len(), bundled_campaigns.len(),
+                            if resuming { ", RESUMING" } else { "" });
+
+                        match gen::build_overworld_from_result(campaign.overworld.clone()) {
+                            Ok(mut ow) => {
+                                // Restore saved progress if resuming
+                                if let (true, Some(progress)) = (resuming, saved) {
+                                    state.player = progress.player;
+                                    for &i in &progress.completed_nodes {
+                                        if i < ow.nodes.len() { ow.nodes[i].completed = true; }
+                                    }
+                                    for &i in &progress.unlocked_nodes {
+                                        if i < ow.nodes.len() { ow.nodes[i].unlocked = true; }
+                                    }
+                                    ow.current_node = progress.current_node;
+                                    // Restore connections (branch point is randomized on build)
+                                    if !progress.connections.is_empty() {
+                                        ow.connections = progress.connections;
+                                    }
+                                    eprintln!("Restored: player level {}, {}/{} HP, {} nodes completed",
+                                        state.player.level, state.player.hp, state.player.max_hp,
+                                        progress.completed_nodes.len());
+                                }
+
+                                // Load fonts
+                                if let Some(bytes) = fetch_google_font(&ow.font) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { overworld_font = Some(f); }
+                                }
+                                if let Some(bytes) = fetch_google_font(&ow.description_font) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { desc_font = Some(f); }
+                                }
+                                if let Some(bytes) = fetch_google_font(&ow.label_font) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { label_font = Some(f); }
+                                }
+
+                                // Pre-populate all designs from bundled data
+                                let playable = ow.nodes.iter()
+                                    .filter(|n| n.node_type == NodeType::Level && !n.completed).count();
+                                level_designs = campaign.designs.iter()
+                                    .take(playable)
+                                    .map(|d| Some(d.clone()))
+                                    .collect();
+                                // Pad if fewer designs than playable nodes
+                                while level_designs.len() < playable {
+                                    level_designs.push(None);
+                                }
+                                design_token_flashes = vec![Vec::new(); playable];
+                                // No background design generation needed
+                                bg_gen_rx = None;
+
+                                current_campaign_id = Some(campaign.id.clone());
+                                current_campaign_settings = campaign.settings.clone();
+
+                                // Save initial progress (captures connections/topology)
+                                if !resuming {
+                                    save_campaign_progress(&campaign.id, &state.player, &ow);
+                                }
+
+                                overworld = Some(ow);
+                                screen = Screen::Overworld;
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to build overworld from bundled campaign: {}", e);
+                                // Fall back to LLM generation
+                                start_overworld_generation(&mut gen_rx);
+                                screen = Screen::GenOverworld;
+                                phase_text = overworld_loading_phrase();
+                                phase_detail.clear();
+                                loading_tiles = 0;
+                            }
+                        }
+                    } else {
+                        start_overworld_generation(&mut gen_rx);
+                        screen = Screen::GenOverworld;
+                        phase_text = overworld_loading_phrase();
+                        phase_detail.clear();
+                        loading_tiles = 0;
+                    }
                 }
                 if is_key_pressed(KeyCode::T) {
                     screen = Screen::SoundTest;
@@ -804,7 +996,7 @@ async fn main() {
                                 }
                                 screen = Screen::Playing;
                             } else {
-                                start_level_generation(&state, ow, &level_designs, &mut gen_rx);
+                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone());
                                 screen = Screen::GenLevel;
                                 phase_text = overworld_loading_phrase();
                                 phase_detail.clear();
@@ -871,7 +1063,7 @@ async fn main() {
 
                 if phase_detail == "Press ENTER to retry" && is_key_pressed(KeyCode::Enter) {
                     if let Some(ow) = &overworld {
-                        start_level_generation(&state, ow, &level_designs, &mut gen_rx);
+                        start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone());
                         phase_text = "creating universe".into();
                         phase_detail.clear();
                     }
@@ -951,9 +1143,18 @@ async fn main() {
 
                         // Beating the final level wins the game
                         if ow.nodes[completed_node].is_final {
+                            if let Some(id) = &current_campaign_id {
+                                mark_campaign_played(id);
+                                eprintln!("Campaign \"{}\" marked as played", ow.name);
+                            }
+                            clear_campaign_progress();
                             spawn_confetti(&mut confetti);
                             screen = Screen::GameWon;
                         } else {
+                            // Save progress after completing a level
+                            if let Some(id) = &current_campaign_id {
+                                save_campaign_progress(id, &state.player, ow);
+                            }
                             screen = Screen::Overworld;
                         }
                     }
@@ -997,7 +1198,7 @@ async fn main() {
             Screen::GameWon => {
                 update_confetti(&mut confetti);
                 draw_confetti(&confetti);
-                draw_game_won_overlay(&ui_font, &ui_font_bold, &state, overworld_font.as_ref(), &overworld);
+                draw_game_won_overlay(&ui_font, &ui_font_bold, &state, overworld_font.as_ref(), &overworld, &pack_strings);
 
                 // Continuously spawn confetti
                 if confetti.len() < 200 {
@@ -1010,6 +1211,7 @@ async fn main() {
                 if is_key_pressed(KeyCode::Enter) {
                     // Full reset
                     state = GameState::new();
+                    current_campaign_id = None;
                     overworld = None;
                     level_designs.clear();
                     design_token_flashes.clear();
@@ -1239,6 +1441,7 @@ fn start_level_generation(
     ow: &Overworld,
     designs: &[Option<gen::Phase2Result>],
     gen_rx: &mut Option<mpsc::Receiver<GenMsg>>,
+    campaign_settings: gen::CampaignSettings,
 ) {
     let (tx, rx) = mpsc::channel();
     *gen_rx = Some(rx);
@@ -1262,7 +1465,7 @@ fn start_level_generation(
         // Use pre-generated design — no LLM call needed
         let design = design.clone();
         std::thread::spawn(move || {
-            match gen::build_level_from_design(&config, &design) {
+            match gen::build_level_from_design_with_settings(&config, &design, &campaign_settings) {
                 Ok((level, start, _remaining)) => {
                     let font_bytes = fetch_google_font(&level.font);
                     let _ = tx.send(GenMsg::LevelDone(level, start, font_bytes));
@@ -1298,6 +1501,14 @@ fn fetch_google_font(font_name: &str) -> Option<Vec<u8>> {
     if font_name.is_empty() {
         return None;
     }
+
+    // Try embedded fonts first (offline/batteries-included)
+    if let Some(bytes) = fonts::lookup_embedded_font(font_name) {
+        eprintln!("Loaded embedded font '{}' ({} bytes)", font_name, bytes.len());
+        return Some(bytes.to_vec());
+    }
+
+    // Fall back to network fetch
     let client = reqwest::blocking::Client::new();
     let css_url = format!(
         "https://fonts.googleapis.com/css2?family={}&display=swap",
@@ -1491,6 +1702,63 @@ fn draw_start_screen(font: &Font, bold: &Font) {
     let pw = measure_text(prompt, Some(font), ps, 1.0).width;
     draw_text_ex(prompt, (sw - pw) / 2.0, sh / 2.0 + 30.0, TextParams {
         font: Some(font), font_size: ps, color: GRAY, ..Default::default()
+    });
+}
+
+fn draw_bundled_start_screen(font: &Font, bold: &Font, total: usize, played: &std::collections::HashSet<String>, has_save: bool, strings: &gen::PackStrings) {
+    let sw = screen_width();
+    let sh = screen_height();
+
+    // Title
+    let title_size = 64u16;
+    let tw = measure_text(&strings.title, Some(bold), title_size, 1.0).width;
+    draw_text_ex(&strings.title, (sw - tw) / 2.0, sh * 0.28, TextParams {
+        font: Some(bold), font_size: title_size, color: hex_to_color("#e94560"), ..Default::default()
+    });
+
+    // Subtitle
+    let sub_size = 22u16;
+    let subw = measure_text(&strings.subtitle, Some(font), sub_size, 1.0).width;
+    draw_text_ex(&strings.subtitle, (sw - subw) / 2.0, sh * 0.28 + 40.0, TextParams {
+        font: Some(font), font_size: sub_size, color: hex_to_color("#888899"), ..Default::default()
+    });
+
+    // Intro paragraph
+    let line_size = 16u16;
+    let start_y = sh * 0.45;
+    for (i, line) in strings.intro.iter().enumerate() {
+        let lw = measure_text(line, Some(font), line_size, 1.0).width;
+        draw_text_ex(line, (sw - lw) / 2.0, start_y + i as f32 * 24.0, TextParams {
+            font: Some(font), font_size: line_size, color: hex_to_color("#aaaaaa"), ..Default::default()
+        });
+    }
+
+    // Progress
+    let played_count = played.len();
+    if played_count > 0 {
+        let progress = format!("{}/{} systems cleared", played_count, total);
+        let ps = 14u16;
+        let pw = measure_text(&progress, Some(font), ps, 1.0).width;
+        draw_text_ex(&progress, (sw - pw) / 2.0, sh * 0.72, TextParams {
+            font: Some(font), font_size: ps, color: hex_to_color("#66aa88"), ..Default::default()
+        });
+    }
+
+    // Prompt
+    let prompt = if has_save {
+        &strings.prompt_resume
+    } else if played_count == 0 {
+        &strings.prompt_first
+    } else if played_count >= total {
+        &strings.prompt_restart
+    } else {
+        &strings.prompt_next
+    };
+    let ps = 18u16;
+    let pw = measure_text(prompt, Some(font), ps, 1.0).width;
+    let alpha = ((get_time() * 2.0).sin() * 0.3 + 0.7) as f32;
+    draw_text_ex(prompt, (sw - pw) / 2.0, sh * 0.82, TextParams {
+        font: Some(font), font_size: ps, color: Color::new(0.7, 0.7, 0.7, alpha), ..Default::default()
     });
 }
 
@@ -2142,22 +2410,21 @@ fn draw_victory_overlay(font: &Font, bold: &Font, _state: &GameState) {
     });
 }
 
-fn draw_game_won_overlay(font: &Font, bold: &Font, state: &GameState, ow_font: Option<&Font>, ow: &Option<Overworld>) {
+fn draw_game_won_overlay(font: &Font, bold: &Font, state: &GameState, ow_font: Option<&Font>, ow: &Option<Overworld>, strings: &gen::PackStrings) {
     let sw = screen_width();
     let sh = screen_height();
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.85));
 
     let tfont = ow_font.unwrap_or(bold);
 
-    let title = "GAME WON";
     let ts = 64u16;
-    let tw = measure_text(title, Some(tfont), ts, 1.0).width;
-    draw_text_ex(title, (sw - tw) / 2.0, sh / 2.0 - 40.0, TextParams {
+    let tw = measure_text(&strings.campaign_cleared, Some(tfont), ts, 1.0).width;
+    draw_text_ex(&strings.campaign_cleared, (sw - tw) / 2.0, sh / 2.0 - 40.0, TextParams {
         font: Some(tfont), font_size: ts, color: hex_to_color("#ffd700"), ..Default::default()
     });
 
     if let Some(ow) = ow {
-        let sub = format!("{} conquered!", ow.name);
+        let sub = strings.campaign_conquered.replace("{name}", &ow.name);
         let ss = 22u16;
         let sw2 = measure_text(&sub, Some(font), ss, 1.0).width;
         draw_text_ex(&sub, (sw - sw2) / 2.0, sh / 2.0 + 10.0, TextParams {
@@ -2172,7 +2439,7 @@ fn draw_game_won_overlay(font: &Font, bold: &Font, state: &GameState, ow_font: O
         font: Some(font), font_size: ss, color: GRAY, ..Default::default()
     });
 
-    let prompt = "Press ENTER for new game";
+    let prompt = &strings.prompt_after_clear;
     let ps = 16u16;
     let pw = measure_text(prompt, Some(font), ps, 1.0).width;
     draw_text_ex(prompt, (sw - pw) / 2.0, sh / 2.0 + 80.0, TextParams {

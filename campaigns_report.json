@@ -1,0 +1,1016 @@
+{
+  "generated_at": "1774553958s_since_epoch",
+  "total_campaigns": 15,
+  "total_levels": 90,
+  "rejected_overworlds": 1,
+  "rejected_designs": 5,
+  "full_regenerations": 0,
+  "score_distribution": {
+    "min": 86,
+    "max": 92,
+    "mean": 89.8,
+    "median": 90,
+    "p10": 87,
+    "p90": 92
+  },
+  "campaigns": [
+    {
+      "id": 0,
+      "name": "Mindscape Minotaur",
+      "score": 86,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 60,
+        "monster_variety": 70,
+        "color_quality": 58,
+        "name_quality": 98,
+        "description_quality": 99,
+        "mode_validity": 100,
+        "budget_distribution": 96,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Perfectionist's Quagmire",
+          "boss": "Unyielding Critic",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Impostor Syndrome Maze",
+          "boss": "Mr. Unworthy",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Victim's Echo Chamber",
+          "boss": "Echo of Self",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Golden Cage of Success",
+          "boss": "Approval Addict",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Final Confrontation: The Overmind",
+          "boss": "The Inner Critic",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Serenity's Sanctuary",
+          "boss": "Golden Cage of Success",
+          "monster_types": 2,
+          "tile_defs": 3
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 1,
+      "name": "Mental Fortress",
+      "score": 90,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 70,
+        "name_quality": 94,
+        "description_quality": 100,
+        "mode_validity": 100,
+        "budget_distribution": 100,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Echoing Hallways",
+          "boss": "VoicesOfSkepticism",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Glass Ceiling",
+          "boss": "The Voice of Perfection",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Wheel of Worry",
+          "boss": "Whirling Worry",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Frozen Wasteland",
+          "boss": "Snow Queen Complacency",
+          "monster_types": 3,
+          "tile_defs": 5
+        },
+        {
+          "name": "Mirror Maze",
+          "boss": "Mr. Perfectionism",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Golden Cage",
+          "boss": "Echo of Perfectionism",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "name": "Hamstrapped Mind",
+      "score": 91,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 71,
+        "name_quality": 98,
+        "description_quality": 99,
+        "mode_validity": 100,
+        "budget_distribution": 100,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Comfort Zone",
+          "boss": "Perfectionism's Voice",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Analyzed Paralysis",
+          "boss": "Perfectionist Tyrant",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Comparison Trance",
+          "boss": "Comparison Queen",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Sunk Cost Shackle",
+          "boss": "Sunk Cost Vulture",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Final Mind Cage",
+          "boss": "Victor Varde",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Golden Cage Break",
+          "boss": "Impostor Syndrome",
+          "monster_types": 2,
+          "tile_defs": 5
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Mind Maze",
+      "score": 91,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 79,
+        "name_quality": 94,
+        "description_quality": 96,
+        "mode_validity": 100,
+        "budget_distribution": 100,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Impostor's Lair",
+          "boss": "Imposter's Echo",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Perfectionist's Workshop",
+          "boss": "Mr. Perfection",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "People-Pleasing Park",
+          "boss": "The Judge",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Helplessness Gulch",
+          "boss": "VoiceOfDoubt",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Busy Beasts' Barracks",
+          "boss": "Mr. Impossible",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Hidden Sanctuary",
+          "boss": "Mr. Perfectionist",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          1,
+          0
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "name": "Mind Shackles",
+      "score": 91,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 73,
+        "name_quality": 98,
+        "description_quality": 100,
+        "mode_validity": 100,
+        "budget_distribution": 96,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Echo Chamber",
+          "boss": "Echoes of Failure",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Perfection's Prison",
+          "boss": "Imperfect Critic",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "People-Pleasing Parlor",
+          "boss": "Mr. Expectation",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Helpless Halls",
+          "boss": "Echo of Self-Doubt",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Wheel of Worry",
+          "boss": "Echo Hunter",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Golden Cage",
+          "boss": "Imperfect Perfectionist",
+          "monster_types": 2,
+          "tile_defs": 5
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "name": "Mind Maze",
+      "score": 92,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 85,
+        "name_quality": 99,
+        "description_quality": 99,
+        "mode_validity": 100,
+        "budget_distribution": 92,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Imposter's Echo",
+          "boss": "Mr. Doubtful",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Perfectionist's Abyss",
+          "boss": "Mr. Should've Been",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Pleaser's Conundrum",
+          "boss": "Mr. Approval",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Helpless Haze",
+          "boss": "Echo of Perfectionism",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Catastrophe's Corner",
+          "boss": "Doomsayer Drone",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Golden Cage of Silence",
+          "boss": "Approval Overlord",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "name": "Mindscape Echoes",
+      "score": 88,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 57,
+        "name_quality": 96,
+        "description_quality": 98,
+        "mode_validity": 100,
+        "budget_distribution": 98,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Imposter Hall",
+          "boss": "Mr. Perfect",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Perfection Prison",
+          "boss": "Perfectionist Tyrant",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Golden Cage",
+          "boss": "Perfectionist Echo",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Graveyard of Failures",
+          "boss": "Whisperer of Sunk Cost",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Hall of Voices",
+          "boss": "Doubting Thomas",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Break the Chains",
+          "boss": "The Phantom Perfectionist",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "name": "Mind Maze",
+      "score": 87,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 60,
+        "monster_variety": 70,
+        "color_quality": 68,
+        "name_quality": 94,
+        "description_quality": 95,
+        "mode_validity": 100,
+        "budget_distribution": 100,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Impostor's Den",
+          "boss": "The Doubter",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Perfectionist's Workshop",
+          "boss": "Perfectionist's Voice",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "People-Pleaser's Arena",
+          "boss": "The Critic",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Helplessness Halls",
+          "boss": "Whispering Impostor",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Catastrophe Courtyard",
+          "boss": "Catastrophizing Chains",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Victor's Peak",
+          "boss": "Echo of Self-Doubt",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "name": "Mind Maze",
+      "score": 89,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 65,
+        "name_quality": 97,
+        "description_quality": 96,
+        "mode_validity": 100,
+        "budget_distribution": 96,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Self-Doubt's Domain",
+          "boss": "The Perfectionist Judge",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Perfectionist's Abyss",
+          "boss": "The Indefatigable Judge",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Approval Castle",
+          "boss": "The Great Performer",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Helpless Valley",
+          "boss": "Mr. Perfectionism",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Worry Wells",
+          "boss": "Self-Doubting Seraph",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Freedom's Horizon",
+          "boss": "The Echo of Approval Addiction",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "name": "Thought Fortress",
+      "score": 89,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 65,
+        "name_quality": 93,
+        "description_quality": 99,
+        "mode_validity": 100,
+        "budget_distribution": 96,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Imposter's Lair",
+          "boss": "Mr. Mediocrity",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Glass Ceiling Fortress",
+          "boss": "PerfectionistEcho",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Pleaser's Paradox",
+          "boss": "Voices of Obligation",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Wheel of Busyness",
+          "boss": "Mr. Perfection",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Final Mind Maze",
+          "boss": "Echoing Ego",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Golden Cage",
+          "boss": "Golden Cage",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "name": "Mind's Maze",
+      "score": 91,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 77,
+        "name_quality": 99,
+        "description_quality": 100,
+        "mode_validity": 100,
+        "budget_distribution": 94,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Imposter's Closet",
+          "boss": "Mirror Master",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Perfection's Forge",
+          "boss": "Perfection's Tyrant",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Echo Chamber",
+          "boss": "Comparison Trap",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Comfort Cocoon",
+          "boss": "Mr. Mediocrity",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Golden Cage",
+          "boss": "Perfectionist Echo",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Hypnos' Loom",
+          "boss": "Whisperer of Perfectionism",
+          "monster_types": 2,
+          "tile_defs": 3
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "name": "Mind Shackles",
+      "score": 92,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 84,
+        "name_quality": 94,
+        "description_quality": 98,
+        "mode_validity": 100,
+        "budget_distribution": 100,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Echo Chamber",
+          "boss": "Mr. Perfect",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Tyranny of Perfection",
+          "boss": "Perfectionism's Echo",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Pleaser's Paradise",
+          "boss": "Narcissus the Egotist",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Wheel of Misfortune",
+          "boss": "Inner Critic",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Echoes of Doom",
+          "boss": "Screaming_Mind",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Freedom's Abyss",
+          "boss": "The Voice of Sunk Cost Fallacy",
+          "monster_types": 2,
+          "tile_defs": 4
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "name": "Mind's Maze",
+      "score": 90,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 70,
+        "name_quality": 99,
+        "description_quality": 98,
+        "mode_validity": 100,
+        "budget_distribution": 96,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Catastrophizing Corners",
+          "boss": "Voices of Doom",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Impositor's Hall",
+          "boss": "Mr. Unworthy",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Comparison Catacombs",
+          "boss": "Siren of Approval",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "People-Pleasing Prison",
+          "boss": "Approval Archon",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Echo Chamber",
+          "boss": "The Perfectionist",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Freedom's Forge",
+          "boss": "The Golden Cage of Success",
+          "monster_types": 2,
+          "tile_defs": 3
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "name": "Echoes of the Mind",
+      "score": 90,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 66,
+        "name_quality": 99,
+        "description_quality": 95,
+        "mode_validity": 100,
+        "budget_distribution": 100,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Hall of Echoes",
+          "boss": "Whispers of Doom",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Fog of Perfectionism",
+          "boss": "The Perfectionist",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "The Pleaser's Maze",
+          "boss": "Master Manipulator",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Prison of Helplessness",
+          "boss": "Voice of Indecision",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "The Catastrophizer's Lair",
+          "boss": "Captain Catastrophizer",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Shrine of Nostalgic Bliss",
+          "boss": "Echo of Perfectionism",
+          "monster_types": 2,
+          "tile_defs": 5
+        }
+      ],
+      "retries": {
+        "overworld": 0,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "name": "Psyche's Maze",
+      "score": 90,
+      "breakdown": {
+        "completeness": 100,
+        "tile_variety": 85,
+        "monster_variety": 70,
+        "color_quality": 68,
+        "name_quality": 99,
+        "description_quality": 98,
+        "mode_validity": 100,
+        "budget_distribution": 96,
+        "theme_coherence": 100
+      },
+      "levels": [
+        {
+          "name": "Imposter's Lair",
+          "boss": "Voice of Doubt",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Perfection's Fortress",
+          "boss": "Hypercritical Echo",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Pleaser's Prison",
+          "boss": "The Approval Seeker",
+          "monster_types": 2,
+          "tile_defs": 4
+        },
+        {
+          "name": "Helplessness Hill",
+          "boss": "Sisyphus' Burden",
+          "monster_types": 2,
+          "tile_defs": 5
+        },
+        {
+          "name": "Catastrophe's Core",
+          "boss": "Mr. Catastrophe",
+          "monster_types": 2,
+          "tile_defs": 3
+        },
+        {
+          "name": "Echoing Gallery of Regrets",
+          "boss": "The Critic",
+          "monster_types": 2,
+          "tile_defs": 5
+        }
+      ],
+      "retries": {
+        "overworld": 1,
+        "levels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  ],
+  "cross_campaign": {
+    "unique_campaign_names": false,
+    "duplicate_campaign_names": [
+      "mind shackles",
+      "mind maze",
+      "mind's maze"
+    ],
+    "duplicate_boss_names": [
+      "mr. unworthy",
+      "echo of perfectionism",
+      "mr. perfectionism",
+      "mr. perfection",
+      "echo of self-doubt",
+      "the perfectionist",
+      "the critic",
+      "perfectionist tyrant",
+      "mr. perfect",
+      "perfectionist echo",
+      "mr. mediocrity"
+    ],
+    "similar_themes": [],
+    "global_uniqueness_score": 80
+  }
+}
