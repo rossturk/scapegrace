@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "scapegrace": {
+      "command": "cargo",
+      "args": ["run", "--release", "--bin", "mcp_server"]
+    }
+  }
+}

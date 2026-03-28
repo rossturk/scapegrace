@@ -43,6 +43,10 @@ pub struct Monster {
     pub boss_attacked_this_turn: bool, // set each turn to track regen eligibility
     #[serde(default)]
     pub boss_body: Vec<(i32, i32)>,  // dynamic body tiles (4 tiles, can reshape to squeeze)
+    #[serde(default)]
+    pub boss_flee_budget: i32,       // flee turns remaining (resets after cooldown)
+    #[serde(default)]
+    pub boss_flee_cooldown: i32,     // when >0, boss can't flee and must fight
 }
 
 impl Monster {
@@ -294,14 +298,14 @@ fn monster_attack(state: &mut GameState, monster_idx: usize) {
 }
 
 fn check_level_up(state: &mut GameState) {
-    while state.player.xp >= state.player.xp_to_next {
+    while state.player.level < 50 && state.player.xp >= state.player.xp_to_next {
         state.player.xp -= state.player.xp_to_next;
         state.player.level += 1;
         state.player.max_hp += 5;
         state.player.hp = state.player.max_hp;
         state.player.attack += 1;
         state.player.defense += 1;
-        state.player.xp_to_next = (state.player.xp_to_next as f64 * 1.5) as i32;
+        state.player.xp_to_next = (state.player.xp_to_next as f64 * 1.12) as i32;
         state.log(&format!("LEVEL UP! You are now level {}!", state.player.level), "#ffff44");
         state.log("  HP +5, ATK +1, DEF +1", "#ffff44");
     }
@@ -868,18 +872,35 @@ pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
                 state.level.monsters[i].boss_enraged_turns = 8;
             }
 
+            // Tick down flee cooldown
+            if state.level.monsters[i].boss_flee_cooldown > 0 {
+                state.level.monsters[i].boss_flee_cooldown -= 1;
+            }
+
+            // Can flee if hurt, has budget, and not on cooldown
+            let wants_to_flee = hp_pct <= 0.3;
+            let can_flee = wants_to_flee
+                && state.level.monsters[i].boss_flee_budget > 0
+                && state.level.monsters[i].boss_flee_cooldown == 0;
+
+            // Refill flee budget when first dropping below 30%
+            if wants_to_flee && state.level.monsters[i].boss_flee_budget == 0
+                && state.level.monsters[i].boss_flee_cooldown == 0 {
+                state.level.monsters[i].boss_flee_budget = 5;
+            }
+
             // Adjacent? Attack (unless fleeing)
             let adjacent = boss_body_adjacent(&body, px, py);
-            if adjacent && hp_pct > 0.3 {
+            if adjacent && !can_flee {
                 monster_attack(state, i);
                 state.level.monsters[i].boss_attacked_this_turn = true;
                 if state.game_over { return events; }
                 continue;
             }
 
-            // Fleeing: run away when hurt
+            // Fleeing: run for up to 5 turns, then 8 turn cooldown before fleeing again
             let mut boss_moved = false;
-            if hp_pct <= 0.3 {
+            if can_flee {
                 let dx = -(px - closest.0); // away from player
                 let dy = -(py - closest.1);
                 boss_moved = try_boss_move(state, i, dx, dy, &mut events);
@@ -888,6 +909,11 @@ pub fn monster_turns(state: &mut GameState) -> Vec<serde_json::Value> {
                     let regen = (state.level.monsters[i].max_hp / 20).max(1);
                     state.level.monsters[i].hp = (state.level.monsters[i].hp + regen)
                         .min(state.level.monsters[i].max_hp);
+                }
+                state.level.monsters[i].boss_flee_budget -= 1;
+                if state.level.monsters[i].boss_flee_budget == 0 {
+                    // Out of flee budget — must fight for 8 turns
+                    state.level.monsters[i].boss_flee_cooldown = 8;
                 }
                 continue;
             }
