@@ -19,6 +19,8 @@ pub struct TileDefRaw {
     pub walkable: bool,
     #[serde(default)]
     pub char: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 // ── Phase 2: Objects (boss, monsters, weapon, armor, traps, budget) ──
@@ -48,6 +50,42 @@ pub struct Phase2Result {
     pub defeat_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prebuilt_map: Option<crate::mapgen::MapGenResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed_entities: Option<PlacedEntities>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct PlacedEntities {
+    #[serde(default)]
+    pub monsters: Vec<PlacedMonster>,
+    #[serde(default)]
+    pub items: Vec<PlacedItem>,
+    #[serde(default)]
+    pub traps: Vec<PlacedTrap>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PlacedMonster {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PlacedItem {
+    pub name: String,
+    pub item_type: String, // "weapon", "armor", "potion", "gold", "key", "speed_potion", "bomb"
+    pub x: i32,
+    pub y: i32,
+    #[serde(default)]
+    pub value: Option<i32>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PlacedTrap {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -146,6 +184,12 @@ pub struct OverworldResult {
     pub text_color: Option<String>,
     pub levels: Vec<OverworldNodeRaw>,
     pub store: Option<StoreRaw>,
+    /// Index of the boss level (completing it wins the campaign). If None, defaults to last main-path level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boss_level: Option<usize>,
+    /// Explicit DAG edges as [from_node_id, to_node_id] pairs (e.g. ["start","level_0"], ["level_0","level_1"], ["level_2","store"])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connections: Option<Vec<[String; 2]>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -568,12 +612,13 @@ pub fn expand_tile_defs(slim: &[TileDefSlim], palette: &[String]) -> HashMap<Str
             color,
             walkable: i > 0, // first entry is wall
             char: td.char.clone(),
+            image: td.image.clone(),
         });
     }
     // Ensure at least a wall and floor exist
     if defs.is_empty() {
-        defs.insert("#".into(), TileDefRaw { name: "wall".into(), color: palette.first().cloned().unwrap_or("#444".into()), walkable: false, char: None });
-        defs.insert(".".into(), TileDefRaw { name: "floor".into(), color: palette.get(1).cloned().unwrap_or("#888".into()), walkable: true, char: None });
+        defs.insert("#".into(), TileDefRaw { name: "wall".into(), color: palette.first().cloned().unwrap_or("#444".into()), walkable: false, char: None, image: None });
+        defs.insert(".".into(), TileDefRaw { name: "floor".into(), color: palette.get(1).cloned().unwrap_or("#888".into()), walkable: true, char: None, image: None });
     }
     defs
 }
@@ -744,7 +789,7 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
             x: 0.0, y: 0.0,
             completed: false,
             unlocked: i == 0, // first main path level unlocked
-            is_final: i == main_count_levels - 1,
+            is_final: if let Some(bl) = result.boss_level { i == bl } else { i == main_count_levels - 1 },
             node_type: NodeType::Level,
         });
     }
@@ -814,12 +859,32 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
     let hp = store_raw.as_ref().and_then(|s| s.healing_potions).unwrap_or(3).max(0).min(10);
     let sp = store_raw.as_ref().and_then(|s| s.speed_potions).unwrap_or(2).max(0).min(5);
     let bo = store_raw.as_ref().and_then(|s| s.bombs).unwrap_or(2).max(0).min(5);
-    let store_stock = vec![
-        crate::game::StoreSlot { name: "Healing Potion".into(), description: "Heals 15-25% HP".into(), item_type: "potion".into(), price: 5, stock: hp },
-        crate::game::StoreSlot { name: "Speed Potion".into(), description: "Monsters frozen 5 turns".into(), item_type: "speed_potion".into(), price: 25, stock: sp },
-        crate::game::StoreSlot { name: "Bomb".into(), description: "Kills nearby monsters, heavy boss damage".into(), item_type: "bomb".into(), price: 30, stock: bo },
+    let mut store_stock = vec![
+        crate::game::StoreSlot { name: "Healing Potion".into(), description: "Heals 15-25% HP".into(), item_type: "potion".into(), price: 5, stock: hp, value: 1 },
+        crate::game::StoreSlot { name: "Speed Potion".into(), description: "Monsters frozen 5 turns".into(), item_type: "speed_potion".into(), price: 25, stock: sp, value: 1 },
+        crate::game::StoreSlot { name: "Bomb".into(), description: "Kills nearby monsters, heavy boss damage".into(), item_type: "bomb".into(), price: 30, stock: bo, value: 1 },
     ];
-    eprintln!("Store stock: {} healing, {} speed, {} bombs", hp, sp, bo);
+    // Potion capacity upgrade: 1 per campaign, expensive, caps at 30
+    store_stock.push(crate::game::StoreSlot {
+        name: "Potion Pouch".into(), description: "Carry 5 more potions (permanent, max 30)".into(),
+        item_type: "potion_cap".into(), price: 300, stock: 1, value: 5,
+    });
+    // Max HP boost: 1 per campaign, always affordable
+    store_stock.push(crate::game::StoreSlot {
+        name: "Vitality Charm".into(), description: "+15 max HP (permanent)".into(),
+        item_type: "max_hp".into(), price: 100, stock: 1, value: 15,
+    });
+    // Scout Map: reveals the entire next level
+    store_stock.push(crate::game::StoreSlot {
+        name: "Scout Map".into(), description: "Reveals entire map on next level".into(),
+        item_type: "scout_map".into(), price: 40, stock: 2, value: 1,
+    });
+    // Antidote: immune to damage tiles for entire level
+    store_stock.push(crate::game::StoreSlot {
+        name: "Antidote".into(), description: "Immune to hazard tiles for 1 level".into(),
+        item_type: "antidote".into(), price: 25, stock: 3, value: 1,
+    });
+    eprintln!("Store stock: {} healing, {} speed, {} bombs + pouch + charm", hp, sp, bo);
 
     let mut overworld = crate::game::Overworld {
         name: result.name,
@@ -855,7 +920,7 @@ pub fn build_level_from_design_with_settings(
     campaign_monsters: Option<&[MonsterTemplateRaw]>,
 ) -> Result<(Level, [i32; 2], i32), String> {
     let floor = config.floor;
-    let tier_scale = 1.0 + config.campaign_tier as f32 * 0.15;
+    let tier_scale = 1.0 + config.campaign_tier as f32 * 0.25;
     let budget = (config.budget as f32 * tier_scale).round() as i32;
     let level_num = floor as u8; // 1-indexed level number within campaign
 
@@ -867,13 +932,14 @@ pub fn build_level_from_design_with_settings(
         tile_defs: full_defs.clone(),
     };
 
+    let campaign_tier = config.campaign_tier;
     let skip_locked_door = level_num < settings.locked_doors_from_level;
     let map = if let Some(prebuilt) = &design.prebuilt_map {
         prebuilt.clone()
     } else {
         crate::mapgen::generate_map_with_options(&full_defs, skip_locked_door)
     };
-    assemble_level_with_settings(floor, budget, &p1, design, &map, settings, campaign_monsters)
+    assemble_level_with_settings(floor, budget, &p1, design, &map, settings, campaign_monsters, campaign_tier)
 }
 
 // ── Three-phase generation (legacy, still used if no pre-generated design) ──
@@ -890,7 +956,7 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
     let client = reqwest::blocking::Client::new();
     let theme = &config.theme;
     let floor = config.floor;
-    let tier_scale = 1.0 + config.campaign_tier as f32 * 0.15;
+    let tier_scale = 1.0 + config.campaign_tier as f32 * 0.25;
     let budget = (config.budget as f32 * tier_scale).round() as i32;
 
     // ── Phase 1: Objects + tile_defs (single LLM call) ──
@@ -1059,7 +1125,7 @@ fn assemble_level(
     floor: i32, budget: i32,
     p1: &Phase1Result, p2: &Phase2Result, map: &crate::mapgen::MapGenResult,
 ) -> Result<(Level, [i32; 2], i32), String> {
-    assemble_level_with_settings(floor, budget, p1, p2, map, &CampaignSettings::default(), None)
+    assemble_level_with_settings(floor, budget, p1, p2, map, &CampaignSettings::default(), None, 0)
 }
 
 fn assemble_level_with_settings(
@@ -1067,6 +1133,7 @@ fn assemble_level_with_settings(
     p1: &Phase1Result, p2: &Phase2Result, map: &crate::mapgen::MapGenResult,
     settings: &CampaignSettings,
     campaign_monsters: Option<&[MonsterTemplateRaw]>,
+    campaign_tier: i32,
 ) -> Result<(Level, [i32; 2], i32), String> {
     let width = 60_i32;
     let height = 36_i32;
@@ -1089,11 +1156,12 @@ fn assemble_level_with_settings(
             walkable: raw.walkable,
             char_display: raw.char.clone().unwrap_or_default(),
             damage: if is_last_thematic { settings.damage_tile_damage } else { 0 },
+            image: raw.image.clone(),
         });
     }
     if !tile_defs.contains_key("wall") {
         tile_defs.insert("wall".into(), TileDef {
-            name: "wall".into(), color: "#444".into(), walkable: false, char_display: String::new(), damage: 0,
+            name: "wall".into(), color: "#444".into(), walkable: false, char_display: String::new(), damage: 0, image: None,
         });
     }
 
@@ -1101,7 +1169,7 @@ fn assemble_level_with_settings(
     if map.key_position.is_some() {
         tile_defs.insert("locked_door".into(), TileDef {
             name: "locked_door".into(), color: "#aa6622".into(), walkable: false,
-            char_display: "🔒".into(), damage: 0,
+            char_display: "🔒".into(), damage: 0, image: None,
         });
     }
 
@@ -1118,7 +1186,7 @@ fn assemble_level_with_settings(
     if map.key_position.is_some() {
         full_defs.insert("locked_door".into(), TileDef {
             name: "locked_door".into(), color: "#aa6622".into(), walkable: true,
-            char_display: "🔒".into(), damage: 0,
+            char_display: "🔒".into(), damage: 0, image: None,
         });
     }
     let full_reachable = flood_fill(&tiles, &full_defs, player_start[0], player_start[1], width, height);
@@ -1139,172 +1207,239 @@ fn assemble_level_with_settings(
 
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    let mut remaining_budget = budget;
+    let remaining_budget;
 
     // Scaling factors (tuned so a level-1 player can beat campaign 1)
-    // Boss HP: floor 1 → 1.2x, floor 5 → 2.0x per budget point
     let hp_per_point = 1.0 + floor as f32 * 0.2;
     let atk_scale = 2 + floor / 2;
     let def_scale = (floor / 2).max(0);
 
-    // ── Boss: 15-25% of budget ──
-    let boss_cost = rng.gen_range(budget * 15 / 100..=budget * 25 / 100).max(10);
-    remaining_budget -= boss_cost;
-    let boss_hp = (boss_cost as f32 * hp_per_point).round() as i32;
-    let boss_atk = atk_scale + boss_cost / 15;
-    let boss_def = def_scale;
-    let boss_xp = boss_cost + floor * 5;
+    let monsters;
+    let items;
+    let traps;
 
-    eprintln!("Boss '{}' — cost {} → {} HP, {} ATK, {} DEF",
-        p2.boss.name, boss_cost, boss_hp, boss_atk, boss_def);
+    if let Some(placed) = &p2.placed_entities {
+        // ── Designer-placed entities: use their positions, engine computes stats ──
+        let boss_cost = (budget * 20 / 100).max(10);
+        let boss_hp = (boss_cost as f32 * hp_per_point).round() as i32;
+        let boss_atk = atk_scale + boss_cost / 15;
+        let boss_def = def_scale;
+        let boss_xp = boss_cost + floor * 5;
 
-    let mut monsters = vec![Monster {
-        id: format!("boss_{}", floor),
-        name: p2.boss.name.clone(),
+        let mut mons = vec![Monster {
+            id: format!("boss_{}", floor),
+            name: p2.boss.name.clone(),
+            x: bx, y: by,
+            hp: boss_hp, max_hp: boss_hp,
+            attack: boss_atk, defense: boss_def,
+            xp_value: boss_xp,
+            description: p2.boss.description.clone().unwrap_or_default(),
+            is_boss: true,
+            boss_enraged_turns: 0, boss_has_seen_player: false,
+            boss_attacked_this_turn: false,
+            boss_body: vec![(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)],
+            boss_flee_budget: 0, boss_flee_cooldown: 0,
+        }];
 
-        x: bx, y: by,
-        hp: boss_hp, max_hp: boss_hp,
-        attack: boss_atk, defense: boss_def,
-        xp_value: boss_xp,
-        description: p2.boss.description.clone().unwrap_or_default(),
-        is_boss: true,
-        boss_enraged_turns: 0,
-        boss_has_seen_player: false,
-        boss_attacked_this_turn: false,
-        boss_body: vec![(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)],
-        boss_flee_budget: 0,
-        boss_flee_cooldown: 0,
-    }];
-
-    // Helper: pick a random side for spawning (40% chance locked side if it exists)
-    let pick_side = |rng: &mut rand::rngs::ThreadRng| -> &Vec<(i32, i32)> {
-        if has_locked_side && rng.gen::<f32>() < 0.4 {
-            &locked_side_vec
-        } else {
-            &player_side_vec
-        }
-    };
-
-    // ── Monsters: spend until budget runs low ──
-    let monster_types = campaign_monsters.unwrap_or(&p2.monster_types);
-    if !monster_types.is_empty() {
-        let mut i = 0;
-        while remaining_budget >= 5 {
-            let mon_cost = rng.gen_range(5..=8.min(remaining_budget));
-            remaining_budget -= mon_cost;
+        let mon_count = placed.monsters.len().max(1) as i32;
+        let mon_budget_each = (budget - boss_cost) / (mon_count + 2); // leave room for gold
+        for (i, pm) in placed.monsters.iter().enumerate() {
+            let mon_cost = mon_budget_each.max(5);
             let mon_hp = (mon_cost as f32 * (0.8 + floor as f32 * 0.15)).round() as i32;
-            let mon_atk = atk_scale;
-            let mon_def = def_scale;
-            let mon_xp = mon_cost + floor * 2;
-
-            let tmpl = &monster_types[i % monster_types.len()];
-            let tiles = pick_side(&mut rng);
-            if let Some(&(mx, my)) = pick_random_reachable(tiles, player_start, 3, &monsters, &mut rng) {
-                monsters.push(Monster {
-                    id: format!("m_{}_{}", floor, i),
-                    name: tmpl.name.clone(),
-                    x: mx, y: my,
-                    hp: mon_hp, max_hp: mon_hp,
-                    attack: mon_atk, defense: mon_def,
-                    xp_value: mon_xp,
-                    description: tmpl.description.clone().unwrap_or_default(),
-                    is_boss: false,
-                    boss_enraged_turns: 0,
-                    boss_has_seen_player: false,
-                    boss_attacked_this_turn: false,
-                    boss_body: vec![],
-                    boss_flee_budget: 0,
-                    boss_flee_cooldown: 0,
-                });
-            }
-            i += 1;
+            mons.push(Monster {
+                id: format!("m_{}_{}", floor, i),
+                name: pm.name.clone(),
+                x: pm.x, y: pm.y,
+                hp: mon_hp, max_hp: mon_hp,
+                attack: atk_scale, defense: def_scale,
+                xp_value: mon_cost + floor * 2,
+                description: String::new(),
+                is_boss: false,
+                boss_enraged_turns: 0, boss_has_seen_player: false,
+                boss_attacked_this_turn: false, boss_body: vec![],
+                boss_flee_budget: 0, boss_flee_cooldown: 0,
+            });
         }
-    }
+        monsters = mons;
 
-    // ── Traps: 3-8 cost each from remaining budget ──
-    let mut traps: Vec<Trap> = Vec::new();
-    if traps_enabled {
-    if let Some(trap_defs) = &p2.traps {
-        for td in trap_defs.iter() {
-            let trap_cost = rng.gen_range(3..=8.min(remaining_budget.max(3)));
-            if remaining_budget < 3 { break; }
-            remaining_budget -= trap_cost;
-            let tiles = pick_side(&mut rng);
-            if let Some(&(tx, ty)) = pick_random_reachable(tiles, player_start, 4, &monsters, &mut rng) {
-                traps.push(Trap {
-                    x: tx, y: ty,
-                    damage: trap_cost + floor,
-                    name: td.name.clone().unwrap_or_else(|| "Trap".into()),
+        let mut itms: Vec<Item> = Vec::new();
+        for (i, pi) in placed.items.iter().enumerate() {
+            let value = pi.value.unwrap_or_else(|| match pi.item_type.as_str() {
+                "weapon" => floor + 3,
+                "armor" => floor + 1,
+                "gold" => rng.gen_range(5..=15) + floor * 2,
+                _ => 0,
+            });
+            itms.push(Item {
+                id: format!("pi_{}_{}", floor, i),
+                name: pi.name.clone(),
+                x: pi.x, y: pi.y,
+                item_type: pi.item_type.clone(),
+                value,
+                description: String::new(),
+            });
+        }
+        items = itms;
+
+        let mut trp: Vec<Trap> = Vec::new();
+        if traps_enabled {
+            for pt in &placed.traps {
+                trp.push(Trap {
+                    x: pt.x, y: pt.y,
+                    damage: 3 + floor,
+                    name: pt.name.clone(),
                     triggered: false,
                 });
             }
         }
-    }
-    } // traps_enabled
+        traps = trp;
+        remaining_budget = 0;
 
-    // ── Gold: 2-5 cost each from remaining budget ──
-    let mut items: Vec<Item> = Vec::new();
-    {
-        let mut gold_i = 0;
-        while remaining_budget >= 2 {
-            let gold_cost = rng.gen_range(2..=5.min(remaining_budget));
-            remaining_budget -= gold_cost;
-            let amount = gold_cost * 2 + rng.gen_range(0..=floor);
-            let tiles = pick_side(&mut rng);
-            if let Some(&(gx, gy)) = pick_random_reachable(tiles, player_start, 2, &monsters, &mut rng) {
-                items.push(Item {
-                    id: format!("gold_{}_{}", floor, gold_i), name: format!("{} Gold", amount),
-                    x: gx, y: gy,
-                    item_type: "gold".into(), value: amount, description: String::new(),
+        eprintln!("Placed entities: boss + {} monsters + {} items + {} traps (designer-placed)",
+            placed.monsters.len(), placed.items.len(), placed.traps.len());
+    } else {
+        // ── Auto-placement: engine places everything from budget ──
+        let mut rem = budget;
+
+        let boss_cost = rng.gen_range(budget * 15 / 100..=budget * 25 / 100).max(10);
+        rem -= boss_cost;
+        let boss_hp = (boss_cost as f32 * hp_per_point).round() as i32;
+        let boss_atk = atk_scale + boss_cost / 15;
+        let boss_def = def_scale;
+        let boss_xp = boss_cost + floor * 5;
+
+        eprintln!("Boss '{}' — cost {} → {} HP, {} ATK, {} DEF",
+            p2.boss.name, boss_cost, boss_hp, boss_atk, boss_def);
+
+        let mut mons = vec![Monster {
+            id: format!("boss_{}", floor),
+            name: p2.boss.name.clone(),
+            x: bx, y: by,
+            hp: boss_hp, max_hp: boss_hp,
+            attack: boss_atk, defense: boss_def,
+            xp_value: boss_xp,
+            description: p2.boss.description.clone().unwrap_or_default(),
+            is_boss: true,
+            boss_enraged_turns: 0, boss_has_seen_player: false,
+            boss_attacked_this_turn: false,
+            boss_body: vec![(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)],
+            boss_flee_budget: 0, boss_flee_cooldown: 0,
+        }];
+
+        let pick_side = |rng: &mut rand::rngs::ThreadRng| -> &Vec<(i32, i32)> {
+            if has_locked_side && rng.gen::<f32>() < 0.4 { &locked_side_vec } else { &player_side_vec }
+        };
+
+        let monster_types = campaign_monsters.unwrap_or(&p2.monster_types);
+        if !monster_types.is_empty() {
+            let mut i = 0;
+            while rem >= 5 {
+                let mon_cost = rng.gen_range(5..=8.min(rem));
+                rem -= mon_cost;
+                let mon_hp = (mon_cost as f32 * (0.8 + floor as f32 * 0.15)).round() as i32;
+                let tmpl = &monster_types[i % monster_types.len()];
+                let tiles = pick_side(&mut rng);
+                if let Some(&(mx, my)) = pick_random_reachable(tiles, player_start, 3, &mons, &mut rng) {
+                    mons.push(Monster {
+                        id: format!("m_{}_{}", floor, i),
+                        name: tmpl.name.clone(),
+                        x: mx, y: my,
+                        hp: mon_hp, max_hp: mon_hp,
+                        attack: atk_scale, defense: def_scale,
+                        xp_value: mon_cost + floor * 2,
+                        description: tmpl.description.clone().unwrap_or_default(),
+                        is_boss: false,
+                        boss_enraged_turns: 0, boss_has_seen_player: false,
+                        boss_attacked_this_turn: false, boss_body: vec![],
+                        boss_flee_budget: 0, boss_flee_cooldown: 0,
+                    });
+                }
+                i += 1;
+            }
+        }
+        monsters = mons;
+
+        let mut trp: Vec<Trap> = Vec::new();
+        if traps_enabled {
+            if let Some(trap_defs) = &p2.traps {
+                for td in trap_defs.iter() {
+                    let trap_cost = rng.gen_range(3..=8.min(rem.max(3)));
+                    if rem < 3 { break; }
+                    rem -= trap_cost;
+                    let tiles = pick_side(&mut rng);
+                    if let Some(&(tx, ty)) = pick_random_reachable(tiles, player_start, 4, &monsters, &mut rng) {
+                        trp.push(Trap {
+                            x: tx, y: ty,
+                            damage: trap_cost + floor,
+                            name: td.name.clone().unwrap_or_else(|| "Trap".into()),
+                            triggered: false,
+                        });
+                    }
+                }
+            }
+        }
+        traps = trp;
+
+        let mut itms: Vec<Item> = Vec::new();
+        {
+            let mut gold_i = 0;
+            while rem >= 2 {
+                let gold_cost = rng.gen_range(2..=5.min(rem));
+                rem -= gold_cost;
+                let amount = gold_cost * 2 + rng.gen_range(0..=floor);
+                let tiles = pick_side(&mut rng);
+                if let Some(&(gx, gy)) = pick_random_reachable(tiles, player_start, 2, &monsters, &mut rng) {
+                    itms.push(Item {
+                        id: format!("gold_{}_{}", floor, gold_i), name: format!("{} Gold", amount),
+                        x: gx, y: gy, item_type: "gold".into(), value: amount, description: String::new(),
+                    });
+                }
+                gold_i += 1;
+                if gold_i >= 6 { break; }
+            }
+            let w_tiles = pick_side(&mut rng);
+            if let Some(&(wx, wy)) = pick_random_reachable(w_tiles, player_start, 1, &monsters, &mut rng) {
+                itms.push(Item {
+                    id: format!("w_{}", floor), name: p2.weapon.name.clone(),
+                    x: wx, y: wy, item_type: "weapon".into(), value: floor + 3 + campaign_tier * 2,
+                    description: p2.weapon.description.clone().unwrap_or_default(),
                 });
             }
-            gold_i += 1;
-            if gold_i >= 6 { break; }
-        }
-
-        // ── Free items: weapon, armor, potions, key — randomly distributed ──
-        let w_tiles = pick_side(&mut rng);
-        if let Some(&(wx, wy)) = pick_random_reachable(w_tiles, player_start, 1, &monsters, &mut rng) {
-            items.push(Item {
-                id: format!("w_{}", floor), name: p2.weapon.name.clone(),
-                x: wx, y: wy, item_type: "weapon".into(), value: floor + 3,
-                description: p2.weapon.description.clone().unwrap_or_default(),
-            });
-        }
-        let a_tiles = pick_side(&mut rng);
-        if let Some(&(ax, ay)) = pick_random_reachable(a_tiles, player_start, 1, &monsters, &mut rng) {
-            items.push(Item {
-                id: format!("a_{}", floor), name: p2.armor.name.clone(),
-                x: ax, y: ay, item_type: "armor".into(), value: floor + 1,
-                description: p2.armor.description.clone().unwrap_or_default(),
-            });
-        }
-        let mon_count = monsters.iter().filter(|m| !m.is_boss).count();
-        let potion_count = (mon_count / 6).max(1);
-        for i in 0..potion_count {
-            if let Some(&(px, py)) = pick_random_reachable(&reachable_vec, player_start, 2, &monsters, &mut rng) {
-                items.push(Item {
-                    id: format!("pot_{}_{}", floor, i), name: "Health Potion".into(),
-                    x: px, y: py,
-                    item_type: "potion".into(), value: 0, description: String::new(),
+            let a_tiles = pick_side(&mut rng);
+            if let Some(&(ax, ay)) = pick_random_reachable(a_tiles, player_start, 1, &monsters, &mut rng) {
+                itms.push(Item {
+                    id: format!("a_{}", floor), name: p2.armor.name.clone(),
+                    x: ax, y: ay, item_type: "armor".into(), value: floor + 1 + campaign_tier * 2,
+                    description: p2.armor.description.clone().unwrap_or_default(),
+                });
+            }
+            let mon_count = monsters.iter().filter(|m| !m.is_boss).count();
+            let potion_count = (mon_count / 6).max(1);
+            for i in 0..potion_count {
+                if let Some(&(px, py)) = pick_random_reachable(&reachable_vec, player_start, 2, &monsters, &mut rng) {
+                    itms.push(Item {
+                        id: format!("pot_{}_{}", floor, i), name: "Health Potion".into(),
+                        x: px, y: py, item_type: "potion".into(), value: 0, description: String::new(),
+                    });
+                }
+            }
+            if let Some(key_pos) = map.key_position {
+                itms.push(Item {
+                    id: format!("key_{}", floor), name: "Key".into(),
+                    x: key_pos[0], y: key_pos[1], item_type: "key".into(), value: 0,
+                    description: "Unlocks a locked door.".into(),
                 });
             }
         }
-        if let Some(key_pos) = map.key_position {
-            items.push(Item {
-                id: format!("key_{}", floor), name: "Key".into(),
-                x: key_pos[0], y: key_pos[1],
-                item_type: "key".into(), value: 0,
-                description: "Unlocks a locked door.".into(),
-            });
-        }
-    }
+        items = itms;
+        remaining_budget = rem;
 
-    let monster_count = monsters.iter().filter(|m| !m.is_boss).count();
-    let trap_count = traps.len();
-    let gold_count = items.iter().filter(|i| i.item_type == "gold").count();
-    eprintln!("Budget: {} total, {} remaining — boss + {} monsters + {} traps + {} gold",
-        budget, remaining_budget, monster_count, trap_count, gold_count);
+        let monster_count = monsters.iter().filter(|m| !m.is_boss).count();
+        let trap_count = traps.len();
+        let gold_count = items.iter().filter(|i| i.item_type == "gold").count();
+        eprintln!("Budget: {} total, {} remaining — boss + {} monsters + {} traps + {} gold",
+            budget, remaining_budget, monster_count, trap_count, gold_count);
+    }
 
     let scale = p2.mode.as_ref()
         .map(|m| build_scale(&m.root, &m.scale))

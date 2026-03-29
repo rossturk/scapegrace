@@ -57,8 +57,8 @@ fn astar(level: &Level, from: (i32, i32), to: (i32, i32), avoid: &HashSet<(i32, 
             };
             if !walkable { continue; }
 
-            // Penalize damage tiles
-            let cost = if level.tile_defs.get(tile).map_or(false, |t| t.damage > 0) { 5 } else { 1 };
+            // Heavily penalize damage tiles — a 50-tile detour is better than 3 HP/step
+            let cost = if level.tile_defs.get(tile).map_or(false, |t| t.damage > 0) { 50 } else { 1 };
             let ng = g + cost;
             if ng < *g_score.get(&(nx, ny)).unwrap_or(&i32::MAX) {
                 g_score.insert((nx, ny), ng);
@@ -71,17 +71,22 @@ fn astar(level: &Level, from: (i32, i32), to: (i32, i32), avoid: &HashSet<(i32, 
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  Bot AI — plays a single level to completion or death
+//  Smart Bot — state machine that explores, collects, clears, bosses
 // ══════════════════════════════════════════════════════════════════════
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum BotPhase {
+    Explore,   // reveal the full map, grab items on the way
+    Collect,   // pick up weapon/armor/key/potions
+    Clear,     // kill non-boss monsters
+    Boss,      // kill the boss
+}
+
+#[derive(Clone, Copy, PartialEq)]
 enum Strategy {
-    /// Clear all monsters, pick up everything, then fight boss
-    Thorough,
-    /// Beeline for boss, only fight what's in the way
-    Rush,
-    /// Clear monsters near items/path, balanced approach
-    Balanced,
+    Thorough,  // clear everything
+    Rush,      // skip to boss ASAP
+    Balanced,  // clear what's nearby
 }
 
 impl Strategy {
@@ -102,426 +107,70 @@ struct LevelResult {
     damage_taken: i32,
     potions_used: i32,
     bombs_used: i32,
-    #[allow(dead_code)]
-    items_collected: Vec<String>,
+    speed_potions_used: i32,
     player_level_before: i32,
     player_level_after: i32,
     player_hp_at_end: i32,
+    lowest_hp: i32,
     cause_of_death: Option<String>,
     level_title: String,
     boss_name: String,
     boss_hp: i32,
     monster_count: i32,
+    difficulty: String,
 }
 
-fn play_level(state: &mut GameState, strategy: Strategy) -> LevelResult {
-    let level_title = state.level.title.clone();
-    let boss_name = state.level.monsters.iter()
-        .find(|m| m.is_boss).map(|m| m.name.clone()).unwrap_or_default();
-    let boss_hp = state.level.monsters.iter()
-        .find(|m| m.is_boss).map(|m| m.max_hp).unwrap_or(0);
-    let monster_count = state.level.monsters.iter().filter(|m| !m.is_boss && m.is_alive()).count() as i32;
-    let player_level_before = state.player.level;
+fn rate_difficulty(lowest_hp: i32, max_hp: i32, potions_used: i32, _damage_taken: i32, victory: bool) -> String {
+    if !victory { return "IMPOSSIBLE".into(); }
+    let hp_pct = lowest_hp as f32 / max_hp as f32;
+    if potions_used == 0 && hp_pct > 0.7 { return "trivial".into(); }
+    if potions_used == 0 && hp_pct > 0.4 { return "easy".into(); }
+    if hp_pct > 0.2 { return "moderate".into(); }
+    if hp_pct > 0.05 { return "hard".into(); }
+    "brutal".into()
+}
 
-    let mut turns = 0;
-    let mut kills = 0;
-    let mut damage_dealt = 0;
-    let mut damage_taken = 0;
-    let mut potions_used = 0;
-    let mut bombs_used = 0;
-    let items_collected = Vec::new();
-    let max_turns = 2500; // safety valve
-    let mut stuck_counter = 0;
-    let mut last_pos = (state.player.x, state.player.y);
-    let mut blacklist: HashSet<(i32, i32)> = HashSet::new();
-    let mut committed_target: Option<(i32, i32)> = None;
-    let mut last_move: (i32, i32) = (0, 0);
-    let mut no_progress_turns = 0; // turns since last kill or item pickup
-    let mut last_kill_count = 0;
-    let mut last_item_count = state.level.items.len();
+// ── A* with monster avoidance ──
 
-    while !state.game_over && !state.victory && turns < max_turns {
-        turns += 1;
-        let hp_before = state.player.hp;
-        let alive_before: HashMap<String, i32> = state.level.monsters.iter()
-            .filter(|m| m.is_alive())
-            .map(|m| (m.id.clone(), m.hp))
-            .collect();
+/// A* that can optionally route around monsters and heavily penalizes damage tiles.
+fn astar_smart(level: &Level, from: (i32, i32), to: (i32, i32),
+               avoid_monsters: &HashSet<(i32, i32)>, has_keys: bool) -> Option<Vec<(i32, i32)>> {
+    astar(level, from, to, avoid_monsters, has_keys)
+}
 
-        // ── Stuck detection ──
-        let cur_pos = (state.player.x, state.player.y);
-        let cur_kills = state.level.monsters.iter().filter(|m| !m.is_alive()).count();
-        let cur_items = state.level.items.len();
+/// Try to path avoiding monsters first; if impossible or much longer, path through them.
+fn path_to(level: &Level, from: (i32, i32), to: (i32, i32),
+           monster_tiles: &HashSet<(i32, i32)>, has_keys: bool) -> Option<Vec<(i32, i32)>> {
+    let direct = astar(level, from, to, &HashSet::new(), has_keys);
+    let avoiding = astar_smart(level, from, to, monster_tiles, has_keys);
+    match (&avoiding, &direct) {
+        (Some(a), Some(d)) => {
+            // Only avoid if the detour isn't more than 50% longer
+            if a.len() <= d.len() * 3 / 2 { avoiding } else { direct }
+        }
+        (Some(_), None) => avoiding,
+        (None, _) => direct,
+    }
+}
 
-        if cur_kills > last_kill_count || cur_items < last_item_count {
-            no_progress_turns = 0;
-            last_kill_count = cur_kills;
-            last_item_count = cur_items;
+/// Get all tiles occupied by alive monsters (for avoidance).
+fn monster_positions(state: &GameState) -> HashSet<(i32, i32)> {
+    let mut set = HashSet::new();
+    for m in &state.level.monsters {
+        if !m.is_alive() { continue; }
+        if m.is_boss {
+            for &(bx, by) in &m.boss_body { set.insert((bx, by)); }
         } else {
-            no_progress_turns += 1;
-        }
-
-        if cur_pos == last_pos {
-            stuck_counter += 1;
-        } else {
-            stuck_counter = 0;
-        }
-
-        // After 10 turns in same spot OR 30 turns with no progress, blacklist unreachable targets
-        if stuck_counter >= 10 || no_progress_turns >= 30 {
-            committed_target = None;
-            let no_avoid = HashSet::new();
-            let has_keys = state.player.keys > 0;
-            for item in &state.level.items {
-                if astar(&state.level, cur_pos, (item.x, item.y), &no_avoid, has_keys).is_none() {
-                    blacklist.insert((item.x, item.y));
-                }
-            }
-            for m in &state.level.monsters {
-                if m.is_alive() && astar(&state.level, cur_pos, (m.x, m.y), &no_avoid, has_keys).is_none() {
-                    blacklist.insert((m.x, m.y));
-                }
-            }
-            if stuck_counter >= 10 { stuck_counter = 0; }
-            if no_progress_turns >= 30 { no_progress_turns = 0; }
-        }
-        last_pos = cur_pos;
-
-        // ── Decision: random walk if deeply stuck, otherwise normal AI ──
-        let pos_before_action = (state.player.x, state.player.y);
-        let action = if stuck_counter >= 5 || no_progress_turns >= 20 {
-            // Random walk to unstick: pick a random walkable adjacent tile
-            let mut rng = rand::thread_rng();
-            use rand::seq::SliceRandom;
-            let dirs: [(i32,i32); 4] = [(0,-1),(0,1),(-1,0),(1,0)];
-            let walkable_dirs: Vec<(i32,i32)> = dirs.iter().filter(|&&(dx,dy)| {
-                let nx = state.player.x + dx;
-                let ny = state.player.y + dy;
-                nx >= 0 && ny >= 0 && nx < state.level.width && ny < state.level.height
-                    && state.level.tile_defs.get(&state.level.tiles[ny as usize][nx as usize])
-                        .map_or(false, |t| t.walkable)
-            }).copied().collect();
-            if let Some(&(dx, dy)) = walkable_dirs.choose(&mut rng) {
-                committed_target = None;
-                Action::Move(dx, dy)
-            } else {
-                Action::Wait
-            }
-        } else {
-            decide_action(state, strategy, &blacklist, &mut committed_target, last_move)
-        };
-
-        execute_action(state, &action);
-
-        // Track last move direction
-        if let Action::Move(dx, dy) = action {
-            let actually_moved = (state.player.x, state.player.y) != pos_before_action;
-            if actually_moved {
-                last_move = (dx, dy);
-            }
-        }
-
-
-        // ── Track stats ──
-        let hp_after = state.player.hp;
-        if hp_after < hp_before { damage_taken += hp_before - hp_after; }
-
-        for m in &state.level.monsters {
-            if let Some(&old_hp) = alive_before.get(&m.id) {
-                if m.hp < old_hp { damage_dealt += old_hp - m.hp; }
-                if old_hp > 0 && m.hp <= 0 { kills += 1; }
-            }
-        }
-
-        match &action {
-            Action::UsePotion => potions_used += 1,
-            Action::UseBomb => bombs_used += 1,
-            _ => {}
+            set.insert((m.x, m.y));
         }
     }
-
-    let cause_of_death = if state.game_over {
-        state.log.iter().rev()
-            .find(|e| e.text.contains("died") || e.text.contains("killed"))
-            .map(|e| e.text.clone())
-            .or(Some("killed in combat".into()))
-    } else {
-        None
-    };
-
-    LevelResult {
-        victory: state.victory,
-        turns,
-        kills,
-        damage_dealt,
-        damage_taken,
-        potions_used,
-        bombs_used,
-        items_collected,
-        player_level_before,
-        player_level_after: state.player.level,
-        player_hp_at_end: state.player.hp,
-        cause_of_death,
-        level_title,
-        boss_name,
-        boss_hp,
-        monster_count,
-    }
+    set
 }
 
-#[derive(Debug)]
-enum Action {
-    Move(i32, i32), // dx, dy
-    UsePotion,
-    UseBomb,
-    UseSpeedPotion,
-    Wait, // shouldn't happen, safety fallback
-}
+// ── Exploration ──
 
-fn decide_action(state: &GameState, strategy: Strategy, blacklist: &HashSet<(i32, i32)>,
-                  committed_target: &mut Option<(i32, i32)>, last_move: (i32, i32)) -> Action {
-    let p = &state.player;
-    let px = p.x;
-    let py = p.y;
-
-    // ── Emergency heal: use potion if low HP ──
-    let hp_pct = p.hp as f32 / p.max_hp as f32;
-    if hp_pct < 0.35 && p.potions > 0 {
-        return Action::UsePotion;
-    }
-
-    // ── Bomb if surrounded by 3+ monsters in radius 2 ──
-    if p.bombs > 0 {
-        let nearby = state.level.monsters.iter()
-            .filter(|m| m.is_alive() && !m.is_boss)
-            .filter(|m| (m.x - px).abs() <= 3 && (m.y - py).abs() <= 3)
-            .count();
-        if nearby >= 3 {
-            return Action::UseBomb;
-        }
-    }
-
-    // ── Speed potion if boss is adjacent and enraged ──
-    if p.speed_potions > 0 {
-        let boss_adjacent = state.level.monsters.iter().any(|m| {
-            m.is_boss && m.is_alive() && m.boss_enraged_turns > 0
-                && m.boss_body.iter().any(|&(bx, by)| (bx - px).abs() <= 2 && (by - py).abs() <= 2)
-        });
-        if boss_adjacent {
-            return Action::UseSpeedPotion;
-        }
-    }
-
-    // No avoidance — the bot walks into monsters to attack them (bump combat).
-    let no_avoid = HashSet::new();
-    let has_keys = p.keys > 0;
-
-    // ── Pick a target (commit to it for multiple turns to avoid oscillation) ──
-    // Clear committed target if we've reached it or it's gone
-    if let Some(ct) = *committed_target {
-        let at_target = (px - ct.0).abs() + (py - ct.1).abs() <= 1;
-        let item_gone = !state.level.items.iter().any(|it| it.x == ct.0 && it.y == ct.1);
-        let monster_dead = state.level.monsters.iter()
-            .find(|m| m.x == ct.0 && m.y == ct.1)
-            .map_or(false, |m| !m.is_alive());
-        if at_target || (item_gone && monster_dead) {
-            *committed_target = None;
-        }
-    }
-    if committed_target.is_none() {
-        *committed_target = pick_target(state, strategy, blacklist);
-    }
-    let target = *committed_target;
-
-    if let Some(target_pos) = target {
-        // Path to target (monsters are walkable — bumping attacks them)
-        if let Some(path) = astar(&state.level, (px, py), target_pos, &no_avoid, has_keys) {
-            if path.len() >= 2 {
-                let next = path[1];
-                let dx = next.0 - px;
-                let dy = next.1 - py;
-                // Anti-oscillation: if this reverses our last move, try step 2 or skip
-                if (dx, dy) == (-last_move.0, -last_move.1) && last_move != (0, 0) && path.len() >= 3 {
-                    let alt = path[2];
-                    let adx = (alt.0 - px).signum();
-                    let ady = (alt.1 - py).signum();
-                    if adx != 0 || ady != 0 {
-                        return Action::Move(adx, ady);
-                    }
-                }
-                return Action::Move(dx, dy);
-            }
-        } else {
-            *committed_target = None; // unreachable, pick a new one next turn
-        }
-        // Can't path? Move directly toward target
-        let dx = (target_pos.0 - px).signum();
-        let dy = (target_pos.1 - py).signum();
-        if dx != 0 || dy != 0 {
-            if (target_pos.0 - px).abs() >= (target_pos.1 - py).abs() {
-                return Action::Move(dx, 0);
-            } else {
-                return Action::Move(0, dy);
-            }
-        }
-    } else {
-        eprintln!("[bot] no target found at ({},{}) bl={}", px, py, blacklist.len());
-    }
-
-    // ── Fallback: explore unrevealed area ──
-    if let Some(explore_target) = find_exploration_target(state) {
-        if let Some(path) = astar(&state.level, (px, py), explore_target, &no_avoid, has_keys) {
-            if path.len() >= 2 {
-                let next = path[1];
-                return Action::Move(next.0 - px, next.1 - py);
-            }
-        }
-    }
-
-    // ── Last resort: try each direction ──
-    for &(dx, dy) in &[(0, -1), (0, 1), (-1, 0), (1, 0)] {
-        let nx = px + dx;
-        let ny = py + dy;
-        if nx >= 0 && ny >= 0 && nx < state.level.width && ny < state.level.height {
-            let tile = &state.level.tiles[ny as usize][nx as usize];
-            if state.level.tile_defs.get(tile).map_or(false, |t| t.walkable) {
-                return Action::Move(dx, dy);
-            }
-        }
-    }
-
-    Action::Wait
-}
-
-fn pick_target(state: &GameState, strategy: Strategy, blacklist: &HashSet<(i32, i32)>) -> Option<(i32, i32)> {
-    let p = &state.player;
-    let px = p.x;
-    let py = p.y;
-    let no_avoid = HashSet::new();
-    let has_keys = p.keys > 0;
-
-    // Helper: is this position reachable (not blacklisted, has a path)?
-    let reachable = |x: i32, y: i32| -> bool {
-        !blacklist.contains(&(x, y))
-            && astar(&state.level, (px, py), (x, y), &no_avoid, has_keys).is_some()
-    };
-
-    // Priority 1: always grab keys first (needed to unlock doors to reach boss)
-    let key_target = state.level.items.iter()
-        .filter(|it| it.item_type == "key")
-        .filter(|it| state.level.revealed.contains(&(it.x, it.y)))
-        .filter(|it| reachable(it.x, it.y))
-        .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
-        .map(|it| (it.x, it.y));
-    if key_target.is_some() { return key_target; }
-
-    // Priority 2: if we have a key, go unlock the locked door
-    if p.keys > 0 {
-        for y in 0..state.level.height {
-            for x in 0..state.level.width {
-                if state.level.tiles[y as usize][x as usize] == "locked_door"
-                    && state.level.revealed.contains(&(x, y))
-                {
-                    // Path to a tile adjacent to the door
-                    for &(dx, dy) in &[(0, -1), (0, 1), (-1, 0), (1, 0)] {
-                        let ax = x + dx;
-                        let ay = y + dy;
-                        if ax >= 0 && ay >= 0 && ax < state.level.width && ay < state.level.height {
-                            let tile = &state.level.tiles[ay as usize][ax as usize];
-                            if state.level.tile_defs.get(tile).map_or(false, |t| t.walkable) && reachable(ax, ay) {
-                                return Some((x, y)); // walk into the door to unlock it
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Items sorted by distance, filtered to reachable (prioritize weapons/armor)
-    let nearest_item = |max_dist: i32| -> Option<(i32, i32)> {
-        // Prioritize weapon/armor pickups
-        let equip = state.level.items.iter()
-            .filter(|it| it.item_type == "weapon" || it.item_type == "armor")
-            .filter(|it| state.level.revealed.contains(&(it.x, it.y)))
-            .filter(|it| (it.x - px).abs() + (it.y - py).abs() <= max_dist)
-            .filter(|it| reachable(it.x, it.y))
-            .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
-            .map(|it| (it.x, it.y));
-        if equip.is_some() { return equip; }
-
-        state.level.items.iter()
-            .filter(|it| state.level.revealed.contains(&(it.x, it.y)))
-            .filter(|it| (it.x - px).abs() + (it.y - py).abs() <= max_dist)
-            .filter(|it| reachable(it.x, it.y))
-            .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
-            .map(|it| (it.x, it.y))
-    };
-
-    // Nearest reachable non-boss monster
-    let nearest_monster = |max_dist: i32| -> Option<(i32, i32)> {
-        state.level.monsters.iter()
-            .filter(|m| m.is_alive() && !m.is_boss)
-            .filter(|m| (m.x - px).abs() + (m.y - py).abs() <= max_dist)
-            .filter(|m| reachable(m.x, m.y))
-            .min_by_key(|m| (m.x - px).abs() + (m.y - py).abs())
-            .map(|m| (m.x, m.y))
-    };
-
-    // Boss target (adjacent tile)
-    let boss_target = || -> Option<(i32, i32)> {
-        let boss = state.level.monsters.iter().find(|m| m.is_boss && m.is_alive())?;
-        let closest_body = boss.boss_body.iter()
-            .min_by_key(|&&(bx, by)| (bx - px).abs() + (by - py).abs())
-            .copied()
-            .unwrap_or((boss.x, boss.y));
-        let adj = adjacent_to(state, closest_body);
-        adj.filter(|&(x, y)| reachable(x, y)).or(adj)
-    };
-
-    match strategy {
-        Strategy::Rush => boss_target(),
-        Strategy::Thorough => {
-            nearest_item(15)
-                .or_else(|| nearest_monster(20))
-                .or_else(|| nearest_item(999))
-                .or_else(boss_target)
-        }
-        Strategy::Balanced => {
-            nearest_item(10)
-                .or_else(|| nearest_monster(8))
-                .or_else(boss_target)
-        }
-    }
-}
-
-/// Find a walkable tile adjacent to the given position (for pathing to a monster/boss).
-fn adjacent_to(state: &GameState, pos: (i32, i32)) -> Option<(i32, i32)> {
-    let px = state.player.x;
-    let py = state.player.y;
-    let mut best: Option<(i32, i32)> = None;
-    let mut best_dist = i32::MAX;
-    for &(dx, dy) in &[(0, -1), (0, 1), (-1, 0), (1, 0)] {
-        let nx = pos.0 + dx;
-        let ny = pos.1 + dy;
-        if nx < 0 || ny < 0 || nx >= state.level.width || ny >= state.level.height { continue; }
-        let tile = &state.level.tiles[ny as usize][nx as usize];
-        if !state.level.tile_defs.get(tile).map_or(false, |t| t.walkable) { continue; }
-        let d = (nx - px).abs() + (ny - py).abs();
-        if d < best_dist { best_dist = d; best = Some((nx, ny)); }
-    }
-    // If no adjacent walkable tile, just target the position directly (bump attack)
-    best.or(Some(pos))
-}
-
-fn find_exploration_target(state: &GameState) -> Option<(i32, i32)> {
-    let px = state.player.x;
-    let py = state.player.y;
-    let has_keys = state.player.keys > 0;
-    let no_avoid = HashSet::new();
-
-    // Find walkable revealed tiles that border unrevealed tiles
-    let mut frontier: Vec<(i32, i32)> = Vec::new();
+fn find_frontier(state: &GameState) -> Vec<(i32, i32)> {
+    let mut frontier = Vec::new();
     for &(rx, ry) in &state.level.revealed {
         let tile = &state.level.tiles[ry as usize][rx as usize];
         if !state.level.tile_defs.get(tile).map_or(false, |t| t.walkable) { continue; }
@@ -535,39 +184,393 @@ fn find_exploration_target(state: &GameState) -> Option<(i32, i32)> {
             }
         }
     }
+    frontier
+}
 
-    // Prefer reachable frontier tiles
-    let reachable: Vec<(i32, i32)> = frontier.iter()
-        .filter(|&&(x, y)| astar(&state.level, (px, py), (x, y), &no_avoid, has_keys).is_some())
+fn exploration_complete(state: &GameState) -> bool {
+    find_frontier(state).is_empty()
+}
+
+// ── Target picking per phase ──
+
+fn pick_explore_target(state: &GameState, mon_tiles: &HashSet<(i32, i32)>) -> Option<(i32, i32)> {
+    let px = state.player.x;
+    let py = state.player.y;
+    let has_keys = state.player.keys > 0;
+
+    // Fight any adjacent monster immediately (don't run from combat)
+    let adjacent_monster = state.level.monsters.iter()
+        .filter(|m| m.is_alive() && !m.is_boss)
+        .find(|m| (m.x - px).abs() + (m.y - py).abs() == 1)
+        .map(|m| (m.x, m.y));
+    if adjacent_monster.is_some() { return adjacent_monster; }
+
+    // Grab weapon/armor/key if close (within 8 tiles) while exploring
+    let nearby_equip = state.level.items.iter()
+        .filter(|it| it.item_type == "weapon" || it.item_type == "armor" || it.item_type == "key")
+        .filter(|it| state.level.revealed.contains(&(it.x, it.y)))
+        .filter(|it| (it.x - px).abs() + (it.y - py).abs() <= 8)
+        .filter(|it| path_to(&state.level, (px, py), (it.x, it.y), mon_tiles, has_keys).is_some())
+        .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
+        .map(|it| (it.x, it.y));
+    if nearby_equip.is_some() { return nearby_equip; }
+
+    // Go to nearest reachable frontier tile
+    let frontier = find_frontier(state);
+    frontier.iter()
+        .filter(|&&(x, y)| path_to(&state.level, (px, py), (x, y), mon_tiles, has_keys).is_some())
+        .min_by_key(|&&(x, y)| (x - px).abs() + (y - py).abs())
         .copied()
-        .collect();
+}
 
-    if !reachable.is_empty() {
-        reachable.into_iter()
-            .min_by_key(|&(x, y)| (x - px).abs() + (y - py).abs())
+fn pick_collect_target(state: &GameState, mon_tiles: &HashSet<(i32, i32)>) -> Option<(i32, i32)> {
+    let px = state.player.x;
+    let py = state.player.y;
+    let has_keys = state.player.keys > 0;
+    let reachable = |x: i32, y: i32| -> bool {
+        path_to(&state.level, (px, py), (x, y), mon_tiles, has_keys).is_some()
+    };
+
+    // Key first (unlocks areas)
+    let key = state.level.items.iter()
+        .filter(|it| it.item_type == "key" && state.level.revealed.contains(&(it.x, it.y)))
+        .filter(|it| reachable(it.x, it.y))
+        .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
+        .map(|it| (it.x, it.y));
+    if key.is_some() { return key; }
+
+    // Locked door if we have a key
+    if state.player.keys > 0 {
+        for y in 0..state.level.height {
+            for x in 0..state.level.width {
+                if state.level.tiles[y as usize][x as usize] == "locked_door"
+                    && state.level.revealed.contains(&(x, y))
+                {
+                    return Some((x, y));
+                }
+            }
+        }
+    }
+
+    // Weapon (if we don't have one yet or it's better)
+    let weapon = state.level.items.iter()
+        .filter(|it| it.item_type == "weapon" && state.level.revealed.contains(&(it.x, it.y)))
+        .filter(|it| it.value > state.player.weapon_damage)
+        .filter(|it| reachable(it.x, it.y))
+        .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
+        .map(|it| (it.x, it.y));
+    if weapon.is_some() { return weapon; }
+
+    // Armor
+    let armor = state.level.items.iter()
+        .filter(|it| it.item_type == "armor" && state.level.revealed.contains(&(it.x, it.y)))
+        .filter(|it| it.value > state.player.armor_defense)
+        .filter(|it| reachable(it.x, it.y))
+        .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
+        .map(|it| (it.x, it.y));
+    if armor.is_some() { return armor; }
+
+    // Potions / gold
+    state.level.items.iter()
+        .filter(|it| state.level.revealed.contains(&(it.x, it.y)))
+        .filter(|it| reachable(it.x, it.y))
+        .min_by_key(|it| (it.x - px).abs() + (it.y - py).abs())
+        .map(|it| (it.x, it.y))
+}
+
+fn pick_clear_target(state: &GameState, _mon_tiles: &HashSet<(i32, i32)>) -> Option<(i32, i32)> {
+    let px = state.player.x;
+    let py = state.player.y;
+    let has_keys = state.player.keys > 0;
+
+    // Kill nearest non-boss monster
+    state.level.monsters.iter()
+        .filter(|m| m.is_alive() && !m.is_boss)
+        .filter(|m| path_to(&state.level, (px, py), (m.x, m.y), &HashSet::new(), has_keys).is_some())
+        .min_by_key(|m| (m.x - px).abs() + (m.y - py).abs())
+        .map(|m| (m.x, m.y))
+}
+
+fn pick_boss_target(state: &GameState) -> Option<(i32, i32)> {
+    let px = state.player.x;
+    let py = state.player.y;
+    let boss = state.level.monsters.iter().find(|m| m.is_boss && m.is_alive())?;
+    // Target the closest body tile directly (bump attack)
+    boss.boss_body.iter()
+        .min_by_key(|&&(bx, by)| (bx - px).abs() + (by - py).abs())
+        .copied()
+}
+
+fn no_reachable_non_boss(state: &GameState) -> bool {
+    let px = state.player.x;
+    let py = state.player.y;
+    let has_keys = state.player.keys > 0;
+    !state.level.monsters.iter().any(|m| {
+        m.is_alive() && !m.is_boss
+            && astar(&state.level, (px, py), (m.x, m.y), &HashSet::new(), has_keys).is_some()
+    })
+}
+
+// ── The main play loop ──
+
+fn play_level(state: &mut GameState, strategy: Strategy) -> LevelResult {
+    let level_title = state.level.title.clone();
+    let boss_name = state.level.monsters.iter()
+        .find(|m| m.is_boss).map(|m| m.name.clone()).unwrap_or_default();
+    let boss_hp = state.level.monsters.iter()
+        .find(|m| m.is_boss).map(|m| m.max_hp).unwrap_or(0);
+    let monster_count = state.level.monsters.iter().filter(|m| !m.is_boss && m.is_alive()).count() as i32;
+    let player_level_before = state.player.level;
+    let initial_max_hp = state.player.max_hp;
+
+    let mut turns = 0;
+    let mut kills = 0;
+    let mut damage_dealt = 0;
+    let mut damage_taken = 0;
+    let mut potions_used = 0;
+    let mut bombs_used = 0;
+    let mut speed_potions_used = 0;
+    let mut lowest_hp = state.player.hp;
+    let max_turns = 5000;
+
+    // State machine
+    let mut phase = if strategy == Strategy::Rush { BotPhase::Boss } else { BotPhase::Explore };
+    let mut stuck_turns = 0;
+    let mut last_pos = (state.player.x, state.player.y);
+    let mut phase_turns = 0; // turns in current phase
+
+    while !state.game_over && !state.victory && turns < max_turns {
+        turns += 1;
+        phase_turns += 1;
+        let hp_before = state.player.hp;
+        let alive_before: HashMap<String, i32> = state.level.monsters.iter()
+            .filter(|m| m.is_alive())
+            .map(|m| (m.id.clone(), m.hp))
+            .collect();
+
+        // ── Phase transitions ──
+        match phase {
+            BotPhase::Explore => {
+                if exploration_complete(state) || phase_turns > 800 {
+                    phase = BotPhase::Collect;
+                    phase_turns = 0;
+                }
+            }
+            BotPhase::Collect => {
+                let has_items = state.level.items.iter().any(|it| {
+                    state.level.revealed.contains(&(it.x, it.y))
+                        && (it.item_type == "weapon" || it.item_type == "armor" || it.item_type == "key")
+                        && astar(&state.level, (state.player.x, state.player.y),
+                                 (it.x, it.y), &HashSet::new(), state.player.keys > 0).is_some()
+                });
+                if !has_items || phase_turns > 300 {
+                    phase = if strategy == Strategy::Rush { BotPhase::Boss }
+                            else { BotPhase::Clear };
+                    phase_turns = 0;
+                }
+            }
+            BotPhase::Clear => {
+                if no_reachable_non_boss(state) || phase_turns > 600 {
+                    phase = BotPhase::Boss;
+                    phase_turns = 0;
+                }
+            }
+            BotPhase::Boss => {} // terminal phase
+        }
+
+        // ── Stuck detection: random walk if no movement for 8 turns ──
+        let cur_pos = (state.player.x, state.player.y);
+        if cur_pos == last_pos { stuck_turns += 1; } else { stuck_turns = 0; }
+        last_pos = cur_pos;
+
+        let px = state.player.x;
+        let py = state.player.y;
+        let mon_tiles = monster_positions(state);
+        let has_keys = state.player.keys > 0;
+
+        // ── Consumable decisions ──
+        let hp_pct = state.player.hp as f32 / state.player.max_hp as f32;
+
+        // Adjacent monster check (are we in combat?)
+        let in_combat = state.level.monsters.iter().any(|m| {
+            if !m.is_alive() { return false; }
+            if m.is_boss {
+                m.boss_body.iter().any(|&(bx, by)| (bx - px).abs() + (by - py).abs() <= 1)
+            } else {
+                (m.x - px).abs() + (m.y - py).abs() <= 1
+            }
+        });
+
+        // Antidote: use when near damage tiles and not immune (covers whole level)
+        if state.player.antidotes > 0 && state.player.antidote_steps == 0 {
+            // Check if this level has any damage tiles at all
+            let has_damage_tiles = state.level.tile_defs.values().any(|t| t.damage > 0);
+            if has_damage_tiles {
+                game::use_antidote(state);
+            }
+        }
+
+        // Heal: in combat below 40%, or out of combat below 25%
+        if state.player.potions > 0 {
+            if (in_combat && hp_pct < 0.40) || hp_pct < 0.25 {
+                game::use_potion(state);
+                potions_used += 1;
+                do_monster_turn(state);
+                if state.player.hp < lowest_hp { lowest_hp = state.player.hp; }
+                track_combat(&state, &alive_before, &mut kills, &mut damage_dealt);
+                let hp_after = state.player.hp;
+                if hp_after < hp_before { damage_taken += hp_before - hp_after; }
+                continue;
+            }
+        }
+
+        // Bomb: 3+ monsters in range, or fighting boss and boss is nearby
+        if state.player.bombs > 0 {
+            let nearby_count = state.level.monsters.iter()
+                .filter(|m| m.is_alive())
+                .filter(|m| {
+                    if m.is_boss {
+                        m.boss_body.iter().any(|&(bx, by)| (bx-px).abs() <= 3 && (by-py).abs() <= 3)
+                    } else {
+                        (m.x-px).abs() <= 3 && (m.y-py).abs() <= 3
+                    }
+                })
+                .count();
+            if nearby_count >= 3 || (phase == BotPhase::Boss && nearby_count >= 1) {
+                game::use_bomb(state);
+                bombs_used += 1;
+                do_monster_turn(state);
+                if state.player.hp < lowest_hp { lowest_hp = state.player.hp; }
+                track_combat(&state, &alive_before, &mut kills, &mut damage_dealt);
+                let hp_after = state.player.hp;
+                if hp_after < hp_before { damage_taken += hp_before - hp_after; }
+                continue;
+            }
+        }
+
+        // Speed potion: boss is near and we're in boss phase
+        if state.player.speed_potions > 0 && phase == BotPhase::Boss {
+            let boss_near = state.level.monsters.iter().any(|m| {
+                m.is_boss && m.is_alive()
+                    && m.boss_body.iter().any(|&(bx, by)| (bx-px).abs() <= 3 && (by-py).abs() <= 3)
+            });
+            if boss_near {
+                game::use_speed_potion(state);
+                speed_potions_used += 1;
+                // No monster turn (speed potion freezes them)
+                continue;
+            }
+        }
+
+        // ── Movement decision ──
+        let target = if stuck_turns >= 8 {
+            // Random walk to unstick
+            stuck_turns = 0;
+            None
+        } else {
+            match phase {
+                BotPhase::Explore => pick_explore_target(state, &mon_tiles),
+                BotPhase::Collect => pick_collect_target(state, &mon_tiles),
+                BotPhase::Clear => pick_clear_target(state, &mon_tiles),
+                BotPhase::Boss => pick_boss_target(state),
+            }
+        };
+
+        if let Some(target_pos) = target {
+            // Path: avoid monsters during Explore/Collect, walk through during Clear/Boss
+            let path = match phase {
+                BotPhase::Explore | BotPhase::Collect => {
+                    path_to(&state.level, (px, py), target_pos, &mon_tiles, has_keys)
+                }
+                BotPhase::Clear | BotPhase::Boss => {
+                    astar(&state.level, (px, py), target_pos, &HashSet::new(), has_keys)
+                }
+            };
+
+            if let Some(path) = path {
+                if path.len() >= 2 {
+                    let next = path[1];
+                    game::try_move(state, next.0 - px, next.1 - py);
+                    do_monster_turn(state);
+                }
+            } else {
+                // Can't reach target, try direct move
+                let dx = (target_pos.0 - px).signum();
+                let dy = (target_pos.1 - py).signum();
+                if dx != 0 || dy != 0 {
+                    let (mx, my) = if (target_pos.0 - px).abs() >= (target_pos.1 - py).abs() { (dx, 0) } else { (0, dy) };
+                    game::try_move(state, mx, my);
+                    do_monster_turn(state);
+                }
+            }
+        } else {
+            // Random walk
+            use rand::seq::SliceRandom;
+            let mut rng = rand::thread_rng();
+            let dirs: [(i32,i32); 4] = [(0,-1),(0,1),(-1,0),(1,0)];
+            let safe: Vec<(i32,i32)> = dirs.iter().filter(|&&(dx,dy)| {
+                let nx = px + dx;
+                let ny = py + dy;
+                nx >= 0 && ny >= 0 && nx < state.level.width && ny < state.level.height && {
+                    let tile = &state.level.tiles[ny as usize][nx as usize];
+                    state.level.tile_defs.get(tile).map_or(false, |t| t.walkable && t.damage == 0)
+                }
+            }).copied().collect();
+            if let Some(&(dx, dy)) = safe.choose(&mut rng) {
+                game::try_move(state, dx, dy);
+                do_monster_turn(state);
+            }
+        }
+
+        // ── Track stats ──
+        let hp_after = state.player.hp;
+        if hp_after < hp_before { damage_taken += hp_before - hp_after; }
+        if state.player.hp < lowest_hp && state.player.hp > 0 { lowest_hp = state.player.hp; }
+        track_combat(&state, &alive_before, &mut kills, &mut damage_dealt);
+    }
+
+    let cause_of_death = if state.game_over {
+        if state.player.hp <= 0 { lowest_hp = 0; }
+        state.log.iter().rev()
+            .find(|e| e.text.contains("died"))
+            .map(|e| e.text.clone())
+            .or(Some("killed in combat".into()))
+    } else if !state.victory {
+        Some(format!("timeout after {} turns in {:?} phase", max_turns, phase))
     } else {
-        frontier.into_iter()
-            .min_by_key(|&(x, y)| (x - px).abs() + (y - py).abs())
+        None
+    };
+
+    let final_max_hp = state.player.max_hp.max(initial_max_hp);
+    let difficulty = rate_difficulty(lowest_hp, final_max_hp, potions_used, damage_taken, state.victory);
+
+    LevelResult {
+        victory: state.victory,
+        turns, kills, damage_dealt, damage_taken, potions_used, bombs_used, speed_potions_used,
+        player_level_before,
+        player_level_after: state.player.level,
+        player_hp_at_end: state.player.hp,
+        lowest_hp,
+        cause_of_death,
+        level_title, boss_name, boss_hp, monster_count,
+        difficulty,
     }
 }
 
-fn execute_action(state: &mut GameState, action: &Action) {
-    match action {
-        Action::Move(dx, dy) => {
-            game::try_move(state, *dx, *dy);
-        }
-        Action::UsePotion => { game::use_potion(state); }
-        Action::UseBomb => { game::use_bomb(state); }
-        Action::UseSpeedPotion => { game::use_speed_potion(state); }
-        Action::Wait => {}
+fn do_monster_turn(state: &mut GameState) {
+    if state.game_over || state.victory { return; }
+    if state.player.speed_turns > 0 {
+        state.player.speed_turns -= 1;
+    } else {
+        game::monster_turns(state);
     }
+}
 
-    // Monster turns (unless frozen)
-    if !state.game_over && !state.victory {
-        if state.player.speed_turns > 0 {
-            state.player.speed_turns -= 1;
-        } else {
-            game::monster_turns(state);
+fn track_combat(state: &GameState, alive_before: &HashMap<String, i32>, kills: &mut i32, damage_dealt: &mut i32) {
+    for m in &state.level.monsters {
+        if let Some(&old_hp) = alive_before.get(&m.id) {
+            if m.hp < old_hp { *damage_dealt += old_hp - m.hp; }
+            if old_hp > 0 && m.hp <= 0 { *kills += 1; }
         }
     }
 }
@@ -599,6 +602,9 @@ struct PlayerSnapshot {
     speed_potions: i32,
     xp: i32,
     xp_to_next: i32,
+    potion_cap: i32,
+    antidotes: i32,
+    scout_maps: i32,
 }
 
 impl From<&Player> for PlayerSnapshot {
@@ -606,7 +612,8 @@ impl From<&Player> for PlayerSnapshot {
         Self {
             level: p.level, max_hp: p.max_hp, attack: p.attack, defense: p.defense,
             gold: p.gold, potions: p.potions, bombs: p.bombs, speed_potions: p.speed_potions,
-            xp: p.xp, xp_to_next: p.xp_to_next,
+            xp: p.xp, xp_to_next: p.xp_to_next, potion_cap: p.potion_cap,
+            antidotes: p.antidotes, scout_maps: p.scout_maps,
         }
     }
 }
@@ -623,6 +630,9 @@ fn apply_snapshot(player: &mut Player, snap: &PlayerSnapshot) {
     player.speed_potions = snap.speed_potions;
     player.xp = snap.xp;
     player.xp_to_next = snap.xp_to_next;
+    player.potion_cap = snap.potion_cap;
+    player.antidotes = snap.antidotes;
+    player.scout_maps = snap.scout_maps;
 }
 
 /// Store buy instructions: list of (item_type, quantity) to purchase.
@@ -645,7 +655,7 @@ fn simulate_campaign_with_store(
     strategy: Strategy,
     buy_plan: &StoreBuyPlan,
 ) -> CampaignResult {
-    let ow = match gen::build_overworld_from_result(campaign.overworld.clone()) {
+    let mut ow = match gen::build_overworld_from_result(campaign.overworld.clone()) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("[sim] Failed to build overworld: {}", e);
@@ -661,6 +671,7 @@ fn simulate_campaign_with_store(
             };
         }
     };
+    ow.scale_store_prices(campaign_idx as i32);
 
     let mut state = GameState::new();
     apply_snapshot(&mut state.player, player_snapshot);
@@ -682,10 +693,24 @@ fn simulate_campaign_with_store(
                 if state.player.gold >= slot.price {
                     state.player.gold -= slot.price;
                     slot.stock -= 1;
+                    let val = slot.value;
                     match item_type.as_str() {
-                        "potion" => state.player.potions += 1,
+                        "potion" => state.player.potions = (state.player.potions + 1).min(state.player.potion_cap),
                         "speed_potion" => state.player.speed_potions += 1,
                         "bomb" => state.player.bombs += 1,
+                        "max_hp" => {
+                            state.player.max_hp += val;
+                            state.player.hp += val;
+                        }
+                        "potion_cap" => {
+                            state.player.potion_cap = (state.player.potion_cap + val).min(30);
+                        }
+                        "scout_map" => {
+                            state.player.scout_maps += 1;
+                        }
+                        "antidote" => {
+                            state.player.antidotes = (state.player.antidotes + 1).min(3);
+                        }
                         _ => {}
                     }
                     store_purchases.push(format!("{} for {}g", slot.name, slot.price));
@@ -740,7 +765,19 @@ fn simulate_campaign_with_store(
         state.game_over = false;
         state.victory = false;
         state.log.clear();
-        game::reveal_around(&mut state.level, state.player.x, state.player.y, state.vision_radius);
+        // Auto-use scout map on level entry
+        if state.player.scout_maps > 0 {
+            game::use_scout_map(&mut state);
+        } else {
+            game::reveal_around(&mut state.level, state.player.x, state.player.y, state.vision_radius);
+        }
+        // Auto-use antidote if level has damage tiles
+        if state.player.antidotes > 0 {
+            let has_damage = state.level.tile_defs.values().any(|t| t.damage > 0);
+            if has_damage {
+                game::use_antidote(&mut state);
+            }
+        }
 
         // Play the level
         let result = play_level(&mut state, strategy);
@@ -752,11 +789,7 @@ fn simulate_campaign_with_store(
             break;
         }
 
-        // Between-level transition
-        state.player.weapon = "Fists".into();
-        state.player.weapon_damage = 0;
-        state.player.armor = "None".into();
-        state.player.armor_defense = 0;
+        // Between-level transition: keep everything, restore HP
         state.player.hp = state.player.max_hp;
         state.player.speed_turns = 0;
         state.victory = false;
@@ -811,12 +844,15 @@ fn campaign_result_to_json(r: &CampaignResult) -> Value {
     let levels: Vec<Value> = r.levels.iter().map(|l| json!({
         "title": l.level_title,
         "victory": l.victory,
+        "difficulty": l.difficulty,
         "turns": l.turns,
         "kills": l.kills,
         "damage_dealt": l.damage_dealt,
         "damage_taken": l.damage_taken,
         "potions_used": l.potions_used,
         "bombs_used": l.bombs_used,
+        "speed_potions_used": l.speed_potions_used,
+        "lowest_hp": l.lowest_hp,
         "player_level_before": l.player_level_before,
         "player_level_after": l.player_level_after,
         "hp_at_end": l.player_hp_at_end,
@@ -847,6 +883,9 @@ fn campaign_result_to_json(r: &CampaignResult) -> Value {
             "potions": r.player_at_end.potions,
             "bombs": r.player_at_end.bombs,
             "speed_potions": r.player_at_end.speed_potions,
+            "potion_cap": r.player_at_end.potion_cap,
+            "antidotes": r.player_at_end.antidotes,
+            "scout_maps": r.player_at_end.scout_maps,
         },
         "store_available": r.store_available.iter().map(|(n, p, s)| json!({"name": n, "price": p, "stock": s})).collect::<Vec<_>>(),
         "store_purchases": r.store_purchases,
@@ -921,7 +960,14 @@ fn tool_definitions() -> Value {
                     "player_speed_potions": { "type": "integer", "description": "Speed potions" },
                     "buy_potions": { "type": "integer", "description": "Number of healing potions to buy from store (default 0)" },
                     "buy_bombs": { "type": "integer", "description": "Number of bombs to buy from store (default 0)" },
-                    "buy_speed_potions": { "type": "integer", "description": "Number of speed potions to buy from store (default 0)" }
+                    "buy_speed_potions": { "type": "integer", "description": "Number of speed potions to buy from store (default 0)" },
+                    "buy_potion_cap": { "type": "boolean", "description": "Buy a Potion Pouch (+5 potion capacity, 150g scaled by tier)" },
+                    "buy_max_hp": { "type": "boolean", "description": "Buy a Vitality Charm (+15 max HP, 100g scaled by tier)" },
+                    "buy_antidotes": { "type": "integer", "description": "Number of antidotes to buy (max 3, 50g each scaled by tier)" },
+                    "buy_scout_maps": { "type": "integer", "description": "Number of scout maps to buy (max 2, 75g each scaled by tier)" },
+                    "player_potion_cap": { "type": "integer", "description": "Current potion capacity (default 10)" },
+                    "player_antidotes": { "type": "integer", "description": "Current antidotes (default 0)" },
+                    "player_scout_maps": { "type": "integer", "description": "Current scout maps (default 0)" }
                 },
                 "required": ["campaign_index"]
             }
@@ -978,7 +1024,7 @@ fn make_player_snapshot(level: i32, gold: i32, potions: i32) -> PlayerSnapshot {
         p.max_hp += 5;
         p.attack += 1;
         p.defense += 1;
-        p.xp_to_next = (p.xp_to_next as f64 * 1.12) as i32;
+        p.xp_to_next = (p.xp_to_next as f64 * 1.25) as i32;
     }
     p.level = level;
     p.hp = p.max_hp;
@@ -1032,17 +1078,32 @@ fn handle_tool(session: &Session, name: &str, args: &Value) -> Result<Value, Str
             let bombs = args["player_bombs"].as_i64().unwrap_or(0) as i32;
             let speed_potions = args["player_speed_potions"].as_i64().unwrap_or(0) as i32;
 
+            let potion_cap = args["player_potion_cap"].as_i64().unwrap_or(10) as i32;
+            let antidotes = args["player_antidotes"].as_i64().unwrap_or(0) as i32;
+            let scout_maps = args["player_scout_maps"].as_i64().unwrap_or(0) as i32;
+
             let mut snap = make_player_snapshot(level, gold, potions);
             snap.bombs = bombs;
             snap.speed_potions = speed_potions;
+            snap.potion_cap = potion_cap;
+            snap.antidotes = antidotes;
+            snap.scout_maps = scout_maps;
 
             let mut buy_plan: StoreBuyPlan = vec![];
             let bp = args["buy_potions"].as_i64().unwrap_or(0) as i32;
             let bb = args["buy_bombs"].as_i64().unwrap_or(0) as i32;
             let bs = args["buy_speed_potions"].as_i64().unwrap_or(0) as i32;
+            let bpc = args["buy_potion_cap"].as_bool().unwrap_or(false);
+            let bmh = args["buy_max_hp"].as_bool().unwrap_or(false);
+            let ba = args["buy_antidotes"].as_i64().unwrap_or(0) as i32;
+            let bsm = args["buy_scout_maps"].as_i64().unwrap_or(0) as i32;
             if bp > 0 { buy_plan.push(("potion".into(), bp)); }
             if bb > 0 { buy_plan.push(("bomb".into(), bb)); }
             if bs > 0 { buy_plan.push(("speed_potion".into(), bs)); }
+            if bpc { buy_plan.push(("potion_cap".into(), 1)); }
+            if bmh { buy_plan.push(("max_hp".into(), 1)); }
+            if ba > 0 { buy_plan.push(("antidote".into(), ba)); }
+            if bsm > 0 { buy_plan.push(("scout_map".into(), bsm)); }
 
             let result = simulate_campaign_with_store(&session.campaigns[idx], idx, &snap, strategy, &buy_plan);
             Ok(campaign_result_to_json(&result))
@@ -1116,7 +1177,7 @@ fn handle_tool(session: &Session, name: &str, args: &Value) -> Result<Value, Str
                 let node = ow.nodes.iter().filter(|n| n.node_type == game::NodeType::Level).nth(i);
                 let budget = node.map(|n| n.budget).unwrap_or(0);
                 let floor = i as i32 + 1;
-                let tier_scale = 1.0 + idx as f32 * 0.15;
+                let tier_scale = 1.0 + idx as f32 * 0.25;
                 let scaled_budget = (budget as f32 * tier_scale).round() as i32;
 
                 let hp_per_point = 2.0 + floor as f32 * 0.7;
@@ -1161,7 +1222,7 @@ fn handle_tool(session: &Session, name: &str, args: &Value) -> Result<Value, Str
                     "attack": player_snap.attack,
                     "defense": player_snap.defense,
                 },
-                "tier_scale": 1.0 + idx as f32 * 0.15,
+                "tier_scale": 1.0 + idx as f32 * 0.25,
                 "levels": levels,
             }))
         }

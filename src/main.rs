@@ -12,6 +12,26 @@ use std::sync::mpsc;
 
 const TILE: f32 = 24.0;
 
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut buf = Vec::with_capacity(input.len() * 3 / 4);
+    let mut accum: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in input.as_bytes() {
+        let val = if b == b'=' { break; }
+            else if let Some(pos) = TABLE.iter().position(|&c| c == b) { pos as u32 }
+            else { continue };
+        accum = (accum << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            buf.push((accum >> bits) as u8);
+            accum &= (1 << bits) - 1;
+        }
+    }
+    Some(buf)
+}
+
 // Entity colors — used in game rendering AND overworld particles
 const COLOR_BOSS: &str = "#e64545";
 const COLOR_MONSTER: &str = "#cc5500";
@@ -294,6 +314,65 @@ fn save_completion(player: &game::Player, campaign_id: &str) {
     }
 }
 
+// ── Persistent player save (carries across campaigns) ──
+
+fn player_save_path() -> std::path::PathBuf {
+    config_dir().join("player_save.json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct PlayerSave {
+    level: i32,
+    xp: i32,
+    xp_to_next: i32,
+    max_hp: i32,
+    attack: i32,
+    defense: i32,
+    gold: i32,
+    potions: i32,
+    bombs: i32,
+    speed_potions: i32,
+}
+
+fn save_player(player: &game::Player) {
+    let save = PlayerSave {
+        level: player.level,
+        xp: player.xp,
+        xp_to_next: player.xp_to_next,
+        max_hp: player.max_hp,
+        attack: player.attack,
+        defense: player.defense,
+        gold: player.gold,
+        potions: player.potions,
+        bombs: player.bombs,
+        speed_potions: player.speed_potions,
+    };
+    let _ = std::fs::create_dir_all(config_dir());
+    if let Ok(json) = serde_json::to_string(&save) {
+        let _ = std::fs::write(player_save_path(), json);
+        eprintln!("Player save written: level {}, {} gold, {} potions", save.level, save.gold, save.potions);
+    }
+}
+
+fn load_player_save() -> Option<PlayerSave> {
+    let content = std::fs::read_to_string(player_save_path()).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn apply_player_save(player: &mut game::Player, save: &PlayerSave) {
+    player.level = save.level;
+    player.xp = save.xp;
+    player.xp_to_next = save.xp_to_next;
+    player.max_hp = save.max_hp;
+    player.hp = save.max_hp;
+    player.attack = save.attack;
+    player.defense = save.defense;
+    player.gold = save.gold;
+    player.potions = save.potions;
+    player.bombs = save.bombs;
+    player.speed_potions = save.speed_potions;
+}
+
 fn save_config(value: &str) {
     let dir = config_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -411,13 +490,16 @@ async fn main() {
     let mut loading_tiles: usize = 0;
     let mut confetti: Vec<Confetti> = vec![];
     let mut title_font: Option<Font> = None;
+    let mut tile_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
     let mut overworld_font: Option<Font> = None;
     let mut desc_font: Option<Font> = None;
     let mut label_font: Option<Font> = None;
 
     // Overworld state
     let mut current_campaign_id: Option<String> = None;
+    let mut current_campaign_idx: usize = 0;
     let mut current_campaign_settings = gen::CampaignSettings::default();
+    let mut current_campaign_monsters: Option<Vec<gen::MonsterTemplateRaw>> = None;
     let mut overworld: Option<Overworld> = None;
     let mut level_designs: Vec<Option<gen::Phase2Result>> = Vec::new();
     let mut design_token_flashes: Vec<Vec<f64>> = Vec::new(); // per-node flash times
@@ -687,6 +769,10 @@ async fn main() {
                                 } else {
                                     ghost_town = false;
                                     state = GameState::new();
+                                    if let Some(save) = load_player_save() {
+                                        apply_player_save(&mut state.player, &save);
+                                        eprintln!("Applied player save: level {}, {} gold", save.level, save.gold);
+                                    }
                                 }
 
                                 if let Some(bytes) = fetch_google_font(&ow.font) {
@@ -715,7 +801,10 @@ async fn main() {
                                 bg_gen_rx = None;
 
                                 current_campaign_id = Some(campaign.id.clone());
+                                current_campaign_idx = campaign_select_idx;
+                                ow.scale_store_prices(campaign_select_idx as i32);
                                 current_campaign_settings = campaign.settings.clone();
+                                current_campaign_monsters = campaign.monster_templates.clone();
 
                                 if !resuming && !entering_ghost && !cheat_active {
                                     save_campaign_progress(&campaign.id, &state.player, &ow);
@@ -793,6 +882,9 @@ async fn main() {
                                     eprintln!("Restored: player level {}, {}/{} HP, {} nodes completed",
                                         state.player.level, state.player.hp, state.player.max_hp,
                                         progress.completed_nodes.len());
+                                } else if let Some(psave) = load_player_save() {
+                                    apply_player_save(&mut state.player, &psave);
+                                    eprintln!("Applied player save: level {}, {} gold", psave.level, psave.gold);
                                 }
 
                                 // Load fonts
@@ -822,6 +914,8 @@ async fn main() {
                                 bg_gen_rx = None;
 
                                 current_campaign_id = Some(campaign.id.clone());
+                                current_campaign_idx = idx;
+                                ow.scale_store_prices(idx as i32);
                                 current_campaign_settings = campaign.settings.clone();
 
                                 // Save initial progress (captures connections/topology)
@@ -1201,7 +1295,7 @@ async fn main() {
                             if let Some(s) = &sfx { s.confirm(); }
                             player_snapshot = Some(state.player.clone());
                             level_snapshot = None;
-                            start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), true);
+                            start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), true, current_campaign_idx as i32, current_campaign_monsters.clone());
                             screen = Screen::GenLevel;
                             phase_text = overworld_loading_phrase();
                             phase_detail.clear();
@@ -1218,17 +1312,35 @@ async fn main() {
                             }
                             if let Some((_snap_node, lvl, start)) = &level_snapshot {
                                 state.level = lvl.clone();
+                                // Reload tile textures for this level
+                                tile_textures = std::collections::HashMap::new();
+                                for (name, def) in &state.level.tile_defs {
+                                    if let Some(b64) = &def.image {
+                                        if let Some(bytes) = decode_base64(b64) {
+                                            if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                let tex = Texture2D::from_image(&img);
+                                                tex.set_filter(FilterMode::Nearest);
+                                                tile_textures.insert(name.clone(), tex);
+                                            }
+                                        }
+                                    }
+                                }
                                 state.player.x = start[0];
                                 state.player.y = start[1];
                                 state.game_over = false;
                                 state.victory = false;
                                 state.log.clear();
-                                reveal_around(
-                                    &mut state.level,
-                                    state.player.x,
-                                    state.player.y,
-                                    state.vision_radius,
-                                );
+                                // Auto-use scout map if player has one
+                                if state.player.scout_maps > 0 {
+                                    game::use_scout_map(&mut state);
+                                } else {
+                                    reveal_around(
+                                        &mut state.level,
+                                        state.player.x,
+                                        state.player.y,
+                                        state.vision_radius,
+                                    );
+                                }
                                 state.log(&state.level.description.clone(), "#888");
                                 state.log("Your task: find and defeat the boss.", "#666");
                                 if let Some(s) = &sfx {
@@ -1238,7 +1350,7 @@ async fn main() {
                                 }
                                 screen = Screen::Playing;
                             } else {
-                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town);
+                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town, current_campaign_idx as i32, current_campaign_monsters.clone());
                                 screen = Screen::GenLevel;
                                 phase_text = overworld_loading_phrase();
                                 phase_detail.clear();
@@ -1291,18 +1403,35 @@ async fn main() {
                                     level_snapshot = Some((snap_node, level.clone(), start));
                                 }
                                 state.level = level;
+                                // Load tile textures from base64 images
+                                tile_textures = std::collections::HashMap::new();
+                                for (name, def) in &state.level.tile_defs {
+                                    if let Some(b64) = &def.image {
+                                        if let Some(bytes) = decode_base64(b64) {
+                                            if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                let tex = Texture2D::from_image(&img);
+                                                tex.set_filter(FilterMode::Nearest);
+                                                tile_textures.insert(name.clone(), tex);
+                                            }
+                                        }
+                                    }
+                                }
                                 state.player.x = start[0];
                                 state.player.y = start[1];
                                 state.game_over = false;
                                 state.victory = false;
                                 state.log.clear();
                                 if !ghost_town {
-                                    reveal_around(
-                                        &mut state.level,
-                                        state.player.x,
-                                        state.player.y,
-                                        state.vision_radius,
-                                    );
+                                    if state.player.scout_maps > 0 {
+                                        game::use_scout_map(&mut state);
+                                    } else {
+                                        reveal_around(
+                                            &mut state.level,
+                                            state.player.x,
+                                            state.player.y,
+                                            state.vision_radius,
+                                        );
+                                    }
                                 }
                                 state.log(&state.level.description.clone(), "#888");
                                 if ghost_town {
@@ -1336,7 +1465,7 @@ async fn main() {
 
                 if phase_detail == "Press ENTER to retry" && is_key_pressed(KeyCode::Enter) {
                     if let Some(ow) = &overworld {
-                        start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town);
+                        start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town, current_campaign_idx as i32, current_campaign_monsters.clone());
                         phase_text = "creating universe".into();
                         phase_detail.clear();
                     }
@@ -1362,11 +1491,11 @@ async fn main() {
                         .fold(f32::MAX, f32::min);
                     s.update_boss_drone(dist);
                 }
-                render_game(&state, &ui_font, title_font.as_ref());
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures);
             }
 
             Screen::Dead => {
-                render_game(&state, &ui_font, title_font.as_ref());
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures);
                 draw_death_overlay(&ui_font, &ui_font_bold, &state);
 
                 if is_key_pressed(KeyCode::Enter) {
@@ -1383,7 +1512,7 @@ async fn main() {
             }
 
             Screen::Victory => {
-                render_game(&state, &ui_font, title_font.as_ref());
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures);
                 update_confetti(&mut confetti);
                 draw_confetti(&confetti);
                 draw_victory_overlay(&ui_font, &ui_font_bold, &state);
@@ -1405,12 +1534,7 @@ async fn main() {
                         // Clear level snapshot (completed, no retry needed)
                         level_snapshot = None;
 
-                        // Between-level transition: keep gold, XP, level, potions
-                        // Lose weapon/armor, restore HP to max
-                        state.player.weapon = "Fists".into();
-                        state.player.weapon_damage = 0;
-                        state.player.armor = "None".into();
-                        state.player.armor_defense = 0;
+                        // Between-level transition: keep everything, restore HP
                         state.player.hp = state.player.max_hp;
                         state.player.speed_turns = 0;
                         state.victory = false;
@@ -1423,6 +1547,7 @@ async fn main() {
                             if !cheat_active {
                                 if let Some(id) = &current_campaign_id {
                                     save_completion(&state.player, id);
+                                    save_player(&state.player);
                                     mark_campaign_played(id);
                                     eprintln!("Campaign \"{}\" marked as played", ow.name);
                                 }
@@ -1458,13 +1583,29 @@ async fn main() {
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
                     if let Some(ow) = &mut overworld {
                         if let Some(item) = ow.store_stock.get_mut(store_selection) {
-                            if item.stock > 0 && state.player.gold >= item.price {
+                            let at_cap = item.item_type == "potion_cap" && state.player.potion_cap >= 30;
+                            if item.stock > 0 && state.player.gold >= item.price && !at_cap {
                                 state.player.gold -= item.price;
                                 item.stock -= 1;
                                 match item.item_type.as_str() {
-                                    "potion" => state.player.potions += 1,
+                                    "potion" => state.player.potions = (state.player.potions + 1).min(state.player.potion_cap),
                                     "speed_potion" => state.player.speed_potions += 1,
                                     "bomb" => state.player.bombs += 1,
+                                    "max_hp" => {
+                                        let v = item.value;
+                                        state.player.max_hp += v;
+                                        state.player.hp += v;
+                                    }
+                                    "potion_cap" => {
+                                        let v = item.value;
+                                        state.player.potion_cap = (state.player.potion_cap + v).min(30);
+                                    }
+                                    "scout_map" => {
+                                        state.player.scout_maps += 1;
+                                    }
+                                    "antidote" => {
+                                        state.player.antidotes = (state.player.antidotes + 1).min(3);
+                                    }
                                     _ => {}
                                 }
                                 if let Some(s) = &sfx { s.confirm(); }
@@ -1491,8 +1632,11 @@ async fn main() {
                 }
 
                 if is_key_pressed(KeyCode::Enter) {
-                    // Full reset
+                    // Full reset — preserve persistent player progression
                     state = GameState::new();
+                    if let Some(psave) = load_player_save() {
+                        apply_player_save(&mut state.player, &psave);
+                    }
                     current_campaign_id = None;
                     overworld = None;
                     level_designs.clear();
@@ -1686,6 +1830,7 @@ fn start_background_designs(
                 palette: node.palette.clone(),
                 budget: node.budget,
                 floor: node_idx as i32,
+                campaign_tier: 0,
             })
         })
         .collect();
@@ -1726,6 +1871,8 @@ fn start_level_generation(
     gen_rx: &mut Option<mpsc::Receiver<GenMsg>>,
     campaign_settings: gen::CampaignSettings,
     ghost: bool,
+    campaign_tier: i32,
+    campaign_monsters: Option<Vec<gen::MonsterTemplateRaw>>,
 ) {
     let (tx, rx) = mpsc::channel();
     *gen_rx = Some(rx);
@@ -1739,22 +1886,19 @@ fn start_level_generation(
         palette: node.palette.clone(),
         budget: node.budget,
         floor: ow.current_node as i32 + 1,
+        campaign_tier,
     };
 
     // Design index = count of Level nodes before this one (skip Start/Store)
-    let design_idx = if ghost {
-        // Ghost town: all designs loaded, count all Level nodes before this
-        ow.nodes[..node_idx].iter().filter(|n| n.node_type == NodeType::Level).count()
-    } else {
-        ow.nodes[..node_idx].iter()
-            .filter(|n| n.node_type == NodeType::Level && !n.completed)
-            .count()
-    };
+    let design_idx = ow.nodes[..node_idx].iter()
+        .filter(|n| n.node_type == NodeType::Level)
+        .count();
     if let Some(Some(design)) = designs.get(design_idx) {
         // Use pre-generated design — no LLM call needed
         let design = design.clone();
+        let cm = campaign_monsters.clone();
         std::thread::spawn(move || {
-            match gen::build_level_from_design_with_settings(&config, &design, &campaign_settings) {
+            match gen::build_level_from_design_with_settings(&config, &design, &campaign_settings, cm.as_deref()) {
                 Ok((level, start, _remaining)) => {
                     let font_bytes = fetch_google_font(&level.font);
                     let _ = tx.send(GenMsg::LevelDone(level, start, font_bytes));
@@ -3065,7 +3209,7 @@ fn draw_confetti(confetti: &[Confetti]) {
 
 // ── Game rendering ──
 
-fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
+fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, tile_textures: &std::collections::HashMap<String, Texture2D>) {
     if state.level.tiles.is_empty() {
         return;
     }
@@ -3136,7 +3280,14 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
 
             let in_vision = state.level.visible.contains(&(tx, ty));
 
-            draw_rectangle(screen_x, screen_y, TILE, TILE, hex_to_color(&def.color));
+            if let Some(tex) = tile_textures.get(tile_name) {
+                draw_texture_ex(tex, screen_x, screen_y, WHITE, DrawTextureParams {
+                    dest_size: Some(Vec2::new(TILE, TILE)),
+                    ..Default::default()
+                });
+            } else {
+                draw_rectangle(screen_x, screen_y, TILE, TILE, hex_to_color(&def.color));
+            }
 
             // Bomb scorch overlay
             if let Some(&intensity) = state.level.char_marks.get(&(tx, ty)) {
@@ -3144,7 +3295,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>) {
                 draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.05, 0.02, 0.0, alpha));
             }
 
-            if !def.char_display.is_empty() {
+            if !def.char_display.is_empty() && !tile_textures.contains_key(tile_name) {
                 let alpha = if in_vision { 0.27 } else { 0.13 };
                 let font_size = (TILE * 0.55) as u16;
                 let text = &def.char_display;

@@ -19,6 +19,8 @@ pub struct TileDef {
     pub char_display: String,
     #[serde(default)]
     pub damage: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -89,7 +91,17 @@ pub struct Player {
     pub bombs: i32,
     pub speed_potions: i32,
     pub speed_turns: i32,
+    #[serde(default = "default_potion_cap")]
+    pub potion_cap: i32,
+    #[serde(default)]
+    pub antidotes: i32,        // consumable: negates damage tile damage for 20 steps
+    #[serde(default)]
+    pub antidote_steps: i32,   // remaining immune steps (active effect)
+    #[serde(default)]
+    pub scout_maps: i32,       // consumable: reveals entire map on level entry
 }
+
+fn default_potion_cap() -> i32 { 10 }
 
 impl Default for Player {
     fn default() -> Self {
@@ -103,6 +115,8 @@ impl Default for Player {
             armor: "None".into(), armor_defense: 0,
             potions: 1, keys: 0, floor: 1, facing: -std::f32::consts::FRAC_PI_2,
             bombs: 0, speed_potions: 0, speed_turns: 0,
+            potion_cap: 10,
+            antidotes: 0, antidote_steps: 0, scout_maps: 0,
         }
     }
 }
@@ -160,6 +174,21 @@ pub struct Overworld {
     pub store_stock: Vec<StoreSlot>,
 }
 
+impl Overworld {
+    /// Scale store prices based on campaign tier so the economy stays proportional.
+    /// Permanent upgrades (max_hp, potion_cap) scale slower so they stay affordable.
+    pub fn scale_store_prices(&mut self, campaign_tier: i32) {
+        for slot in &mut self.store_stock {
+            let rate = match slot.item_type.as_str() {
+                "max_hp" | "potion_cap" => 0.2,
+                _ => 0.3,
+            };
+            let multiplier = 1.0 + campaign_tier as f32 * rate;
+            slot.price = (slot.price as f32 * multiplier).ceil() as i32;
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StoreSlot {
     pub name: String,
@@ -167,6 +196,7 @@ pub struct StoreSlot {
     pub item_type: String,
     pub price: i32,
     pub stock: i32,
+    pub value: i32, // effect magnitude (HP amount, cap increase, etc.)
 }
 
 #[derive(Clone)]
@@ -305,7 +335,7 @@ fn check_level_up(state: &mut GameState) {
         state.player.hp = state.player.max_hp;
         state.player.attack += 1;
         state.player.defense += 1;
-        state.player.xp_to_next = (state.player.xp_to_next as f64 * 1.12) as i32;
+        state.player.xp_to_next = (state.player.xp_to_next as f64 * 1.25) as i32;
         state.log(&format!("LEVEL UP! You are now level {}!", state.player.level), "#ffff44");
         state.log("  HP +5, ATK +1, DEF +1", "#ffff44");
     }
@@ -322,7 +352,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
     let xp_val = mon.xp_value;
 
     let roll: f64 = rng.gen();
-    let item = if roll < 0.75 {
+    let item = if roll < 0.90 {
         let gold = rng.gen_range(1..=xp_val.max(1));
         Item {
             id: format!("drop_{}", mon_id),
@@ -411,14 +441,19 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
         pickup_item(state, &item);
     }
 
-    // Check damage tiles (lava, acid, etc.)
+    // Check damage tiles (lava, acid, etc.) — antidote negates damage
     if let Some(td) = state.level.tile_defs.get(&state.level.tiles[ny as usize][nx as usize]) {
         if td.damage > 0 {
-            state.player.hp -= td.damage;
-            state.log(&format!("{} deals {} damage!", td.name, td.damage), "#ff6644");
-            if state.player.hp <= 0 {
-                state.log("You have died.", "#ff0000");
-                state.game_over = true;
+            if state.player.antidote_steps > 0 {
+                state.player.antidote_steps -= 1;
+                state.log(&format!("Antidote protects you from {}! ({} steps left)", td.name, state.player.antidote_steps), "#44ddaa");
+            } else {
+                state.player.hp -= td.damage;
+                state.log(&format!("{} deals {} damage!", td.name, td.damage), "#ff6644");
+                if state.player.hp <= 0 {
+                    state.log("You have died.", "#ff0000");
+                    state.game_over = true;
+                }
             }
         }
     }
@@ -456,22 +491,37 @@ fn pickup_item(state: &mut GameState, item: &Item) {
             state.log(&format!("Picked up {} gold.", item.value), "#ffd700");
         }
         "potion" => {
-            state.player.potions += 1;
-            state.log(&format!("Picked up {}.", item.name), "#44ff44");
+            let cap = state.player.potion_cap;
+            if state.player.potions >= cap {
+                let gold = 3;
+                state.player.gold += gold;
+                state.log(&format!("Potions full! Sold {} for {}g.", item.name, gold), "#ffd700");
+            } else {
+                state.player.potions += 1;
+                state.log(&format!("Picked up {}. ({}/{})", item.name, state.player.potions, cap), "#44ff44");
+            }
         }
         "key" => {
             state.player.keys += 1;
             state.log("Picked up a key! 🔑", "#ffd700");
         }
         "weapon" => {
-            state.log(&format!("Equipped {}! (ATK +{})", item.name, item.value), "#ff8844");
-            state.player.weapon = item.name.clone();
-            state.player.weapon_damage = item.value;
+            if item.value > state.player.weapon_damage {
+                state.log(&format!("Equipped {}! (ATK +{})", item.name, item.value), "#ff8844");
+                state.player.weapon = item.name.clone();
+                state.player.weapon_damage = item.value;
+            } else {
+                state.log(&format!("Found {} (ATK +{}) — kept {}.", item.name, item.value, state.player.weapon), "#888");
+            }
         }
         "armor" => {
-            state.log(&format!("Equipped {}! (DEF +{})", item.name, item.value), "#4488ff");
-            state.player.armor = item.name.clone();
-            state.player.armor_defense = item.value;
+            if item.value > state.player.armor_defense {
+                state.log(&format!("Equipped {}! (DEF +{})", item.name, item.value), "#4488ff");
+                state.player.armor = item.name.clone();
+                state.player.armor_defense = item.value;
+            } else {
+                state.log(&format!("Found {} (DEF +{}) — kept {}.", item.name, item.value, state.player.armor), "#888");
+            }
         }
         _ => {}
     }
@@ -576,6 +626,30 @@ pub fn use_bomb(state: &mut GameState) -> bool {
         state.log("  ...but nothing was in range.", "#888");
     }
     state.log(&format!("({} bombs left)", state.player.bombs), "#888");
+    true
+}
+
+pub fn use_antidote(state: &mut GameState) -> bool {
+    if state.player.antidotes <= 0 {
+        state.log("No antidotes!", "#888");
+        return false;
+    }
+    state.player.antidotes -= 1;
+    state.player.antidote_steps = i32::MAX / 2; // lasts the whole level
+    state.log(&format!("You drink an antidote! Immune to hazards this level. ({} left)", state.player.antidotes), "#44ddaa");
+    true
+}
+
+/// Consume a scout map: reveal the entire level.
+pub fn use_scout_map(state: &mut GameState) -> bool {
+    if state.player.scout_maps <= 0 { return false; }
+    state.player.scout_maps -= 1;
+    for y in 0..state.level.height {
+        for x in 0..state.level.width {
+            state.level.revealed.insert((x, y));
+        }
+    }
+    state.log(&format!("Scout map reveals the entire level! ({} left)", state.player.scout_maps), "#ffd700");
     true
 }
 
