@@ -709,6 +709,11 @@ fn main() {
                                 name: String::new(), font: None, description_font: None,
                                 label_font: None, description: String::new(),
                                 bg_color: None, text_color: None, levels: vec![], store: None,
+                                boss_level: None,
+                                connections: None,
+                                node_positions: None,
+                                bg_image: None,
+                                bg_gradient: None,
                             };
                         }
                         eprint!("[{}/{}] Retrying overworld... ", campaign_idx + 1, count);
@@ -734,6 +739,7 @@ fn main() {
                     palette: lv.palette.clone().unwrap_or_default(),
                     budget: lv.budget,
                     floor: li as i32 + 1,
+                    campaign_tier: 0,
                 };
 
                 eprint!("  Level {}/{}: \"{}\" ... ", li + 1, overworld.levels.len(), lv.name);
@@ -814,7 +820,7 @@ fn main() {
             });
 
             // Store campaign
-            let campaign = BundledCampaign { id: uuid_v4(), overworld, designs, quality, settings: CampaignSettings::default() };
+            let campaign = BundledCampaign { id: uuid_v4(), overworld, designs, quality, settings: CampaignSettings::default(), monster_templates: None };
             all_campaigns.push(campaign);
             campaign_ok = true;
             break;

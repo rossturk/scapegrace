@@ -11,6 +11,7 @@ pub struct Room {
     pub cy: i32,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MapGenResult {
     pub tiles: Vec<Vec<String>>,
     pub player_start: [i32; 2],
@@ -333,7 +334,7 @@ fn find_lock_position(
 ) -> Option<(i32, i32)> {
     let mut blocked_defs = tile_def_map.clone();
     blocked_defs.insert("__blocked__".into(), crate::game::TileDef {
-        name: "__blocked__".into(), color: "#000".into(), walkable: false, char_display: String::new(), damage: 0,
+        name: "__blocked__".into(), color: "#000".into(), walkable: false, char_display: String::new(), damage: 0, image: None,
     });
 
     let is_walkable = |x: i32, y: i32| -> bool {
@@ -438,6 +439,7 @@ pub fn generate_map_with_options(tile_defs: &HashMap<String, TileDefRaw>, skip_l
             walkable: td.walkable,
             char_display: td.char.clone().unwrap_or_default(),
             damage: 0,
+            image: td.image.clone(),
         })
     }).collect();
 
@@ -460,7 +462,7 @@ pub fn generate_map_with_options(tile_defs: &HashMap<String, TileDefRaw>, skip_l
         // Find key position: a reachable tile on the player's side (reachable without the door)
         let mut blocked_defs = tile_def_map.clone();
         blocked_defs.insert(LOCKED_DOOR_TILE.into(), crate::game::TileDef {
-            name: LOCKED_DOOR_TILE.into(), color: "#000".into(), walkable: false, char_display: String::new(), damage: 0,
+            name: LOCKED_DOOR_TILE.into(), color: "#000".into(), walkable: false, char_display: String::new(), damage: 0, image: None,
         });
         let player_side = flood_fill(&grid, &blocked_defs, player_start[0], player_start[1], width, height);
 

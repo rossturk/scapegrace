@@ -49,6 +49,8 @@ pub struct Monster {
     pub boss_flee_budget: i32,       // flee turns remaining (resets after cooldown)
     #[serde(default)]
     pub boss_flee_cooldown: i32,     // when >0, boss can't flee and must fight
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 impl Monster {
@@ -66,6 +68,8 @@ pub struct Item {
     pub item_type: String, // weapon, armor, potion, gold
     pub value: i32,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -157,6 +161,8 @@ pub struct Trap {
     pub damage: i32,
     pub name: String,
     pub triggered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Clone)]
@@ -172,6 +178,8 @@ pub struct Overworld {
     pub connections: Vec<(usize, usize)>,
     pub current_node: usize,
     pub store_stock: Vec<StoreSlot>,
+    pub bg_image: Option<String>,
+    pub bg_gradient: Option<String>,
 }
 
 impl Overworld {
@@ -359,7 +367,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
             name: format!("{} Gold", gold),
             x: mx, y: my,
             item_type: "gold".into(), value: gold,
-            description: String::new(),
+            description: String::new(), image: None,
         }
     } else {
         Item {
@@ -367,7 +375,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
             name: "Health Potion".into(),
             x: mx, y: my,
             item_type: "potion".into(), value: 0,
-            description: String::new(),
+            description: String::new(), image: None,
         }
     };
 

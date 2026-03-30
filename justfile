@@ -8,6 +8,10 @@ build: dmg appimage
 run:
     cargo run --release
 
+# Run the level builder
+builder:
+    cargo run --bin level_builder
+
 # Build macOS .app bundle
 app:
     cargo bundle --release

@@ -62,6 +62,9 @@ pub struct PlacedEntities {
     pub items: Vec<PlacedItem>,
     #[serde(default)]
     pub traps: Vec<PlacedTrap>,
+    /// Designer-placed boss position. Overrides prebuilt_map.boss_position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boss: Option<[i32; 2]>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -105,6 +108,8 @@ pub struct MonsterRaw {
     pub defense: Option<i32>,
     pub xp_value: Option<i32>,
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -118,12 +123,16 @@ pub struct MonsterTemplateRaw {
     pub defense: Option<i32>,
     pub xp_value: Option<i32>,
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ItemTemplateRaw {
     pub name: String,
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -133,6 +142,8 @@ pub struct TrapRaw {
     pub y: Option<i32>,
     pub damage: Option<i32>,
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for TrapRaw {
@@ -145,15 +156,17 @@ impl<'de> Deserialize<'de> for TrapRaw {
                 write!(f, "a trap object or a trap name string")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<TrapRaw, E> {
-                Ok(TrapRaw { x: None, y: None, damage: None, name: Some(v.to_string()) })
+                Ok(TrapRaw { x: None, y: None, damage: None, name: Some(v.to_string()), image: None })
             }
             fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<TrapRaw, M::Error> {
                 #[derive(Deserialize)]
                 struct TrapObj {
                     x: Option<i32>, y: Option<i32>, damage: Option<i32>, name: Option<String>,
+                    #[serde(default)]
+                    image: Option<String>,
                 }
                 let obj = TrapObj::deserialize(de::value::MapAccessDeserializer::new(map))?;
-                Ok(TrapRaw { x: obj.x, y: obj.y, damage: obj.damage, name: obj.name })
+                Ok(TrapRaw { x: obj.x, y: obj.y, damage: obj.damage, name: obj.name, image: obj.image })
             }
         }
         deserializer.deserialize_any(TrapVisitor)
@@ -190,6 +203,15 @@ pub struct OverworldResult {
     /// Explicit DAG edges as [from_node_id, to_node_id] pairs (e.g. ["start","level_0"], ["level_0","level_1"], ["level_2","store"])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connections: Option<Vec<[String; 2]>>,
+    /// DAG node positions for the level builder (node_id → {x, y})
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_positions: Option<serde_json::Value>,
+    /// Background image (base64) for overworld
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg_image: Option<String>,
+    /// CSS gradient string for overworld background
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg_gradient: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -284,6 +306,12 @@ pub struct BundledPack {
     pub campaigns: Vec<BundledCampaign>,
     #[serde(default)]
     pub strings: PackStrings,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub item_sprites: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub item_names: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub item_descriptions: std::collections::HashMap<String, String>,
 }
 
 /// UI strings that change with the theme/setting.
@@ -349,6 +377,16 @@ const EMBEDDED_CAMPAIGNS: &str = include_str!("../campaigns.json");
 /// 4. campaigns.json in macOS Resources bundle
 /// 5. campaigns.json in cwd
 pub fn load_bundled_pack() -> Option<BundledPack> {
+    // Env var overrides everything — load full pack from file
+    if let Ok(path) = std::env::var("SCAPEGRACE_CAMPAIGNS") {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(pack) = serde_json::from_str::<BundledPack>(&content) {
+                eprintln!("Loaded full pack from {} (env override): {} campaigns", path, pack.campaigns.len());
+                return Some(pack);
+            }
+        }
+    }
+
     let campaigns = load_bundled_campaigns();
     if campaigns.is_empty() { return None; }
 
@@ -359,7 +397,7 @@ pub fn load_bundled_pack() -> Option<BundledPack> {
         }
     }
 
-    Some(BundledPack { theme: None, campaigns, strings: PackStrings::default() })
+    Some(BundledPack { theme: None, campaigns, strings: PackStrings::default(), item_sprites: Default::default(), item_names: Default::default(), item_descriptions: Default::default() })
 }
 
 fn load_bundled_campaigns() -> Vec<BundledCampaign> {
@@ -629,6 +667,55 @@ pub fn expand_tile_defs(slim: &[TileDefSlim], palette: &[String]) -> HashMap<Str
 /// Main path follows a gentle sine wave, branch drops below the branch point.
 /// `main_path_len` is passed from generate_overworld so layout knows exactly which
 /// indices are on the main path (0..main_path_len) vs branch (main_path_len..).
+/// Apply saved node positions from the builder. Converts pixel coords to normalized 0-1.
+fn apply_saved_positions(ow: &mut crate::game::Overworld, positions: &serde_json::Value) {
+    let pos_map = match positions.as_object() {
+        Some(m) => m,
+        None => return,
+    };
+    // Find bounding box of all positions to normalize
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for (_key, val) in pos_map {
+        if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
+            min_x = min_x.min(x as f32);
+            min_y = min_y.min(y as f32);
+            max_x = max_x.max(x as f32 + 120.0);
+            max_y = max_y.max(y as f32 + 50.0);
+        }
+    }
+    let w = (max_x - min_x).max(1.0);
+    let h = (max_y - min_y).max(1.0);
+    // Add padding
+    let pad = 0.05;
+
+    // Build key list first to avoid borrow issues
+    let keys: Vec<String> = {
+        let mut level_count = 0usize;
+        ow.nodes.iter().map(|node| {
+            match node.node_type {
+                crate::game::NodeType::Start => "start".to_string(),
+                crate::game::NodeType::Store => "store".to_string(),
+                crate::game::NodeType::Level => {
+                    let key = format!("level_{}", level_count);
+                    level_count += 1;
+                    key
+                }
+            }
+        }).collect()
+    };
+    for (i, node) in ow.nodes.iter_mut().enumerate() {
+        if let Some(val) = pos_map.get(&keys[i]) {
+            if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
+                node.x = pad + ((x as f32 - min_x) / w) * (1.0 - pad * 2.0);
+                node.y = pad + ((y as f32 - min_y) / h) * (1.0 - pad * 2.0);
+            }
+        }
+    }
+}
+
 fn layout_overworld(ow: &mut crate::game::Overworld, main_path_len: usize) {
     use rand::Rng;
     let mut rng = rand::thread_rng();
@@ -898,9 +985,16 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
         current_node: 0,
         nodes,
         store_stock,
+        bg_image: result.bg_image.clone(),
+        bg_gradient: result.bg_gradient.clone(),
     };
 
-    layout_overworld(&mut overworld, main_path_end);
+    // Use saved positions from the builder if available, otherwise random layout
+    if let Some(positions) = &result.node_positions {
+        apply_saved_positions(&mut overworld, positions);
+    } else {
+        layout_overworld(&mut overworld, main_path_end);
+    }
 
     Ok(overworld)
 }
@@ -1202,8 +1296,16 @@ fn assemble_level_with_settings(
     let reachable_vec: Vec<(i32, i32)> = full_reachable.iter().copied().collect();
 
     // Boss position
-    let bx = map.boss_position[0];
-    let by = map.boss_position[1];
+    // Use designer-placed boss position if available, else map default
+    let (bx, by) = if let Some(placed) = &p2.placed_entities {
+        if let Some([px, py]) = placed.boss {
+            (px, py)
+        } else {
+            (map.boss_position[0], map.boss_position[1])
+        }
+    } else {
+        (map.boss_position[0], map.boss_position[1])
+    };
 
     use rand::Rng;
     let mut rng = rand::thread_rng();
@@ -1226,6 +1328,15 @@ fn assemble_level_with_settings(
         let boss_def = def_scale;
         let boss_xp = boss_cost + floor * 5;
 
+        // Helper: find monster template image by name
+        let find_image = |name: &str| -> Option<String> {
+            if let Some(cm) = campaign_monsters {
+                cm.iter().find(|t| t.name == name).and_then(|t| t.image.clone())
+            } else {
+                p2.monster_types.iter().find(|t| t.name == name).and_then(|t| t.image.clone())
+            }
+        };
+
         let mut mons = vec![Monster {
             id: format!("boss_{}", floor),
             name: p2.boss.name.clone(),
@@ -1239,13 +1350,15 @@ fn assemble_level_with_settings(
             boss_attacked_this_turn: false,
             boss_body: vec![(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)],
             boss_flee_budget: 0, boss_flee_cooldown: 0,
+            image: p2.boss.image.clone(),
         }];
 
         let mon_count = placed.monsters.len().max(1) as i32;
-        let mon_budget_each = (budget - boss_cost) / (mon_count + 2); // leave room for gold
+        let mon_budget_each = (budget - boss_cost) / (mon_count + 2);
         for (i, pm) in placed.monsters.iter().enumerate() {
             let mon_cost = mon_budget_each.max(5);
             let mon_hp = (mon_cost as f32 * (0.8 + floor as f32 * 0.15)).round() as i32;
+            let img = find_image(&pm.name);
             mons.push(Monster {
                 id: format!("m_{}_{}", floor, i),
                 name: pm.name.clone(),
@@ -1258,6 +1371,7 @@ fn assemble_level_with_settings(
                 boss_enraged_turns: 0, boss_has_seen_player: false,
                 boss_attacked_this_turn: false, boss_body: vec![],
                 boss_flee_budget: 0, boss_flee_cooldown: 0,
+                image: img,
             });
         }
         monsters = mons;
@@ -1270,6 +1384,12 @@ fn assemble_level_with_settings(
                 "gold" => rng.gen_range(5..=15) + floor * 2,
                 _ => 0,
             });
+            // Look up image from design templates
+            let item_image = match pi.item_type.as_str() {
+                "weapon" => p2.weapon.image.clone(),
+                "armor" => p2.armor.image.clone(),
+                _ => None,
+            };
             itms.push(Item {
                 id: format!("pi_{}_{}", floor, i),
                 name: pi.name.clone(),
@@ -1277,6 +1397,7 @@ fn assemble_level_with_settings(
                 item_type: pi.item_type.clone(),
                 value,
                 description: String::new(),
+                image: item_image,
             });
         }
         items = itms;
@@ -1284,11 +1405,16 @@ fn assemble_level_with_settings(
         let mut trp: Vec<Trap> = Vec::new();
         if traps_enabled {
             for pt in &placed.traps {
+                // Look up trap image from design templates
+                let trap_image = p2.traps.as_ref().and_then(|traps|
+                    traps.iter().find(|t| t.name.as_deref() == Some(&pt.name)).and_then(|t| t.image.clone())
+                );
                 trp.push(Trap {
                     x: pt.x, y: pt.y,
                     damage: 3 + floor,
                     name: pt.name.clone(),
                     triggered: false,
+                    image: trap_image,
                 });
             }
         }
@@ -1324,6 +1450,7 @@ fn assemble_level_with_settings(
             boss_attacked_this_turn: false,
             boss_body: vec![(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)],
             boss_flee_budget: 0, boss_flee_cooldown: 0,
+            image: p2.boss.image.clone(),
         }];
 
         let pick_side = |rng: &mut rand::rngs::ThreadRng| -> &Vec<(i32, i32)> {
@@ -1352,6 +1479,7 @@ fn assemble_level_with_settings(
                         boss_enraged_turns: 0, boss_has_seen_player: false,
                         boss_attacked_this_turn: false, boss_body: vec![],
                         boss_flee_budget: 0, boss_flee_cooldown: 0,
+                        image: tmpl.image.clone(),
                     });
                 }
                 i += 1;
@@ -1373,6 +1501,7 @@ fn assemble_level_with_settings(
                             damage: trap_cost + floor,
                             name: td.name.clone().unwrap_or_else(|| "Trap".into()),
                             triggered: false,
+                            image: td.image.clone(),
                         });
                     }
                 }
@@ -1391,7 +1520,7 @@ fn assemble_level_with_settings(
                 if let Some(&(gx, gy)) = pick_random_reachable(tiles, player_start, 2, &monsters, &mut rng) {
                     itms.push(Item {
                         id: format!("gold_{}_{}", floor, gold_i), name: format!("{} Gold", amount),
-                        x: gx, y: gy, item_type: "gold".into(), value: amount, description: String::new(),
+                        x: gx, y: gy, item_type: "gold".into(), value: amount, description: String::new(), image: None,
                     });
                 }
                 gold_i += 1;
@@ -1403,6 +1532,7 @@ fn assemble_level_with_settings(
                     id: format!("w_{}", floor), name: p2.weapon.name.clone(),
                     x: wx, y: wy, item_type: "weapon".into(), value: floor + 3 + campaign_tier * 2,
                     description: p2.weapon.description.clone().unwrap_or_default(),
+                    image: p2.weapon.image.clone(),
                 });
             }
             let a_tiles = pick_side(&mut rng);
@@ -1411,6 +1541,7 @@ fn assemble_level_with_settings(
                     id: format!("a_{}", floor), name: p2.armor.name.clone(),
                     x: ax, y: ay, item_type: "armor".into(), value: floor + 1 + campaign_tier * 2,
                     description: p2.armor.description.clone().unwrap_or_default(),
+                    image: p2.armor.image.clone(),
                 });
             }
             let mon_count = monsters.iter().filter(|m| !m.is_boss).count();
@@ -1419,7 +1550,7 @@ fn assemble_level_with_settings(
                 if let Some(&(px, py)) = pick_random_reachable(&reachable_vec, player_start, 2, &monsters, &mut rng) {
                     itms.push(Item {
                         id: format!("pot_{}_{}", floor, i), name: "Health Potion".into(),
-                        x: px, y: py, item_type: "potion".into(), value: 0, description: String::new(),
+                        x: px, y: py, item_type: "potion".into(), value: 0, description: String::new(), image: None,
                     });
                 }
             }
@@ -1427,7 +1558,7 @@ fn assemble_level_with_settings(
                 itms.push(Item {
                     id: format!("key_{}", floor), name: "Key".into(),
                     x: key_pos[0], y: key_pos[1], item_type: "key".into(), value: 0,
-                    description: "Unlocks a locked door.".into(),
+                    description: "Unlocks a locked door.".into(), image: None,
                 });
             }
         }

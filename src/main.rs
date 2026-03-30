@@ -491,6 +491,9 @@ async fn main() {
     let mut confetti: Vec<Confetti> = vec![];
     let mut title_font: Option<Font> = None;
     let mut tile_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
+    let mut current_zoom: f32 = 1.0; // smoothly interpolated zoom level
+    let mut monster_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
+    let mut item_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
     let mut overworld_font: Option<Font> = None;
     let mut desc_font: Option<Font> = None;
     let mut label_font: Option<Font> = None;
@@ -501,6 +504,7 @@ async fn main() {
     let mut current_campaign_settings = gen::CampaignSettings::default();
     let mut current_campaign_monsters: Option<Vec<gen::MonsterTemplateRaw>> = None;
     let mut overworld: Option<Overworld> = None;
+    let mut overworld_bg_tex: Option<Texture2D> = None;
     let mut level_designs: Vec<Option<gen::Phase2Result>> = Vec::new();
     let mut design_token_flashes: Vec<Vec<f64>> = Vec::new(); // per-node flash times
     let mut bg_gen_rx: Option<mpsc::Receiver<GenMsg>> = None;
@@ -816,6 +820,16 @@ async fn main() {
                                     }
                                 }
 
+                                // Load bg texture if present
+                                overworld_bg_tex = ow.bg_image.as_ref().and_then(|b64| {
+                                    decode_base64(b64).and_then(|bytes| {
+                                        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                            let tex = Texture2D::from_image(&img);
+                                            tex.set_filter(FilterMode::Linear);
+                                            tex
+                                        })
+                                    })
+                                });
                                 overworld = Some(ow);
                                 screen = Screen::Overworld;
                             }
@@ -923,6 +937,16 @@ async fn main() {
                                     save_campaign_progress(&campaign.id, &state.player, &ow);
                                 }
 
+                                // Load bg texture if present
+                                overworld_bg_tex = ow.bg_image.as_ref().and_then(|b64| {
+                                    decode_base64(b64).and_then(|bytes| {
+                                        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                            let tex = Texture2D::from_image(&img);
+                                            tex.set_filter(FilterMode::Linear);
+                                            tex
+                                        })
+                                    })
+                                });
                                 overworld = Some(ow);
                                 screen = Screen::Overworld;
                             }
@@ -1153,6 +1177,16 @@ async fn main() {
                                 design_token_flashes = vec![Vec::new(); playable];
                                 // Start background level design generation
                                 start_background_designs(&ow, &mut bg_gen_rx);
+                                // Load bg texture if present
+                                overworld_bg_tex = ow.bg_image.as_ref().and_then(|b64| {
+                                    decode_base64(b64).and_then(|bytes| {
+                                        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                            let tex = Texture2D::from_image(&img);
+                                            tex.set_filter(FilterMode::Linear);
+                                            tex
+                                        })
+                                    })
+                                });
                                 overworld = Some(ow);
                                 screen = Screen::Overworld;
                             }
@@ -1194,7 +1228,7 @@ async fn main() {
                 }
 
                 if let Some(ow) = &mut overworld {
-                    draw_overworld(&*ow, &ui_font, &ui_font_bold, overworld_font.as_ref(), desc_font.as_ref(), label_font.as_ref(), &design_token_flashes);
+                    draw_overworld(&*ow, &ui_font, &ui_font_bold, overworld_font.as_ref(), desc_font.as_ref(), label_font.as_ref(), &design_token_flashes, overworld_bg_tex.as_ref());
 
                     // Cheat code: xyzzy
                     let cheat_keys = [
@@ -1325,6 +1359,47 @@ async fn main() {
                                         }
                                     }
                                 }
+                                monster_textures = std::collections::HashMap::new();
+                                for mon in &state.level.monsters {
+                                    if !monster_textures.contains_key(&mon.name) {
+                                        if let Some(b64) = &mon.image {
+                                            if let Some(bytes) = decode_base64(b64) {
+                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                    let tex = Texture2D::from_image(&img);
+                                                    tex.set_filter(FilterMode::Nearest);
+                                                    monster_textures.insert(mon.name.clone(), tex);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                item_textures = std::collections::HashMap::new();
+                                for item in &state.level.items {
+                                    if !item_textures.contains_key(&item.name) {
+                                        if let Some(b64) = &item.image {
+                                            if let Some(bytes) = decode_base64(b64) {
+                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                    let tex = Texture2D::from_image(&img);
+                                                    tex.set_filter(FilterMode::Nearest);
+                                                    item_textures.insert(item.name.clone(), tex);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                for trap in &state.level.traps {
+                                    if !item_textures.contains_key(&trap.name) {
+                                        if let Some(b64) = &trap.image {
+                                            if let Some(bytes) = decode_base64(b64) {
+                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                    let tex = Texture2D::from_image(&img);
+                                                    tex.set_filter(FilterMode::Nearest);
+                                                    item_textures.insert(trap.name.clone(), tex);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 state.player.x = start[0];
                                 state.player.y = start[1];
                                 state.game_over = false;
@@ -1416,6 +1491,47 @@ async fn main() {
                                         }
                                     }
                                 }
+                                monster_textures = std::collections::HashMap::new();
+                                for mon in &state.level.monsters {
+                                    if !monster_textures.contains_key(&mon.name) {
+                                        if let Some(b64) = &mon.image {
+                                            if let Some(bytes) = decode_base64(b64) {
+                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                    let tex = Texture2D::from_image(&img);
+                                                    tex.set_filter(FilterMode::Nearest);
+                                                    monster_textures.insert(mon.name.clone(), tex);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                item_textures = std::collections::HashMap::new();
+                                for item in &state.level.items {
+                                    if !item_textures.contains_key(&item.name) {
+                                        if let Some(b64) = &item.image {
+                                            if let Some(bytes) = decode_base64(b64) {
+                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                    let tex = Texture2D::from_image(&img);
+                                                    tex.set_filter(FilterMode::Nearest);
+                                                    item_textures.insert(item.name.clone(), tex);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                for trap in &state.level.traps {
+                                    if !item_textures.contains_key(&trap.name) {
+                                        if let Some(b64) = &trap.image {
+                                            if let Some(bytes) = decode_base64(b64) {
+                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                    let tex = Texture2D::from_image(&img);
+                                                    tex.set_filter(FilterMode::Nearest);
+                                                    item_textures.insert(trap.name.clone(), tex);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 state.player.x = start[0];
                                 state.player.y = start[1];
                                 state.game_over = false;
@@ -1491,11 +1607,11 @@ async fn main() {
                         .fold(f32::MAX, f32::min);
                     s.update_boss_drone(dist);
                 }
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures);
             }
 
             Screen::Dead => {
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures);
                 draw_death_overlay(&ui_font, &ui_font_bold, &state);
 
                 if is_key_pressed(KeyCode::Enter) {
@@ -1512,7 +1628,7 @@ async fn main() {
             }
 
             Screen::Victory => {
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures);
                 update_confetti(&mut confetti);
                 draw_confetti(&confetti);
                 draw_victory_overlay(&ui_font, &ui_font_bold, &state);
@@ -2578,15 +2694,24 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_c
 
 // ── Overworld rendering ──
 
-fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Option<&Font>, d_font: Option<&Font>, l_font: Option<&Font>, design_flashes: &[Vec<f64>]) {
+fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Option<&Font>, d_font: Option<&Font>, l_font: Option<&Font>, design_flashes: &[Vec<f64>], bg_tex: Option<&Texture2D>) {
     let sw = screen_width();
     let sh = screen_height();
     let bg = hex_to_color(&ow.bg_color);
     let text_col = hex_to_color(&ow.text_color);
-    // Description text: slightly dimmer than title
     let desc_col = Color::new(text_col.r * 0.7, text_col.g * 0.7, text_col.b * 0.7, 1.0);
 
-    draw_rectangle(0.0, 0.0, sw, sh, bg);
+    // Background: image > gradient color > solid color
+    if let Some(tex) = bg_tex {
+        draw_texture_ex(tex, 0.0, 0.0, WHITE, DrawTextureParams {
+            dest_size: Some(Vec2::new(sw, sh)),
+            ..Default::default()
+        });
+        // Darken overlay so text is readable
+        draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.3));
+    } else {
+        draw_rectangle(0.0, 0.0, sw, sh, bg);
+    }
 
     // Parallax floating entity-shaped particles
     {
@@ -3209,7 +3334,7 @@ fn draw_confetti(confetti: &[Confetti]) {
 
 // ── Game rendering ──
 
-fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, tile_textures: &std::collections::HashMap<String, Texture2D>) {
+fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, tile_textures: &std::collections::HashMap<String, Texture2D>, monster_textures: &std::collections::HashMap<String, Texture2D>, item_textures: &std::collections::HashMap<String, Texture2D>) {
     if state.level.tiles.is_empty() {
         return;
     }
@@ -3358,24 +3483,34 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
         let sy = mid_top + (item.y - camera_y) as f32 * TILE;
         if sy + TILE < mid_top || sy > mid_top + mid_height || sx + TILE > map_width { continue; }
 
-        let cx = sx + TILE / 2.0;
-        let cy = sy + TILE / 2.0;
-        let r = TILE * 0.38;
-        let color = item_color(&item.item_type);
+        if let Some(tex) = item_textures.get(&item.name) {
+            let size = TILE * 0.85;
+            let ox = sx + (TILE - size) / 2.0;
+            let oy = sy + (TILE - size) / 2.0;
+            draw_texture_ex(tex, ox, oy, WHITE, DrawTextureParams {
+                dest_size: Some(Vec2::new(size, size)),
+                ..Default::default()
+            });
+        } else {
+            let cx = sx + TILE / 2.0;
+            let cy = sy + TILE / 2.0;
+            let r = TILE * 0.38;
+            let color = item_color(&item.item_type);
 
-        match item.item_type.as_str() {
-            "weapon" => {
-                draw_soft_poly_shadow(cx, cy, 3, r, 0.0);
-                draw_poly(cx, cy, 3, r, 0.0, color);
-            }
-            "armor" => {
-                draw_soft_circle_shadow(cx, cy, r);
-                draw_circle(cx, cy, r, color);
-            }
-            _ => {
-                let half = r * 0.85;
-                draw_soft_rect_shadow(cx - half, cy - half, half * 2.0, half * 2.0);
-                draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, color);
+            match item.item_type.as_str() {
+                "weapon" => {
+                    draw_soft_poly_shadow(cx, cy, 3, r, 0.0);
+                    draw_poly(cx, cy, 3, r, 0.0, color);
+                }
+                "armor" => {
+                    draw_soft_circle_shadow(cx, cy, r);
+                    draw_circle(cx, cy, r, color);
+                }
+                _ => {
+                    let half = r * 0.85;
+                    draw_soft_rect_shadow(cx - half, cy - half, half * 2.0, half * 2.0);
+                    draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, color);
+                }
             }
         }
     }
@@ -3388,14 +3523,24 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
         let sy = mid_top + (trap.y - camera_y) as f32 * TILE;
         if sy + TILE < mid_top || sy > mid_top + mid_height || sx + TILE > map_width { continue; }
 
-        let cx = sx + TILE / 2.0;
-        let cy = sy + TILE / 2.0;
-        let half = TILE * 0.38 * 0.85;
-        let trap_fill = Color::new(1.0, 0.0, 0.0, 0.4);
-        let trap_line = hex_to_color("#ff4444");
-        draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, trap_fill);
-        draw_line(cx - half + 3.0, cy - half + 3.0, cx + half - 3.0, cy + half - 3.0, 2.0, trap_line);
-        draw_line(cx + half - 3.0, cy - half + 3.0, cx - half + 3.0, cy + half - 3.0, 2.0, trap_line);
+        if let Some(tex) = item_textures.get(&trap.name) {
+            let size = TILE * 0.85;
+            let ox = sx + (TILE - size) / 2.0;
+            let oy = sy + (TILE - size) / 2.0;
+            draw_texture_ex(tex, ox, oy, WHITE, DrawTextureParams {
+                dest_size: Some(Vec2::new(size, size)),
+                ..Default::default()
+            });
+        } else {
+            let cx = sx + TILE / 2.0;
+            let cy = sy + TILE / 2.0;
+            let half = TILE * 0.38 * 0.85;
+            let trap_fill = Color::new(1.0, 0.0, 0.0, 0.4);
+            let trap_line = hex_to_color("#ff4444");
+            draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, trap_fill);
+            draw_line(cx - half + 3.0, cy - half + 3.0, cx + half - 3.0, cy + half - 3.0, 2.0, trap_line);
+            draw_line(cx + half - 3.0, cy - half + 3.0, cx - half + 3.0, cy + half - 3.0, 2.0, trap_line);
+        }
     }
 
     // Monsters — hexagons
@@ -3420,6 +3565,25 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             let base_color = hex_to_color(COLOR_BOSS);
             let pct = mon.hp as f32 / mon.max_hp as f32;
             let body = &mon.boss_body;
+
+            // If boss has a sprite, draw it over the 2x2 area
+            if let Some(tex) = monster_textures.get(&mon.name) {
+                let bsx = map_left + (mon.x - camera_x) as f32 * TILE;
+                let bsy = mid_top + (mon.y - camera_y) as f32 * TILE;
+                draw_texture_ex(tex, bsx, bsy, WHITE, DrawTextureParams {
+                    dest_size: Some(Vec2::new(TILE * 2.0, TILE * 2.0)),
+                    ..Default::default()
+                });
+                // HP bar below
+                if pct < 1.0 {
+                    let bar_w = TILE * 1.6;
+                    let bar_h = 3.0;
+                    let bar_x = bsx + (TILE * 2.0 - bar_w) / 2.0;
+                    let bar_y = bsy + TILE * 2.0 + 2.0;
+                    draw_rectangle(bar_x, bar_y, bar_w, bar_h, Color::new(0.2, 0.2, 0.2, 0.8));
+                    draw_rectangle(bar_x, bar_y, bar_w * pct, bar_h, hp_bar_color(pct));
+                }
+            } else {
 
             // Pulse
             let time = get_time() as f32;
@@ -3540,6 +3704,26 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
                 if !body_set.contains(&(bx + 1, by)) {
                     draw_rectangle(tsx + TILE + er - t, tsy - et, t, TILE + et + eb, border_color);
                 }
+            }
+            } // end else (no boss texture)
+        } else if let Some(tex) = monster_textures.get(&mon.name) {
+            // Draw sprite texture
+            let size = TILE * 0.9;
+            let ox = sx + (TILE - size) / 2.0;
+            let oy = sy + (TILE - size) / 2.0;
+            draw_texture_ex(tex, ox, oy, WHITE, DrawTextureParams {
+                dest_size: Some(Vec2::new(size, size)),
+                ..Default::default()
+            });
+            // HP bar below sprite
+            let pct = mon.hp as f32 / mon.max_hp as f32;
+            if pct < 1.0 {
+                let bar_w = TILE * 0.8;
+                let bar_h = 3.0;
+                let bar_x = sx + (TILE - bar_w) / 2.0;
+                let bar_y = sy + TILE - 2.0;
+                draw_rectangle(bar_x, bar_y, bar_w, bar_h, Color::new(0.2, 0.2, 0.2, 0.8));
+                draw_rectangle(bar_x, bar_y, bar_w * pct, bar_h, hp_bar_color(pct));
             }
         } else {
             let cx = sx + TILE / 2.0;

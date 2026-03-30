@@ -1,0 +1,3159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scapegrace Level Builder</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #1a1a2e; --panel: #16213e; --card: #0f3460; --text: #e8e8e8;
+  --accent: #e94560; --accent2: #0f3460; --border: #2a3a5e; --input-bg: #0d1b36;
+  --success: #66bb6a; --warning: #ffa726; --gold: #ffd700;
+}
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; font-size: 14px; }
+input, select, textarea, button { font-family: inherit; font-size: 13px; color: var(--text); }
+input, select, textarea { background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { resize: vertical; min-height: 50px; }
+.enhanced-textarea { position: relative; display: flex; flex: 1; }
+.enhanced-textarea textarea { flex: 1; border-radius: 4px 0 0 4px; }
+.enhanced-textarea .enhance-btn { width: 24px; background: rgba(255,255,255,.04); border: 1px solid var(--border); border-left: none; border-radius: 0 4px 4px 0; font-size: 13px; cursor: pointer; opacity: 0.35; transition: opacity .15s, background .15s; padding: 0; display: flex; align-items: center; justify-content: center; }
+.enhanced-textarea .enhance-btn:hover { opacity: 1; background: rgba(90,58,142,.3); }
+input[type="color"] { width: 40px; height: 28px; padding: 1px 2px; cursor: pointer; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg); }
+input[type="number"] { width: 70px; }
+button { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 6px 14px; cursor: pointer; transition: background .15s; }
+button:hover { background: #1a4a80; }
+button.primary { background: var(--accent); border-color: var(--accent); }
+button.primary:hover { background: #c73550; }
+button.danger { background: #8b0000; border-color: #a00; }
+button.danger:hover { background: #a00; }
+button.ai-btn { background: #2a1a4e; border-color: #5a3a8e; padding: 4px 8px; font-size: 12px; }
+button.ai-btn:hover { background: #3a2a6e; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid transparent; border-top-color: var(--text); border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-left: 4px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+h1 { font-size: 22px; font-weight: 700; }
+h2 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.gap-4 { gap: 4px; } .gap-8 { gap: 8px; } .gap-12 { gap: 12px; } .gap-16 { gap: 16px; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.flex-1 { flex: 1; }
+.w-full { width: 100%; }
+.mb-8 { margin-bottom: 8px; } .mb-16 { margin-bottom: 16px; }
+
+/* Layout */
+#app { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.title-bar { background: var(--panel); padding: 10px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.title-bar h1 { color: var(--accent); }
+.screen { flex: 1; overflow: auto; padding: 20px; }
+
+/* Cards */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 16px; }
+.campaign-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; cursor: pointer; transition: transform .15s, border-color .15s; }
+.campaign-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+.campaign-card .card-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.campaign-card .card-desc { font-size: 12px; color: #aaa; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.campaign-card .card-meta { font-size: 11px; color: #888; display: flex; justify-content: space-between; }
+.quality-badge { display: inline-block; background: var(--accent); color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+
+/* Collapsible */
+.collapsible-header { background: rgba(255,255,255,.04); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }
+.collapsible-header:hover { background: rgba(255,255,255,.07); }
+.collapsible-header .arrow { transition: transform .2s; font-size: 11px; }
+.collapsible-header.open .arrow { transform: rotate(90deg); }
+.collapsible-body { padding: 10px 0 0 0; }
+.collapsible-body.hidden { display: none; }
+
+/* Campaign editor layout */
+.campaign-layout { display: flex; height: 100%; gap: 0; }
+.left-panel { width: 35%; min-width: 300px; background: var(--panel); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; flex-shrink: 0; order: 2; }
+.center-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.right-panel { width: 420px; min-width: 350px; background: var(--panel); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; flex-shrink: 0; }
+
+/* Full-screen level editor — map-centered with tabbed sidebar */
+.level-screen { display: flex; height: 100%; overflow: hidden; }
+.level-map-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0d0d1e; position: relative; min-width: 0; padding: 16px; }
+.level-map-area .level-back { position: absolute; top: 12px; left: 12px; z-index: 1; }
+.level-map-area .level-title { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); font-size: 20px; font-weight: 700; color: var(--text); text-align: center; }
+.level-map-area .level-subtitle { position: absolute; top: 38px; left: 50%; transform: translateX(-50%); font-size: 12px; color: #888; }
+.level-map-area .map-controls { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+/* Entity tray */
+.entity-tray { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; padding: 6px 10px; margin-bottom: 6px; background: rgba(0,0,0,.3); border-radius: 8px; max-height: 80px; overflow-y: auto; }
+.tray-item { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; background: rgba(255,255,255,.06); border: 1px solid var(--border); border-radius: 6px; cursor: grab; user-select: none; transition: transform .1s, box-shadow .1s; position: relative; }
+.tray-item:hover { background: rgba(255,255,255,.15); transform: translateY(-2px); box-shadow: 0 3px 8px rgba(0,0,0,.4); }
+.tray-item::after { content: attr(data-name); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: #111; color: #eee; font-size: 11px; padding: 3px 8px; border-radius: 4px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .1s; z-index: 20; }
+.tray-item:hover::after { opacity: 1; }
+.tray-item:active { cursor: grabbing; opacity: .7; }
+.tray-icon { font-size: 18px; line-height: 1; user-select: none; pointer-events: none; }
+.level-map-area canvas { border: 1px solid var(--border); border-radius: 4px; max-width: 100%; max-height: calc(100% - 80px); }
+
+.level-sidebar { width: 35%; min-width: 340px; max-width: 480px; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+.tab-bar { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.tab-bar button { flex: 1; padding: 10px 6px; font-size: 12px; font-weight: 600; border: none; border-radius: 0; border-bottom: 2px solid transparent; background: transparent; color: #888; cursor: pointer; white-space: nowrap; }
+.tab-bar button:hover { color: var(--text); background: rgba(255,255,255,.03); }
+.tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); background: rgba(233,69,96,.05); }
+.tab-content { flex: 1; overflow-y: auto; padding: 14px; }
+
+/* DAG */
+.dag-toolbar { background: var(--panel); padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.dag-container { flex: 1; overflow: auto; position: relative; user-select: none; }
+.dag-container svg { display: block; margin: 0 auto; }
+.dag-header { text-align: center; padding: 20px 20px 8px; }
+.dag-header h2 { margin-bottom: 4px; }
+.dag-header p { opacity: 0.7; font-size: 13px; }
+.dag-container svg { display: block; }
+.dag-node { cursor: grab; }
+.dag-node.selected rect { stroke: var(--accent); stroke-width: 3; }
+.dag-node:hover rect { filter: brightness(1.3); }
+.conn-group path.conn-visible { transition: stroke .15s; }
+.conn-group path.conn-visible { transition: stroke .15s; }
+.conn-group:hover path.conn-visible { stroke: #e94560 !important; stroke-width: 2.5; }
+.conn-handle { opacity: 0; transition: all .15s; }
+.dag-node:hover .conn-handle { opacity: 1; }
+.conn-handle:hover { fill: #e94560 !important; stroke: #fff !important; opacity: 1; }
+.dag-popup { position: absolute; background: var(--panel); border: 1px solid var(--accent); border-top: none; border-radius: 0 0 8px 8px; padding: 4px 6px; z-index: 10; transform: translateX(-50%); }
+
+/* Form helpers */
+.form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.form-row label { min-width: 100px; font-size: 12px; color: #aaa; flex-shrink: 0; }
+.form-row input, .form-row select, .form-row textarea { flex: 1; }
+.form-row-stacked { margin-bottom: 8px; }
+.form-row-stacked label { display: block; font-size: 12px; color: #aaa; margin-bottom: 3px; }
+.form-row-stacked input, .form-row-stacked select, .form-row-stacked textarea { width: 100%; }
+.section-divider { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.note { font-size: 11px; color: #666; font-style: italic; }
+
+/* Palette row */
+.palette-row { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.palette-swatch { position: relative; }
+.palette-swatch .remove-color { position: absolute; top: -6px; right: -6px; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 9px; line-height: 14px; text-align: center; cursor: pointer; display: none; border: none; padding: 0; }
+.palette-swatch:hover .remove-color { display: block; }
+
+/* Table */
+.tile-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tile-table th { text-align: left; padding: 4px 6px; color: #888; border-bottom: 1px solid var(--border); }
+.tile-table td { padding: 3px 6px; border-bottom: 1px solid rgba(255,255,255,.05); }
+.tile-table input { font-size: 12px; padding: 3px 5px; }
+.color-swatch { width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--border); display: inline-block; vertical-align: middle; }
+
+/* Font picker */
+.font-picker-btn { width: 100%; text-align: left; padding: 5px 8px; font-size: 14px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.font-picker-btn:hover { border-color: var(--accent); }
+#font-picker-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.5); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.font-picker-modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; width: 400px; max-height: 500px; display: flex; flex-direction: column; overflow: hidden; }
+.font-picker-modal input { margin: 10px; font-size: 14px; padding: 8px 10px; border-radius: 6px; }
+.font-list { flex: 1; overflow-y: auto; }
+.font-option { padding: 8px 14px; font-size: 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.03); }
+.font-option:hover { background: rgba(233,69,96,.1); }
+
+/* Map preview */
+.map-canvas { border: 1px solid var(--border); border-radius: 4px; background: #000; display: block; }
+
+/* Toasts */
+.toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+.toast { padding: 10px 16px; border-radius: 6px; color: #fff; font-size: 13px; animation: toastIn .3s; max-width: 350px; }
+.toast.success { background: #2e7d32; }
+.toast.error { background: #c62828; }
+.toast.info { background: #1565c0; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Entry list items */
+.entry-item { background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
+.entry-item .entry-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="title-bar">
+    <div class="flex gap-8 items-center">
+      <span id="back-btn"></span>
+      <h1>Scapegrace Level Builder</h1>
+    </div>
+    <div class="flex gap-8 items-center">
+      <span id="save-status" style="font-size:12px;color:#888;"></span>
+      <button class="primary" onclick="savePack()">Save Pack</button>
+    </div>
+  </div>
+  <div id="screen-container" class="screen"></div>
+</div>
+<div class="toast-container" id="toasts"></div>
+
+<script>
+// ── State ──
+let pack = null;
+let fonts = [];
+let selectedCampaignId = null;
+let selectedLevelIdx = null;
+let dagPositions = {};
+let dagDragging = null;
+let dagDragOffset = { x: 0, y: 0 };
+let dagDragMoved = false;
+let addConnectionMode = false;
+let connectionSource = null;
+let loadedGoogleFonts = new Set();
+let mapPreviewData = null;
+let dagSelectedNode = null;
+let dagClickTimer = null;
+let dagClickNodeId = null;
+
+const ROOTS = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const SCALES = ['ionian','dorian','phrygian','lydian','mixolydian','aeolian','locrian','pentatonic_major','pentatonic_minor','blues','whole_tone','chromatic'];
+
+// ── API ──
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || r.statusText);
+  }
+  if (r.status === 200 && r.headers.get('content-type')?.includes('json')) return r.json();
+  return null;
+}
+
+async function loadPack() {
+  try {
+    pack = await api('GET', '/api/pack');
+    if (!pack.strings) pack.strings = {};
+    if (!pack.campaigns) pack.campaigns = [];
+  } catch(e) { showToast('Failed to load pack: ' + e.message, 'error'); }
+}
+
+async function savePack() {
+  try {
+    await api('PUT', '/api/pack', pack);
+    showToast('Pack saved', 'success');
+  } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
+}
+
+async function loadFonts() {
+  try { fonts = await api('GET', '/api/fonts'); } catch(e) { fonts = []; }
+}
+
+function loadGoogleFont(name) {
+  if (!name || loadedGoogleFonts.has(name)) return;
+  loadedGoogleFonts.add(name);
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(name)}&display=swap`;
+  document.head.appendChild(link);
+}
+
+// ── Toasts ──
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toasts');
+  const d = document.createElement('div');
+  d.className = 'toast ' + type;
+  d.textContent = msg;
+  c.appendChild(d);
+  setTimeout(() => d.remove(), 4000);
+}
+
+// ── Navigation ──
+function navigate(screen, campaignId, levelIdx) {
+  selectedCampaignId = campaignId || null;
+  selectedLevelIdx = levelIdx !== undefined ? levelIdx : null;
+  render();
+}
+
+function render() {
+  const el = document.getElementById('screen-container');
+  const bb = document.getElementById('back-btn');
+  if (selectedCampaignId && selectedLevelIdx !== null) {
+    el.style.padding = '0';
+    el.style.overflow = 'hidden';
+    bb.innerHTML = `<button onclick="selectedLevelIdx=null;render()" style="padding:4px 10px;">&larr; Campaign</button>`;
+    renderLevelScreen(el);
+    showCurrentMap();
+  } else if (selectedCampaignId) {
+    el.style.padding = '0';
+    el.style.overflow = 'hidden';
+    bb.innerHTML = `<button onclick="navigate()" style="padding:4px 10px;">&larr; Campaigns</button>`;
+    renderCampaignEditor(el);
+  } else {
+    el.style.padding = '20px';
+    el.style.overflow = 'auto';
+    bb.innerHTML = '';
+    renderPackOverview(el);
+  }
+}
+
+// ── Helpers ──
+function getCampaign(id) { return pack.campaigns.find(c => c.id === id); }
+function h(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+// Enhanced textarea with inline ✨ Enhance button
+function enhancedTextarea(value, onchange, context, rows) {
+  const uid = 'eta_' + Math.random().toString(36).substr(2, 6);
+  const rowsAttr = rows ? ` rows="${rows}"` : '';
+  return `<div class="enhanced-textarea">
+    <textarea id="${uid}" onchange="${onchange}"${rowsAttr}>${h(value)}</textarea>
+    <button class="enhance-btn" onclick="enhanceText('${uid}','${h(context)}')" title="Enhance with AI">&#10024;</button>
+  </div>`;
+}
+
+function enhancedInput(value, onchange, context, extraStyle) {
+  const uid = 'ei_' + Math.random().toString(36).substr(2, 6);
+  return `<div class="enhanced-textarea">
+    <input id="${uid}" value="${h(value)}" onchange="${onchange}" style="${extraStyle||''}">
+    <button class="enhance-btn" onclick="enhanceText('${uid}','${h(context)}')" title="Enhance with AI">&#10024;</button>
+  </div>`;
+}
+
+async function enhanceText(textareaId, context) {
+  const el = document.getElementById(textareaId);
+  if (!el || !el.value.trim()) return;
+  const btn = el.parentElement.querySelector('.enhance-btn');
+  const oldText = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner" style="width:10px;height:10px;"></span>';
+  btn.disabled = true;
+  try {
+    const isOneLine = context.includes('one-line') || el.tagName === 'INPUT';
+    const maxLen = isOneLine ? 'max 12 words, one line' : 'max 5 lines';
+    const r = await api('POST', '/api/generate/description', {
+      context: context || 'roguelike game',
+      target: (el.value.trim().length < 3
+        ? `Generate a short, vivid ${context} (${maxLen})`
+        : `Rewrite this ${context} to be more vivid and atmospheric (${maxLen}): ${el.value}`)
+    });
+    el.value = r.text;
+    el.dispatchEvent(new Event('change'));
+    showToast('Enhanced!', 'success');
+  } catch(e) { showToast('Enhance failed: ' + e.message, 'error'); }
+  btn.innerHTML = oldText;
+  btn.disabled = false;
+}
+let allGoogleFonts = null; // lazy-loaded full list
+
+async function loadAllGoogleFonts() {
+  if (allGoogleFonts) return allGoogleFonts;
+  try {
+    const r = await fetch('/api/google-fonts');
+    allGoogleFonts = await r.json();
+  } catch(e) {
+    allGoogleFonts = fonts; // fallback to embedded list
+  }
+  return allGoogleFonts;
+}
+
+let fontPickerCallback = null;
+let fontPickerVisible = false;
+
+function fontSelect(current, onchange, id) {
+  if (current) loadGoogleFont(current);
+  const style = current ? `font-family:'${current}',system-ui` : '';
+  const uid = id || ('fp_' + Math.random().toString(36).substr(2,6));
+  return `<div style="flex:1;position:relative;">
+    <button id="${uid}" class="font-picker-btn" style="${style}" onclick="openFontPicker('${uid}',function(v){${onchange.replace('this.value','v')}})">${current ? h(current) : '-- none --'}</button>
+  </div>`;
+}
+
+function openFontPicker(btnId, cb) {
+  fontPickerCallback = { btnId, cb };
+  // Create overlay
+  let overlay = document.getElementById('font-picker-overlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'font-picker-overlay';
+  overlay.innerHTML = `
+    <div class="font-picker-modal">
+      <input id="font-search" placeholder="Search fonts..." autofocus oninput="filterFontList(this.value)">
+      <div id="font-list" class="font-list"><div style="padding:20px;color:#888;">Loading fonts...</div></div>
+    </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  loadAllGoogleFonts().then(fonts => renderFontList(fonts, ''));
+}
+
+function renderFontList(fontList, filter) {
+  const el = document.getElementById('font-list');
+  if (!el) return;
+  const filtered = filter ? fontList.filter(f => f.toLowerCase().includes(filter.toLowerCase())) : fontList.slice(0, 120);
+  let html = `<div class="font-option" onclick="selectFont('')" style="color:#888;">-- none --</div>`;
+  for (const f of filtered.slice(0, 120)) {
+    loadGoogleFont(f);
+    html += `<div class="font-option" onclick="selectFont('${h(f)}')" style="font-family:'${f}',system-ui">${h(f)}</div>`;
+  }
+  if (filtered.length > 120) html += `<div style="padding:8px;color:#666;font-size:11px;">Type to search ${filtered.length - 120} more...</div>`;
+  el.innerHTML = html;
+}
+
+function filterFontList(val) {
+  if (!allGoogleFonts) return;
+  renderFontList(allGoogleFonts, val);
+}
+
+function selectFont(val) {
+  if (fontPickerCallback) {
+    const btn = document.getElementById(fontPickerCallback.btnId);
+    if (btn) {
+      btn.textContent = val || '-- none --';
+      btn.style.fontFamily = val ? `'${val}',system-ui` : '';
+      if (val) loadGoogleFont(val);
+    }
+    fontPickerCallback.cb(val);
+  }
+  const overlay = document.getElementById('font-picker-overlay');
+  if (overlay) overlay.remove();
+}
+
+function collapsible(title, bodyHtml, startOpen = false) {
+  const id = 'coll_' + Math.random().toString(36).substr(2, 8);
+  return `
+    <div class="collapsible-header ${startOpen ? 'open' : ''}" onclick="this.classList.toggle('open');document.getElementById('${id}').classList.toggle('hidden')">
+      <span>${title}</span><span class="arrow">&#9654;</span>
+    </div>
+    <div id="${id}" class="collapsible-body ${startOpen ? '' : 'hidden'}">${bodyHtml}</div>
+  `;
+}
+
+// ── Screen 1: Pack Overview ──
+let packSettingsTab = 'general';
+
+function renderPackOverview(el) {
+  const s = pack.strings || {};
+  if (!pack.strings) pack.strings = {};
+  let html = '<div style="display:flex;gap:24px;">';
+
+  // Left: campaigns
+  let left = '';
+  left += '<div style="margin-bottom:16px;display:flex;gap:8px;">';
+  left += '<button class="primary" onclick="createCampaign()">New Campaign</button>';
+  left += '<button class="ai-btn" onclick="generateAICampaign()">Generate Campaign (AI) &#10024;</button>';
+  left += '</div>';
+  left += '<div class="card-grid">';
+  for (const c of pack.campaigns) {
+    const ow = c.overworld;
+    const lvCount = ow.levels ? ow.levels.length : 0;
+    left += `
+      <div class="campaign-card" onclick="navigate('campaign','${c.id}')">
+        <div class="card-name">${h(ow.name)}</div>
+        <div class="card-desc">${h(ow.description)}</div>
+        <div class="card-meta">
+          <span>${lvCount} level${lvCount!==1?'s':''}</span>
+        </div>
+      </div>`;
+  }
+  left += '</div>';
+  html += `<div style="flex:1;min-width:0;">${left}</div>`;
+
+  // Right: pack settings with tabs
+  html += `<div style="width:350px;flex-shrink:0;background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;max-height:calc(100vh - 120px);display:flex;flex-direction:column;">`;
+  html += `<div id="pack-settings-tabs" class="tab-bar" style="margin:0;">`;
+  for (const t of [{id:'general',label:'General'},{id:'prompts',label:'Prompts'},{id:'items',label:'Items'}]) {
+    html += `<button class="${packSettingsTab===t.id?'active':''}" onclick="packSettingsTab='${t.id}';refreshPackSettings()">${t.label}</button>`;
+  }
+  html += `</div>`;
+  html += `<div id="pack-settings-body" style="padding:16px;overflow-y:auto;flex:1;">${renderPackSettingsBody(s)}</div>`;
+  html += `</div>`;
+
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderPackSettingsBody(s) {
+  if (!s) s = pack.strings || {};
+  let body = '';
+
+  if (packSettingsTab === 'general') {
+    body += `<div class="form-row"><label>Title</label>${enhancedInput(s.title||'', "pack.strings.title=this.value", 'one-line game title for a roguelike dungeon pack')}</div>`;
+    body += `<div class="form-row"><label>Subtitle</label>${enhancedInput(s.subtitle||'', "pack.strings.subtitle=this.value", 'one-line subtitle tagline for a roguelike game')}</div>`;
+    body += `<div class="form-row-stacked"><label>Intro lines (one per line)</label>
+      ${enhancedTextarea((s.intro||[]).join('\n'), "pack.strings.intro=this.value.split('\\n').filter(x=>x)", 'five-line intro narration for a roguelike game, one sentence per line', 5)}</div>`;
+    body += `<div class="form-row-stacked"><label>Pack theme</label>${enhancedTextarea(pack.theme||'', "pack.theme=this.value||null", 'three-line theme description for a roguelike game pack', 3)}</div>`;
+  }
+  else if (packSettingsTab === 'prompts') {
+    body += `<div class="form-row-stacked"><label>Campaign cleared</label>${enhancedTextarea(s.campaign_cleared||'', "pack.strings.campaign_cleared=this.value", 'congratulations message when player clears a campaign', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Campaign conquered</label>${enhancedTextarea(s.campaign_conquered||'', "pack.strings.campaign_conquered=this.value", 'message when player conquers all campaigns, use {name} for campaign name', 3)}</div>`;
+    body += `<hr class="section-divider">`;
+    body += `<div class="form-row-stacked"><label>First</label>${enhancedTextarea(s.prompt_first||'', "pack.strings.prompt_first=this.value", 'three-line prompt asking player to press enter to start their first game', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Next</label>${enhancedTextarea(s.prompt_next||'', "pack.strings.prompt_next=this.value", 'three-line prompt asking player to press enter for the next world', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Resume</label>${enhancedTextarea(s.prompt_resume||'', "pack.strings.prompt_resume=this.value", 'three-line prompt asking player to press enter to resume', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Restart</label>${enhancedTextarea(s.prompt_restart||'', "pack.strings.prompt_restart=this.value", 'three-line prompt asking player to press enter to play again', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>After clear</label>${enhancedTextarea(s.prompt_after_clear||'', "pack.strings.prompt_after_clear=this.value", 'three-line prompt shown after clearing all campaigns', 3)}</div>`;
+  }
+  else if (packSettingsTab === 'items') {
+    if (!pack.item_sprites) pack.item_sprites = {};
+    if (!pack.item_names) pack.item_names = {};
+    if (!pack.item_descriptions) pack.item_descriptions = {};
+    const sprites = pack.item_sprites;
+    const names = pack.item_names;
+    const descs = pack.item_descriptions;
+    const spriteTypes = [
+      { key: 'potion', defaultName: 'Health Potion', prompt: 'a glowing healing potion bottle' },
+      { key: 'speed_potion', defaultName: 'Speed Potion', prompt: 'a swirling speed potion bottle with lightning energy' },
+      { key: 'bomb', defaultName: 'Bomb', prompt: 'a round bomb with a lit fuse' },
+      { key: 'gold', defaultName: 'Gold', prompt: 'a pile of gold coins' },
+      { key: 'key', defaultName: 'Key', prompt: 'an ornate dungeon key' },
+    ];
+    for (const st of spriteTypes) {
+      const itemName = names[st.key] || st.defaultName;
+      body += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px;">`;
+      body += `<div class="flex gap-8 items-center" style="margin-bottom:4px;">
+        ${enhancedInput(itemName, "updateItemName('" + st.key + "',this.value)", 'one-line item name for a roguelike game item', 'flex:1;font-weight:600;font-size:12px;')}
+        <button style="font-size:9px;padding:2px 4px;" onclick="resetItemName('${st.key}')" title="Reset to ${st.defaultName}">&#x21ba;</button>
+      </div>`;
+      const itemDesc = descs[st.key] || st.prompt;
+      body += `<div style="margin-bottom:4px;">
+        ${enhancedInput(itemDesc, "updateItemDesc('" + st.key + "',this.value)", 'one-line visual description of a game item for pixel art sprite generation — describe its appearance, shape, colors, and style', 'font-size:11px;color:#aaa;')}
+      </div>`;
+      body += `<div class="flex gap-8 items-center">`;
+      if (sprites[st.key]) {
+        body += `<img src="data:image/png;base64,${sprites[st.key]}" style="width:32px;height:32px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+          <button class="ai-btn" onclick="generateItemTypeSprite('${st.key}')" style="font-size:10px;">&#10024; Regen</button>
+          <button style="font-size:9px;padding:2px 4px;" onclick="clearItemTypeSprite('${st.key}')">Clear</button>`;
+      } else {
+        body += `<button class="ai-btn" onclick="generateItemTypeSprite('${st.key}')" style="font-size:10px;">&#10024; Sprite</button>`;
+      }
+      body += `</div></div>`;
+    }
+  }
+  return body;
+}
+
+function refreshPackSettings() {
+  const el = document.getElementById('pack-settings-body');
+  if (el) el.innerHTML = renderPackSettingsBody();
+  const tabs = document.getElementById('pack-settings-tabs');
+  if (tabs) {
+    tabs.querySelectorAll('button').forEach(b => {
+      b.classList.toggle('active', b.textContent.toLowerCase() === packSettingsTab);
+    });
+  }
+}
+
+async function createCampaign() {
+  try {
+    const c = await api('POST', '/api/campaigns');
+    pack.campaigns.push(c);
+    navigate('campaign', c.id);
+    showToast('Campaign created', 'success');
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function generateAICampaign() {
+  const theme = prompt('Optional theme (leave blank for random):');
+  if (theme === null) return;
+  showToast('Generating campaign... this may take a moment', 'info');
+  try {
+    const ow = await api('POST', '/api/generate/overworld', { theme: theme || null });
+    // Create campaign
+    const c = await api('POST', '/api/campaigns');
+    c.overworld = ow;
+    c.designs = [];
+    // Generate level designs
+    for (let i = 0; i < ow.levels.length; i++) {
+      const lv = ow.levels[i];
+      showToast(`Generating level ${i+1}/${ow.levels.length}: ${lv.name}`, 'info');
+      const design = await api('POST', '/api/generate/level-design', {
+        campaign_name: ow.name,
+        campaign_desc: ow.description,
+        level_config: {
+          title: lv.name, font: lv.font || ow.font || '', description: lv.description,
+          theme: lv.theme, palette: lv.palette || [], budget: lv.budget, floor: i + 1, campaign_tier: 0
+        },
+        theme: theme || null
+      });
+      c.designs.push(design);
+    }
+    // Update in pack
+    const idx = pack.campaigns.findIndex(x => x.id === c.id);
+    if (idx >= 0) pack.campaigns[idx] = c;
+    navigate('campaign', c.id);
+    showToast('AI campaign generated!', 'success');
+  } catch(e) { showToast('Generation failed: ' + e.message, 'error'); }
+}
+
+// ── Screen 2: Campaign Editor ──
+function renderCampaignEditor(el) {
+  const c = getCampaign(selectedCampaignId);
+  if (!c) { navigate(); return; }
+  let html = '<div class="campaign-layout">';
+  html += '<div class="center-panel" id="center-panel">';
+  html += '<div class="dag-toolbar" id="dag-toolbar">' + renderDAGToolbar() + '</div>';
+  html += `<div class="dag-container" id="dag-container"></div>`;
+  html += '</div>';
+  html += '<div class="left-panel" id="left-panel">' + renderLeftPanel(c) + '</div>';
+  html += '</div>';
+  el.innerHTML = html;
+  renderDAG(c);
+}
+
+let campaignTab = 'overview';
+
+function renderLeftPanel(c) {
+  const ow = c.overworld;
+  if (ow.font) loadGoogleFont(ow.font);
+  if (ow.description_font) loadGoogleFont(ow.description_font);
+  if (ow.label_font) loadGoogleFont(ow.label_font);
+
+  const tabs = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'monsters', label: 'Monsters' },
+    { id: 'settings', label: 'Store & Rules' },
+  ];
+
+  let html = `<div class="tab-bar" style="margin:-16px -16px 12px -16px;">`;
+  for (const t of tabs) {
+    html += `<button class="${campaignTab===t.id?'active':''}" onclick="campaignTab='${t.id}';document.getElementById('left-panel').innerHTML=renderLeftPanel(getCampaign(selectedCampaignId))">${t.label}</button>`;
+  }
+  html += `</div>`;
+
+  if (campaignTab === 'overview') {
+    // ── Basic ──
+    html += `<h3 style="margin-bottom:8px;color:#888;text-transform:uppercase;font-size:10px;letter-spacing:1px;">Basic</h3>`;
+    html += `<div class="form-row-stacked"><label>Campaign Name</label>
+      ${enhancedInput(ow.name, "updateOW('name',this.value)", 'campaign name for a roguelike game')}</div>`;
+    html += `<div class="form-row-stacked"><label>Description</label>
+      ${enhancedTextarea(ow.description, "updateOW('description',this.value)", 'five-line campaign overworld description', 5)}</div>`;
+    html += `<div class="form-row"><label>Text Color</label>
+      <input type="color" value="${ow.text_color||'#e8d8c8'}" onchange="updateOW('text_color',this.value)">
+      <span style="font-size:11px;color:#888">${ow.text_color||'#e8d8c8'}</span></div>`;
+
+    // ── Typography ──
+    html += `<hr class="section-divider">`;
+    html += `<h3 style="margin-bottom:8px;color:#888;text-transform:uppercase;font-size:10px;letter-spacing:1px;">Typography</h3>`;
+    html += `<div class="form-row"><label>Title Font</label>
+      ${fontSelect(ow.font, "updateOWFont('font',this.value)")}</div>`;
+    html += `<div class="form-row"><label>Desc Font</label>
+      ${fontSelect(ow.description_font, "updateOWFont('description_font',this.value)")}</div>`;
+    html += `<div class="form-row"><label>Label Font</label>
+      ${fontSelect(ow.label_font, "updateOWFont('label_font',this.value)")}</div>`;
+
+    // ── Background ──
+    html += `<hr class="section-divider">`;
+    html += `<h3 style="margin-bottom:8px;color:#888;text-transform:uppercase;font-size:10px;letter-spacing:1px;">Background</h3>`;
+
+    const bgMode = ow._bg_mode || (ow.bg_image ? 'image' : (ow.bg_gradient ? 'gradient' : 'solid'));
+    html += `<div class="flex gap-4 mb-8">
+      <button style="flex:1;font-size:11px;${bgMode==='solid'?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBgMode('solid')">Solid</button>
+      <button style="flex:1;font-size:11px;${bgMode==='gradient'?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBgMode('gradient')">Gradient</button>
+      <button style="flex:1;font-size:11px;${bgMode==='image'?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBgMode('image')">Image</button>
+    </div>`;
+
+    if (bgMode === 'solid') {
+      html += `<div class="form-row"><label>Color</label>
+        <input type="color" value="${ow.bg_color||'#0a0a0a'}" onchange="updateOW('bg_color',this.value)">
+        <span style="font-size:11px;color:#888">${ow.bg_color||'#0a0a0a'}</span></div>`;
+    } else if (bgMode === 'gradient') {
+      // Parse gradient into components
+      const grad = ow.bg_gradient || 'linear-gradient(135deg, #0a0a2e, #1a0a0a)';
+      const gm = grad.match(/(\d+)deg,\s*(#[0-9a-fA-F]{3,8}),\s*(#[0-9a-fA-F]{3,8})/);
+      const gAngle = gm ? gm[1] : '135';
+      const gColor1 = gm ? gm[2] : '#0a0a2e';
+      const gColor2 = gm ? gm[3] : '#1a0a0a';
+      html += `
+        <div class="flex gap-8 items-center mb-8">
+          <div><label style="font-size:11px;color:#888;">From</label><br>
+            <input type="color" value="${gColor1}" onchange="updateGradient()"></div>
+          <div><label style="font-size:11px;color:#888;">To</label><br>
+            <input type="color" value="${gColor2}" onchange="updateGradient()"></div>
+          <div style="flex:1;"><label style="font-size:11px;color:#888;">Angle ${gAngle}&deg;</label><br>
+            <input type="range" min="0" max="360" value="${gAngle}" style="width:100%;" oninput="updateGradient()"></div>
+        </div>
+        <div id="grad-preview" style="height:50px;border-radius:8px;border:1px solid var(--border);background:${grad};"></div>`;
+    } else {
+      html += `<div class="form-row-stacked"><label>Image Prompt</label>
+        <div class="flex gap-4 items-stretch">
+          <div class="enhanced-textarea" style="flex:1">
+            <textarea id="bg-prompt" rows="2" placeholder="dark fantasy landscape, starry sky...">${h(ow._bg_prompt||'')}</textarea>
+            <button class="enhance-btn" onclick="enhanceBgPrompt()" title="Enhance with AI">&#10024;</button>
+          </div>
+          <button class="primary" style="font-size:11px;padding:4px 12px;" onclick="generateBgImage()">Generate</button>
+        </div></div>`;
+      if (ow.bg_image) {
+        html += `<div style="margin-top:6px;position:relative;">
+          <img src="data:image/png;base64,${ow.bg_image}" style="width:100%;border-radius:6px;border:1px solid var(--border);">
+          <button class="danger" style="position:absolute;top:4px;right:4px;font-size:10px;padding:2px 6px;" onclick="updateOW('bg_image',null);renderDAG(getCampaign(selectedCampaignId));document.getElementById('left-panel').innerHTML=renderLeftPanel(getCampaign(selectedCampaignId))">&#10005;</button>
+        </div>`;
+      }
+    }
+
+    html += `<hr class="section-divider">
+      <button class="danger" onclick="deleteCampaign()">Delete Campaign</button>`;
+  }
+  else if (campaignTab === 'monsters') {
+    html += `<p class="note mb-8">Monsters shared across all levels.</p>`;
+    const cm = c.monster_templates || [];
+    for (let i = 0; i < cm.length; i++) {
+      html += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div class="flex gap-4 items-center mb-8">${enhancedInput(cm[i].name, "updateCampaignMonster("+i+",'name',this.value)", 'monster name for roguelike campaign', 'font-size:12px;font-weight:600;')}
+          <button class="danger" onclick="removeCampaignMonster(${i});document.getElementById('left-panel').innerHTML=renderLeftPanel(getCampaign(selectedCampaignId))" style="padding:2px 6px;font-size:10px;">x</button></div>
+        ${enhancedTextarea(cm[i].description||'', "updateCampaignMonster("+i+",'description',this.value)", 'short five-line monster description for a creature called '+cm[i].name+' in a roguelike dungeon', 5)}
+        <div class="flex gap-8 items-center" style="margin-top:6px;">
+          ${cm[i].image
+            ? `<img src="data:image/png;base64,${cm[i].image}" style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+               <button class="ai-btn" onclick="generateMonsterSprite(${i})" style="font-size:11px;">&#10024; Regen</button>
+               <button style="font-size:10px;padding:2px 6px;" onclick="clearMonsterSprite(${i})">Clear</button>`
+            : `<div style="width:48px;height:48px;border-radius:4px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:#555;">👾</div>
+               <button class="ai-btn" onclick="generateMonsterSprite(${i})">&#10024; Generate Sprite</button>`}
+        </div>
+      </div>`;
+    }
+    html += `<button onclick="addCampaignMonster();document.getElementById('left-panel').innerHTML=renderLeftPanel(getCampaign(selectedCampaignId))" style="font-size:12px;">+ Add Monster</button>`;
+  }
+  else if (campaignTab === 'settings') {
+    const store = ow.store || {};
+    const st = c.settings || {};
+    html += `<h3 style="margin-bottom:8px;">Store Inventory</h3>
+      <div class="form-row"><label>Healing Potions</label><input type="number" value="${store.healing_potions||0}" min="0" onchange="updateStore('healing_potions',+this.value)"></div>
+      <div class="form-row"><label>Speed Potions</label><input type="number" value="${store.speed_potions||0}" min="0" onchange="updateStore('speed_potions',+this.value)"></div>
+      <div class="form-row"><label>Bombs</label><input type="number" value="${store.bombs||0}" min="0" onchange="updateStore('bombs',+this.value)"></div>
+      <hr class="section-divider">
+      <h3 style="margin-bottom:8px;">Difficulty Rules</h3>
+      <div class="form-row"><label>Locked doors from level</label><input type="number" value="${st.locked_doors_from_level||3}" min="1" max="99" onchange="updateSetting('locked_doors_from_level',+this.value)"></div>
+      <div class="form-row"><label>Traps from level</label><input type="number" value="${st.traps_from_level||2}" min="1" max="99" onchange="updateSetting('traps_from_level',+this.value)"></div>
+      <div class="form-row"><label>Damage tiles from level</label><input type="number" value="${st.damage_tiles_from_level||4}" min="1" max="99" onchange="updateSetting('damage_tiles_from_level',+this.value)"></div>
+      <div class="form-row"><label>Damage per tile</label><input type="number" value="${st.damage_tile_damage||3}" min="1" max="99" onchange="updateSetting('damage_tile_damage',+this.value)"></div>`;
+  }
+
+  return html;
+}
+
+function updateOW(key, val) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld[key] = val;
+  if (['bg_color','text_color','name','description','font','description_font','bg_gradient','bg_image'].includes(key)) renderDAG(c);
+}
+function updateGradient() {
+  const c = getCampaign(selectedCampaignId);
+  const panel = document.getElementById('left-panel');
+  const inputs = panel.querySelectorAll('input[type="color"]');
+  const range = panel.querySelector('input[type="range"]');
+  if (inputs.length >= 2 && range) {
+    // The gradient color pickers are the last two color inputs in the bg section
+    const colors = Array.from(inputs).slice(-2);
+    const grad = `linear-gradient(${range.value}deg, ${colors[0].value}, ${colors[1].value})`;
+    c.overworld.bg_gradient = grad;
+    const preview = document.getElementById('grad-preview');
+    if (preview) preview.style.background = grad;
+    // Update angle label
+    const label = range.parentElement.querySelector('label');
+    if (label) label.textContent = `Angle ${range.value}°`;
+    renderDAG(c);
+  }
+}
+
+function setBgMode(mode) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld._bg_mode = mode;
+  if (mode === 'solid') { c.overworld.bg_gradient = null; c.overworld.bg_image = null; }
+  else if (mode === 'gradient') { c.overworld.bg_image = null; if (!c.overworld.bg_gradient) c.overworld.bg_gradient = 'linear-gradient(135deg, #0a0a2e, #1a0a0a)'; }
+  else if (mode === 'image') { c.overworld.bg_gradient = null; }
+  renderDAG(c);
+  document.getElementById('left-panel').innerHTML = renderLeftPanel(c);
+}
+async function enhanceBgPrompt() {
+  const el = document.getElementById('bg-prompt');
+  if (!el || !el.value.trim()) return;
+  showToast('Enhancing prompt...', 'info');
+  try {
+    const r = await api('POST', '/api/generate/description', { context: 'overworld background image for roguelike game', target: 'enhance this image prompt for a dark atmospheric game background: ' + el.value });
+    el.value = r.text;
+    getCampaign(selectedCampaignId).overworld._bg_prompt = r.text;
+    showToast('Prompt enhanced!', 'success');
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+async function generateBgImage() {
+  const el = document.getElementById('bg-prompt');
+  const prompt = el ? el.value : '';
+  if (!prompt.trim()) { showToast('Enter a prompt first', 'error'); return; }
+  const c = getCampaign(selectedCampaignId);
+  c.overworld._bg_prompt = prompt;
+  showToast('Generating background...', 'info');
+  try {
+    const r = await api('POST', '/api/generate-image', { prompt: 'Dark atmospheric game background. ' + prompt + '. Wide landscape, no text, no UI, no characters.', width: 512, height: 256 });
+    c.overworld.bg_image = r.image_base64;
+    renderDAG(c);
+    document.getElementById('left-panel').innerHTML = renderLeftPanel(c);
+    showToast('Background generated!', 'success');
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function updateOWFont(key, val) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld[key] = val || null;
+  if (val) loadGoogleFont(val);
+  renderDAG(c);
+}
+function updateSetting(key, val) {
+  const c = getCampaign(selectedCampaignId);
+  if (!c.settings) c.settings = {};
+  c.settings[key] = val;
+}
+async function generateItemTypeSprite(key) {
+  if (!pack.item_sprites) pack.item_sprites = {};
+  const defaults = { potion: 'a glowing healing potion bottle', speed_potion: 'a swirling speed potion bottle with lightning energy', bomb: 'a round bomb with a lit fuse', gold: 'a pile of gold coins', key: 'an ornate dungeon key' };
+  const desc = (pack.item_descriptions && pack.item_descriptions[key]) || defaults[key] || key;
+  const prompt = `2D pixel art sprite of ${desc} for a roguelike game. ` +
+    `Top-down view, 32x32 pixel art, single item centered on pure solid BLACK background (#000000). No text.`;
+  showToast(`Generating ${key} sprite...`, 'info');
+  try {
+    const r = await api('POST', '/api/generate-image', { prompt, width: 64, height: 64 });
+    const transparent = await removeBlackBackground(r.image_base64);
+    const cropped = await cropToContent(transparent);
+    pack.item_sprites[key] = cropped;
+    refreshPackSettings();
+    showToast('Sprite generated!', 'success');
+  } catch(e) { showToast('Sprite failed: ' + e.message, 'error'); }
+}
+
+function clearItemTypeSprite(key) {
+  if (pack.item_sprites) {
+    delete pack.item_sprites[key];
+    refreshPackSettings();
+  }
+}
+
+function resetItemName(key) {
+  if (pack.item_names) delete pack.item_names[key];
+  refreshPackSettings();
+}
+
+function updateItemName(key, val) {
+  if (!pack.item_names) pack.item_names = {};
+  pack.item_names[key] = val;
+}
+
+function updateItemDesc(key, val) {
+  if (!pack.item_descriptions) pack.item_descriptions = {};
+  pack.item_descriptions[key] = val;
+}
+
+function updateStore(key, val) {
+  const c = getCampaign(selectedCampaignId);
+  if (!c.overworld.store) c.overworld.store = {};
+  c.overworld.store[key] = val;
+}
+async function deleteCampaign() {
+  if (!confirm('Delete this campaign?')) return;
+  try {
+    await api('DELETE', `/api/campaigns/${selectedCampaignId}`);
+    pack.campaigns = pack.campaigns.filter(c => c.id !== selectedCampaignId);
+    navigate();
+    showToast('Campaign deleted', 'success');
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ── Connection Management ──
+
+function getConnections(c) {
+  if (c.overworld.connections) return c.overworld.connections;
+  // Generate default connections from the canonical DAG shape
+  return generateDefaultConnections(c);
+}
+
+function generateDefaultConnections(c) {
+  const levels = c.overworld.levels || [];
+  const bossLvl = c.overworld.boss_level != null ? c.overworld.boss_level : Math.min(levels.length - 1, 4);
+  const conns = [];
+  // Start → level 0
+  if (levels.length > 0) conns.push(['start', 'level_0']);
+  // Main path: 0→1→...→boss
+  for (let i = 0; i < bossLvl; i++) conns.push(['level_' + i, 'level_' + (i + 1)]);
+  // Boss → end
+  // Boss level is the end — no separate end node
+  // Branch levels chain off mid-path, ending at store
+  const branchFrom = Math.min(2, bossLvl);
+  const branchLevels = [];
+  for (let i = 0; i < levels.length; i++) {
+    if (i > bossLvl) branchLevels.push(i);
+  }
+  if (branchLevels.length > 0) {
+    conns.push(['level_' + branchFrom, 'level_' + branchLevels[0]]);
+    for (let j = 0; j < branchLevels.length - 1; j++) {
+      conns.push(['level_' + branchLevels[j], 'level_' + branchLevels[j + 1]]);
+    }
+    conns.push(['level_' + branchLevels[branchLevels.length - 1], 'store']);
+  } else {
+    conns.push(['level_' + branchFrom, 'store']);
+  }
+  // Store as the default
+  c.overworld.connections = conns;
+  return conns;
+}
+
+function deleteConnection(fromId, toId) {
+  const c = getCampaign(selectedCampaignId);
+  if (!c.overworld.connections) getConnections(c);
+  c.overworld.connections = c.overworld.connections.filter(
+    ([f, t]) => !(f === fromId && t === toId)
+  );
+  renderDAG(c);
+}
+
+function addConnection(fromId, toId) {
+  const c = getCampaign(selectedCampaignId);
+  if (!c.overworld.connections) getConnections(c);
+  // Don't add duplicates
+  if (c.overworld.connections.some(([f, t]) => f === fromId && t === toId)) return;
+  c.overworld.connections.push([fromId, toId]);
+  renderDAG(c);
+}
+
+function setBossLevel(idx) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld.boss_level = idx;
+  renderDAG(c);
+}
+
+function deleteLevel(idx) {
+  if (!confirm('Delete this level?')) return;
+  const c = getCampaign(selectedCampaignId);
+  c.overworld.levels.splice(idx, 1);
+  c.designs.splice(idx, 1);
+  dagSelectedNode = null;
+  // Re-index positions and connections: shift level_N → level_(N-1) for N > idx
+  const pos = dagPositions[c.id] || {};
+  const oldId = 'level_' + idx;
+  delete pos[oldId];
+  for (let i = idx; i < c.overworld.levels.length; i++) {
+    pos['level_' + i] = pos['level_' + (i + 1)] || { x: 60 + (i+1) * 150, y: 180 };
+    delete pos['level_' + (i + 1)];
+  }
+  // Fix connections referencing old indices
+  if (c.overworld.connections) {
+    const remap = (id) => {
+      if (id === oldId) return null;
+      if (id.startsWith('level_')) {
+        const n = parseInt(id.split('_')[1]);
+        if (n > idx) return 'level_' + (n - 1);
+      }
+      return id;
+    };
+    c.overworld.connections = c.overworld.connections
+      .map(([f, t]) => [remap(f), remap(t)])
+      .filter(([f, t]) => f && t);
+  }
+  // Fix boss_level
+  if (c.overworld.boss_level != null) {
+    if (c.overworld.boss_level === idx) c.overworld.boss_level = null;
+    else if (c.overworld.boss_level > idx) c.overworld.boss_level--;
+  }
+  render();
+}
+
+// ── DAG Editor ──
+function renderDAGToolbar() {
+  return `
+    <button onclick="autoLayout()">Auto Layout</button>
+    <span style="font-size:11px;color:#666;margin-left:8px;">Drag handle → node to connect &bull; Drag handle → empty to create level &bull; Click line to delete</span>`;
+}
+
+function initDagPositions(c) {
+  const levels = c.overworld.levels || [];
+  const key = c.id;
+  // Load from saved data if we don't have positions in memory
+  if (!dagPositions[key] && c.overworld.node_positions) {
+    dagPositions[key] = JSON.parse(JSON.stringify(c.overworld.node_positions));
+  }
+  if (!dagPositions[key]) dagPositions[key] = {};
+  const pos = dagPositions[key];
+  let needsLayout = false;
+  for (let i = 0; i < levels.length; i++) {
+    if (!pos['level_' + i]) { needsLayout = true; break; }
+  }
+  if (!pos['start']) needsLayout = true;
+  if (!pos['store']) needsLayout = true;
+  if (needsLayout) autoLayoutPositions(c, 'horizontal');
+}
+
+function saveDagPositions(c) {
+  const key = c.id;
+  if (dagPositions[key]) {
+    c.overworld.node_positions = JSON.parse(JSON.stringify(dagPositions[key]));
+  }
+}
+
+let layoutMode = 0;
+const LAYOUT_MODES = ['horizontal', 'arc', 'zigzag', 'diagonal', 'compact', 'staircase'];
+
+function autoLayoutPositions(c, mode) {
+  const levels = c.overworld.levels || [];
+  const key = c.id;
+  dagPositions[key] = {};
+  const pos = dagPositions[key];
+  const bossLvl = c.overworld.boss_level != null ? c.overworld.boss_level : Math.min(levels.length - 1, 4);
+  const gapX = 150, gapY = 90;
+  const mainLevels = []; // indices on main path
+  const branchLevels = [];
+  for (let i = 0; i < levels.length; i++) {
+    if (i <= bossLvl) mainLevels.push(i); else branchLevels.push(i);
+  }
+  // All nodes in order: start, main levels, end, branch levels, store
+  const allIds = ['start', ...mainLevels.map(i => 'level_'+i)];
+  const sideIds = [...branchLevels.map(i => 'level_'+i), 'store'];
+
+  if (mode === 'horizontal') {
+    const y = 180;
+    allIds.forEach((id, i) => { pos[id] = { x: 60 + i * gapX, y }; });
+    const bx = 60 + (Math.min(2, bossLvl) + 1) * gapX;
+    sideIds.forEach((id, i) => { pos[id] = { x: bx + i * gapX, y: y + gapY }; });
+  }
+  else if (mode === 'arc') {
+    const cx = 60 + allIds.length * gapX / 2, cy = 280;
+    allIds.forEach((id, i) => {
+      const t = i / Math.max(allIds.length - 1, 1);
+      const ang = Math.PI + t * Math.PI;
+      const rx = allIds.length * gapX / 2.2, ry = 120;
+      pos[id] = { x: cx + Math.cos(ang) * rx - 60, y: cy + Math.sin(ang) * ry - 25 };
+    });
+    sideIds.forEach((id, i) => { pos[id] = { x: cx - 60 + i * gapX, y: cy + 80 }; });
+  }
+  else if (mode === 'zigzag') {
+    allIds.forEach((id, i) => {
+      pos[id] = { x: 60 + i * gapX, y: 150 + (i % 2) * 80 };
+    });
+    const bx = 60 + (Math.min(2, bossLvl) + 1) * gapX;
+    sideIds.forEach((id, i) => { pos[id] = { x: bx + i * gapX, y: 150 + 80 + gapY }; });
+  }
+  else if (mode === 'compact') {
+    // 2-row grid: main path wraps into two rows, side branch hangs below
+    const perRow = Math.ceil(allIds.length / 2);
+    allIds.forEach((id, i) => {
+      const row = Math.floor(i / perRow);
+      const col = row === 0 ? i : (perRow - 1 - (i - perRow)); // reverse on row 2
+      pos[id] = { x: 60 + col * gapX, y: 120 + row * (gapY + 10) };
+    });
+    sideIds.forEach((id, i) => { pos[id] = { x: 60 + i * gapX, y: 120 + 2 * (gapY + 10) + 20 }; });
+  }
+  else if (mode === 'staircase') {
+    // Staircase: main path descends in steps, side branch goes right from mid
+    allIds.forEach((id, i) => {
+      pos[id] = { x: 60 + i * 120, y: 80 + i * 35 };
+    });
+    const mid = Math.min(2, allIds.length - 1);
+    const bx = 60 + mid * 120 + gapX;
+    const by = 80 + mid * 35;
+    sideIds.forEach((id, i) => { pos[id] = { x: bx + i * gapX, y: by }; });
+  }
+  else if (mode === 'diagonal') {
+    allIds.forEach((id, i) => {
+      pos[id] = { x: 60 + i * 130, y: 60 + i * 45 };
+    });
+    const bx = 60 + (Math.min(2, bossLvl) + 1) * 130;
+    const by = 60 + (Math.min(2, bossLvl) + 1) * 45;
+    sideIds.forEach((id, i) => { pos[id] = { x: bx + 80 + i * 130, y: by + 80 + i * 45 }; });
+  }
+}
+
+function autoLayout() {
+  const c = getCampaign(selectedCampaignId);
+  layoutMode = (layoutMode + 1) % LAYOUT_MODES.length;
+  autoLayoutPositions(c, LAYOUT_MODES[layoutMode]);
+  saveDagPositions(c);
+  renderDAG(c);
+  showToast(`Layout: ${LAYOUT_MODES[layoutMode]}`, 'info');
+}
+
+function renderDAG(c) {
+  const container = document.getElementById('dag-container');
+  if (!container) return;
+  initDagPositions(c);
+  const levels = c.overworld.levels || [];
+  const pos = dagPositions[c.id] || {};
+  // Compute bounding box for SVG size
+  let maxX = 0, maxY = 0;
+  for (const k in pos) {
+    if (pos[k].x + 120 > maxX) maxX = pos[k].x + 120;
+    if (pos[k].y + 50 > maxY) maxY = pos[k].y + 50;
+  }
+  const W = maxX + 40;
+  const H = Math.max(300, maxY + 80);
+
+  let svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" id="dag-svg">`;
+  svg += `<defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <polygon points="0 0, 8 3, 0 6" fill="rgba(255,255,255,.7)"/></marker>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.4"/></filter>
+    <filter id="glow-red" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#e94560" flood-opacity="0.5"/></filter>
+    <filter id="glow-accent" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#e94560" flood-opacity="0.6"/></filter>
+  </defs>`;
+
+  // Node sizes vary: start/end = 100x44, store = 120x44, levels = 120x50
+  const nodeSize = (id) => {
+    if (id === 'start') return [100, 44];
+    if (id === 'store') return [120, 44];
+    return [120, 50];
+  };
+  const nodeHandlesFor = (id, n) => {
+    const [nw, nh] = nodeSize(id);
+    return [
+      { x: n.x + nw/2, y: n.y },
+      { x: n.x + nw, y: n.y + nh/2 },
+      { x: n.x + nw/2, y: n.y + nh },
+      { x: n.x, y: n.y + nh/2 },
+    ];
+  };
+  // Each handle knows its direction: which way the control point should extend
+  const outputHandles = (id, n) => {
+    const [nw, nh] = nodeSize(id);
+    return [
+      { x: n.x + nw, y: n.y + nh/2, dx: 1, dy: 0 },   // right
+      { x: n.x + nw/2, y: n.y + nh, dx: 0, dy: 1 },    // bottom
+    ];
+  };
+  const inputHandles = (id, n) => {
+    const [nw, nh] = nodeSize(id);
+    return [
+      { x: n.x, y: n.y + nh/2, dx: -1, dy: 0 },        // left
+      { x: n.x + nw/2, y: n.y, dx: 0, dy: -1 },         // top
+    ];
+  };
+  const closestHandles = (fromId, toId, from, to) => {
+    const outs = outputHandles(fromId, from);
+    const ins = inputHandles(toId, to);
+    let best = null, bestDist = Infinity;
+    for (const f of outs) {
+      for (const t of ins) {
+        const d = (f.x - t.x) ** 2 + (f.y - t.y) ** 2;
+        if (d < bestDist) { bestDist = d; best = { fx: f.x, fy: f.y, fdx: f.dx, fdy: f.dy, tx: t.x, ty: t.y, tdx: t.dx, tdy: t.dy }; }
+      }
+    }
+    return best;
+  };
+  const bezierCP = (h) => {
+    // Control points extend in the handle's facing direction, guaranteeing the curve routes away from the node
+    const dist = Math.sqrt((h.tx - h.fx) ** 2 + (h.ty - h.fy) ** 2);
+    const off = Math.max(50, dist * 0.4);
+    return {
+      cx1: h.fx + h.fdx * off,
+      cy1: h.fy + h.fdy * off,
+      cx2: h.tx + h.tdx * off,
+      cy2: h.ty + h.tdy * off,
+    };
+  };
+  const drawLine = (fromId, toId) => {
+    const from = pos[fromId], to = pos[toId];
+    if (!from || !to) return '';
+    const h = closestHandles(fromId, toId, from, to);
+    if (!h) return '';
+    const cp = bezierCP(h);
+    return `<path class="conn-visible" d="M${h.fx},${h.fy} C${cp.cx1},${cp.cy1} ${cp.cx2},${cp.cy2} ${h.tx},${h.ty}" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>`;
+  };
+  const drawConnection = (fromId, toId) => {
+    const from = pos[fromId], to = pos[toId];
+    if (!from || !to) return '';
+    const h = closestHandles(fromId, toId, from, to);
+    if (!h) return '';
+    const cp = bezierCP(h);
+    const d = `M${h.fx},${h.fy} C${cp.cx1},${cp.cy1} ${cp.cx2},${cp.cy2} ${h.tx},${h.ty}`;
+    return `<g class="conn-group" style="cursor:pointer" onclick="deleteConnection('${fromId}','${toId}')">
+      <path d="${d}" fill="none" stroke="rgba(0,0,0,.5)" stroke-width="4" stroke-linecap="round"/>
+      <path class="conn-visible" d="${d}" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+      <path d="${d}" fill="none" stroke="transparent" stroke-width="14"/>
+    </g>`;
+  };
+
+  // Use stored connections, or generate defaults
+  const conns = getConnections(c);
+  for (const [from, to] of conns) {
+    svg += drawConnection(from, to);
+  }
+
+  // Connection handles: 4 per node (top, right, bottom, left)
+  const handles = (nodeId, px, py, nw, nh) => {
+    nw = nw || 120; nh = nh || 50;
+    const pts = [
+      [px + nw/2, py, nodeId],       // top center
+      [px + nw, py + nh/2, nodeId],  // right center
+      [px + nw/2, py + nh, nodeId],  // bottom center
+      [px, py + nh/2, nodeId],       // left center
+    ];
+    return pts.map(([cx, cy, id]) =>
+      `<circle cx="${cx}" cy="${cy}" r="4" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.4)" stroke-width="1" class="conn-handle" style="cursor:crosshair" onmousedown="event.stopPropagation();startConnDrag(event,'${id}')"/>`
+    ).join('');
+  };
+
+  // Start node
+  const sp = pos['start'] || { x: 60, y: 180 };
+  svg += `<g class="dag-node" data-id="start" onmousedown="dagMouseDown(event,'start')" filter="url(#shadow)">
+    <rect x="${sp.x}" y="${sp.y}" width="100" height="44" rx="22" fill="#2e7d32" stroke="rgba(76,175,80,.4)" stroke-width="1.5"/>
+    <text x="${sp.x+50}" y="${sp.y+27}" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" letter-spacing="1">START</text>
+    ${handles('start', sp.x, sp.y, 100, 44)}</g>`;
+
+  // Level nodes
+  for (let i = 0; i < levels.length; i++) {
+    const lv = levels[i];
+    const p = pos['level_' + i] || { x: 200 + i * 140, y: 180 };
+    const fill = lv.palette && lv.palette[0] ? lv.palette[0] : (lv.color || '#0f3460');
+    const bossIdx = c.overworld.boss_level != null ? c.overworld.boss_level : Math.min(levels.length - 1, 4);
+    const isFinalBoss = i === bossIdx;
+    const isSelected = dagSelectedNode === i;
+    const strokeCol = isFinalBoss ? '#e94560' : 'rgba(255,255,255,.12)';
+    const strokeW = isFinalBoss ? 2.5 : (isSelected ? 2.5 : 1);
+    const selStroke = isSelected ? '#e94560' : strokeCol;
+    const nodeFilter = isSelected ? 'filter="url(#glow-accent)"' : (isFinalBoss ? 'filter="url(#glow-red)"' : 'filter="url(#shadow)"');
+    svg += `<g class="dag-node ${isSelected ? 'selected' : ''}" data-id="level_${i}"
+      onmousedown="dagMouseDown(event,'level_${i}')" ${nodeFilter}>
+      <rect x="${p.x}" y="${p.y}" width="120" height="50" rx="12" fill="${h(fill)}" stroke="${selStroke}" stroke-width="${strokeW}"/>
+      <rect x="${p.x}" y="${p.y}" width="120" height="24" rx="12" fill="rgba(255,255,255,.06)"/>
+      <text x="${p.x+60}" y="${p.y+19}" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" letter-spacing="0.3">${h(lv.name||'Level '+(i+1))}</text>
+      <rect x="${p.x+8}" y="${p.y+28}" width="34" height="16" rx="8" fill="rgba(255,255,255,.1)"/>
+      <text x="${p.x+25}" y="${p.y+39}" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="8" font-weight="600">Lvl ${i+1}</text>
+      <rect x="${p.x+78}" y="${p.y+28}" width="34" height="16" rx="8" fill="rgba(255,255,255,.1)"/>
+      <text x="${p.x+95}" y="${p.y+39}" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="8" font-weight="600">${lv.budget||0}$</text>
+      ${handles('level_'+i, p.x, p.y)}</g>`;
+  }
+
+  // Store node
+  const stp = pos['store'] || { x: 800, y: 110 };
+  svg += `<g class="dag-node" data-id="store" onmousedown="dagMouseDown(event,'store')" filter="url(#shadow)">
+    <rect x="${stp.x}" y="${stp.y}" width="120" height="44" rx="22" fill="#5d4e37" stroke="rgba(255,215,0,.3)" stroke-width="1.5"/>
+    <text x="${stp.x+60}" y="${stp.y+27}" text-anchor="middle" fill="#ffd700" font-size="12" font-weight="700" letter-spacing="1">STORE</text>
+    ${handles('store', stp.x, stp.y, 120, 44)}</g>`;
+
+  // No END node — boss level is the end
+
+  svg += '</svg>';
+
+  // Node popup for selected level
+  let popup = '';
+  if (dagSelectedNode !== null && dagSelectedNode < levels.length) {
+    const lv = levels[dagSelectedNode];
+    const nodePos = pos['level_' + dagSelectedNode];
+    if (nodePos) {
+      const px = nodePos.x + 60; // center-aligned with node
+      const py = nodePos.y + 50; // flush with node bottom
+      const isBoss = (c.overworld.boss_level != null ? c.overworld.boss_level : Math.min(levels.length-1, 4)) === dagSelectedNode;
+      popup = `<div class="dag-popup" style="left:${px}px;top:${py}px;">
+        <div style="display:flex;gap:3px;align-items:center;">
+          <span style="font-size:11px;color:#888;">$</span>
+          <input type="number" value="${lv.budget||0}" min="0" max="999" style="width:44px;font-size:11px;padding:1px 3px;"
+            onchange="updateLevel(${dagSelectedNode},'budget',+this.value);renderDAG(getCampaign(selectedCampaignId))">
+          <button style="font-size:8px;padding:1px 4px;line-height:1;${isBoss?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBossLevel(${dagSelectedNode})" title="Boss">${isBoss?'&#9733;':'&#9734;'}</button>
+          <button class="danger" style="font-size:8px;padding:1px 4px;line-height:1;" onclick="deleteLevel(${dagSelectedNode})" title="Delete">&#10005;</button>
+        </div>
+      </div>`;
+    }
+  }
+
+  // Title header + live bg/text color
+  const ow = c.overworld;
+  const bg = ow.bg_color || '#0d0d1e';
+  const tc = ow.text_color || '#e8e8e8';
+  const titleFont = ow.font ? `font-family:'${ow.font}',system-ui` : '';
+  const descFont = ow.description_font ? `font-family:'${ow.description_font}',system-ui` : '';
+  if (ow.font) loadGoogleFont(ow.font);
+  if (ow.description_font) loadGoogleFont(ow.description_font);
+  if (ow.bg_image) {
+    container.style.background = `url('data:image/png;base64,${ow.bg_image}') center/cover no-repeat`;
+  } else if (ow.bg_gradient) {
+    container.style.background = ow.bg_gradient;
+  } else {
+    container.style.background = bg;
+  }
+
+  const header = `<div class="dag-header">
+    <h2 style="${titleFont};color:${tc};font-size:24px;">${h(ow.name)}</h2>
+    <p style="${descFont};color:${tc}">${h(ow.description)}</p>
+  </div>`;
+
+  container.innerHTML = header + `<div style="position:relative;display:flex;justify-content:center;"><div style="position:relative;">` + svg + popup + `</div></div>`;
+
+  // Attach drag handlers
+  const svgEl = document.getElementById('dag-svg');
+  svgEl.addEventListener('mousemove', dagMouseMove);
+  svgEl.addEventListener('mouseup', dagMouseUp);
+  svgEl.addEventListener('mouseleave', dagMouseUp);
+  // Click blank canvas to deselect
+  svgEl.addEventListener('click', (e) => {
+    if (e.target === svgEl || e.target.tagName === 'svg') {
+      dagSelectedNode = null;
+      renderDAG(c);
+    }
+  });
+}
+
+function dagMouseDown(e, nodeId) {
+  e.preventDefault();
+  const c = getCampaign(selectedCampaignId);
+  const pos = dagPositions[c.id] || {};
+  const p = pos[nodeId];
+  if (!p) return;
+
+  if (addConnectionMode) {
+    if (!connectionSource) {
+      connectionSource = nodeId;
+      document.getElementById('dag-status').textContent = 'Click target node...';
+    } else {
+      addConnectionMode = false;
+      connectionSource = null;
+      document.getElementById('conn-btn').style.background = '';
+      document.getElementById('dag-status').textContent = '';
+    }
+    return;
+  }
+
+  // Double-click detection: if same node clicked twice within 400ms, open level editor
+  if (nodeId.startsWith('level_')) {
+    if (dagClickNodeId === nodeId && dagClickTimer) {
+      // Double click detected
+      clearTimeout(dagClickTimer);
+      dagClickTimer = null;
+      dagClickNodeId = null;
+      const idx = parseInt(nodeId.split('_')[1]);
+      selectLevel(idx);
+      return;
+    }
+    // First click — highlight and wait for possible second click
+    dagClickNodeId = nodeId;
+    if (dagClickTimer) clearTimeout(dagClickTimer);
+    dagClickTimer = setTimeout(() => {
+      dagClickTimer = null;
+      dagClickNodeId = null;
+    }, 400);
+    const idx = parseInt(nodeId.split('_')[1]);
+    dagSelectedNode = idx;
+  }
+
+  // Re-render DAG to show popup on selected node
+  if (!dagDragMoved) renderDAG(c);
+
+  // Start drag tracking (won't actually move unless mouse moves)
+  const svg = document.getElementById('dag-svg');
+  const pt = svg.getBoundingClientRect();
+  dagDragging = nodeId;
+  dagDragOffset = { x: e.clientX - pt.left - p.x, y: e.clientY - pt.top - p.y };
+  dagDragMoved = false;
+}
+
+let dagConnecting = false;
+let connDragSource = null;
+let connDragStart = null; // {x,y} of the handle we started from
+
+function startConnDrag(e, nodeId) {
+  e.stopPropagation();
+  e.preventDefault();
+  connDragSource = nodeId;
+  // Capture the handle position from the clicked circle
+  const circle = e.target;
+  connDragStart = { x: parseFloat(circle.getAttribute('cx')), y: parseFloat(circle.getAttribute('cy')) };
+  const svg = document.getElementById('dag-svg');
+  if (svg) {
+    svg.addEventListener('mousemove', connDragMove);
+    svg.addEventListener('mouseup', connDragEnd);
+    svg.addEventListener('mouseleave', connDragEnd);
+  }
+}
+
+function connDragMove(e) {
+  if (!connDragSource) return;
+  const svg = document.getElementById('dag-svg');
+  if (!svg) return;
+  // Remove old temp line
+  const old = document.getElementById('conn-temp-line');
+  if (old) old.remove();
+  const c = getCampaign(selectedCampaignId);
+  const pos = dagPositions[c.id] || {};
+  const fromPos = pos[connDragSource];
+  if (!fromPos) return;
+  const container = document.getElementById('dag-container');
+  const pt = svg.getBoundingClientRect();
+  const scrollX = container ? container.scrollLeft : 0;
+  const scrollY = container ? container.scrollTop : 0;
+  const mx = e.clientX - pt.left + scrollX, my = e.clientY - pt.top + scrollY;
+  const fx = connDragStart ? connDragStart.x : fromPos.x + 60;
+  const fy = connDragStart ? connDragStart.y : fromPos.y + 25;
+  const dx = Math.abs(mx - fx), dy = Math.abs(my - fy);
+  const off = Math.max(dx, dy) * 0.5;
+  const cx1 = dx >= dy ? fx + (mx > fx ? off : -off) : fx;
+  const cy1 = dx >= dy ? fy : fy + (my > fy ? off : -off);
+  const cx2 = dx >= dy ? mx - (mx > fx ? off : -off) : mx;
+  const cy2 = dx >= dy ? my : my - (my > fy ? off : -off);
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('id', 'conn-temp-line');
+  path.setAttribute('d', `M${fx},${fy} C${cx1},${cy1} ${cx2},${cy2} ${mx},${my}`);
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', '#e94560');
+  path.setAttribute('stroke-width', '2');
+  path.setAttribute('stroke-dasharray', '6,4');
+  svg.appendChild(path);
+}
+
+function connDragEnd(e) {
+  const old = document.getElementById('conn-temp-line');
+  if (old) old.remove();
+  if (connDragSource && e) {
+    const svg = document.getElementById('dag-svg');
+    const c = getCampaign(selectedCampaignId);
+    const pos = dagPositions[c.id] || {};
+    if (svg) {
+      const container = document.getElementById('dag-container');
+      const pt = svg.getBoundingClientRect();
+      const scrollX = container ? container.scrollLeft : 0;
+      const scrollY = container ? container.scrollTop : 0;
+      const mx = e.clientX - pt.left + scrollX, my = e.clientY - pt.top + scrollY;
+      // Check if dropped on an existing node (with generous 20px padding)
+      let hitNode = null;
+      let bestDist = Infinity;
+      for (const nodeId in pos) {
+        if (nodeId === connDragSource) continue;
+        const p = pos[nodeId];
+        const cx = p.x + 60, cy = p.y + 25;
+        const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
+        if (dist < 80 && dist < bestDist) {
+          bestDist = dist;
+          hitNode = nodeId;
+        }
+      }
+      if (hitNode) {
+        addConnection(connDragSource, hitNode);
+      } else if (mx > 0 && my > 0) {
+        // Dropped on blank canvas — create a new level here
+        const newIdx = c.overworld.levels.length;
+        c.overworld.levels.push({
+          name: 'New Level', font: null, description: '', theme: '',
+          color: null, palette: ['#444444', '#666666', '#888888'], budget: 150
+        });
+        // Ensure matching design
+        while (c.designs.length < c.overworld.levels.length) {
+          c.designs.push({
+            tile_defs: [{ name: 'wall', char: '#' }, { name: 'floor', char: '.' }],
+            boss: { name: '', hp: 0, attack: 0, defense: 0, xp_value: 0, description: '' },
+            monster_types: [], weapon: { name: '', description: '' },
+            armor: { name: '', description: '' }, traps: [],
+            mode: { root: 'C', scale: 'aeolian' },
+            victory_message: '', defeat_message: '', budget_spent: null
+          });
+        }
+        const newId = 'level_' + newIdx;
+        pos[newId] = { x: mx - 60, y: my - 25 };
+        // Connect from source to new node
+        if (!c.overworld.connections) getConnections(c);
+        c.overworld.connections.push([connDragSource, newId]);
+        renderDAG(c);
+      }
+      svg.removeEventListener('mousemove', connDragMove);
+      svg.removeEventListener('mouseup', connDragEnd);
+      svg.removeEventListener('mouseleave', connDragEnd);
+    }
+  }
+  connDragSource = null;
+}
+
+function dagMouseMove(e) {
+  if (!dagDragging) return;
+  dagDragMoved = true;
+  const c = getCampaign(selectedCampaignId);
+  const svg = document.getElementById('dag-svg');
+  const pt = svg.getBoundingClientRect();
+  const x = e.clientX - pt.left - dagDragOffset.x;
+  const y = e.clientY - pt.top - dagDragOffset.y;
+  dagPositions[c.id][dagDragging] = { x: Math.max(0, x), y: Math.max(0, y) };
+  saveDagPositions(c);
+  renderDAG(c);
+}
+
+function dagMouseUp(e) {
+  dagDragging = null;
+  dagDragMoved = false;
+}
+
+function selectLevel(idx) {
+  selectedLevelIdx = idx;
+  currentTab = 'level';
+  render();
+  showCurrentMap();
+}
+
+let currentTab = 'level';
+let placementTool = 'none';
+
+// Budget costs per entity type (matching engine costs in gen.rs)
+const ENTITY_COSTS = {
+  monster: 6,   // avg of 5-8
+  trap: 5,      // avg of 3-8
+  gold: 3,      // avg of 2-5
+  potion: 0,    // free
+  weapon: 0,    // free
+  armor: 0,     // free
+  key: 0,       // free
+  speed_potion: 0,
+  bomb: 0,
+};
+
+function calcBudgetSpent(pe, levelIdx) {
+  let spent = 0;
+  // Boss: ~20% of budget
+  const c = getCampaign(selectedCampaignId);
+  const lv = c?.overworld?.levels?.[levelIdx];
+  const budget = lv?.budget || 0;
+  spent += Math.round(budget * 0.20); // boss always costs ~20%
+  spent += (pe.monsters?.length || 0) * ENTITY_COSTS.monster;
+  spent += (pe.traps?.length || 0) * ENTITY_COSTS.trap;
+  for (const it of (pe.items || [])) {
+    spent += ENTITY_COSTS[it.item_type] || 3;
+  }
+  return spent;
+}
+
+function renderLevelScreen(el) {
+  const c = getCampaign(selectedCampaignId);
+  const idx = selectedLevelIdx;
+  if (!c || idx === null || !c.overworld.levels[idx]) { selectedLevelIdx = null; render(); return; }
+  const lv = c.overworld.levels[idx];
+  const design = c.designs[idx] || {};
+  if (lv.font) loadGoogleFont(lv.font);
+  const fontStyle = lv.font ? `font-family:'${lv.font}',system-ui` : '';
+
+  let html = `<div class="level-screen">`;
+
+  // ── Left: map area (65%) ──
+  html += `<div class="level-map-area">`;
+  // Back button is in the title bar now
+  html += `<div class="level-title" style="${fontStyle}">${h(lv.name || 'Untitled Level')}</div>`;
+  const pe = design.placed_entities || { monsters: [], items: [], traps: [] };
+  const trayCount = generateTray(c, idx, pe).length;
+  const totalEntities = pe.monsters.length + pe.items.length + pe.traps.length;
+  const statusColor = trayCount === 0 ? '#66bb6a' : '#888';
+  const statusText = trayCount === 0
+    ? (totalEntities > 0 ? '&#10003; Placement complete' : 'Budget: ' + (lv.budget||0))
+    : `${trayCount} to place`;
+  html += `<div class="level-subtitle">Level ${idx+1} of ${c.overworld.levels.length} &mdash;
+    <span style="color:${statusColor};">${statusText}</span></div>`;
+  // Scrabble tray: generate unplaced entities from budget
+  const tray = generateTray(c, idx, pe);
+  if (tray.length > 0) {
+    html += `<div class="entity-tray" id="entity-tray">`;
+    for (let ti = 0; ti < tray.length; ti++) {
+      const t = tray[ti];
+      const sprite = t.image ? `<img src="data:image/png;base64,${t.image}" style="width:28px;height:28px;image-rendering:pixelated;">` : t.icon;
+      html += `<div class="tray-item" draggable="true" data-name="${h(t.name)}" ondragstart="trayDragStart(event,${idx},${ti})" ondblclick="trayAutoPlace(${idx},${ti})">
+        <span class="tray-icon">${sprite}</span>
+      </div>`;
+    }
+    html += `</div>`;
+  } else if (pe.monsters.length > 0 || pe.items.length > 0 || pe.traps.length > 0) {
+    html += `<div style="text-align:center;padding:6px;font-size:11px;color:#66bb6a;">&#10003; All entities placed! Right-click map to remove.</div>`;
+  }
+
+  html += `<canvas id="map-canvas" class="map-canvas" width="900" height="540" onmousedown="mapEntityDragStart(event,${idx})" oncontextmenu="onMapRightClick(event,${idx})" ondragover="trayDragOver(event)" ondragleave="trayDragLeave()" ondrop="trayDrop(event,${idx})" style="cursor:default"></canvas>`;
+  html += `<div class="map-controls">
+    <button class="primary" onclick="regenerateMap(${idx})">Regen Map</button>
+    <button onclick="autoplaceAll(${idx})">Autoplace All</button>
+    <button onclick="displaceAll(${idx});renderLevelScreen(document.getElementById('screen-container'));showCurrentMap()">Clear All</button>
+    <span id="map-status" style="font-size:12px;color:#888;"></span>
+    <span style="font-size:11px;color:#555;">
+      <span style="color:#66bb6a">&#9632;</span> Player
+      <span style="color:#e94560">&#9632;</span> Boss
+      <span style="color:#4dd0e1">&#9632;</span> Key
+      <span style="color:#ff69b4">&#9632;</span> Monster
+      <span style="color:#ffa726">&#9632;</span> Item
+      <span style="color:#ff4444">X</span> Trap
+    </span>
+  </div>`;
+  html += `</div>`;
+
+  // ── Right: tabbed sidebar (35%) ──
+  html += `<div class="level-sidebar">`;
+  html += `<div class="tab-bar">`;
+  const tabs = [
+    { id: 'level', label: 'Level' },
+    { id: 'tiles', label: 'Tiles' },
+    { id: 'creatures', label: 'Creatures' },
+    { id: 'items', label: 'Items' },
+    { id: 'music', label: 'Music' },
+  ];
+  for (const t of tabs) {
+    html += `<button class="${currentTab===t.id?'active':''}" onclick="currentTab='${t.id}';render()">${t.label}</button>`;
+  }
+  html += `</div>`;
+  html += `<div class="tab-content">`;
+  html += renderTabContent(c, idx, lv, design);
+  html += `</div></div>`;
+
+  html += `</div>`; // end level-screen
+  el.innerHTML = html;
+}
+
+function renderTabContent(c, idx, lv, design) {
+  const pal = lv.palette || [];
+  switch (currentTab) {
+    case 'level': return renderLevelTab(idx, lv, design);
+    case 'tiles': return renderTilesTab(idx, lv, design, pal);
+    case 'creatures': return renderCreaturesTab(c, idx, design);
+    case 'items': return renderItemsTab(idx, design);
+    case 'music': return renderMusicTab(idx, design);
+    default: return '';
+  }
+}
+
+function renderLevelTab(idx, lv, design) {
+  let s = '';
+  s += `<div class="form-row-stacked"><label>Name</label>
+    ${enhancedInput(lv.name, "updateLevel("+idx+",'name',this.value)", 'level name for roguelike dungeon', 'font-size:16px;font-weight:600;')}</div>`;
+  s += `<hr class="section-divider">`;
+  s += `<h3 style="margin-bottom:8px;color:#888;text-transform:uppercase;font-size:10px;letter-spacing:1px;">Typography</h3>`;
+  s += `<div class="form-row"><label>Font</label>${fontSelect(lv.font, "updateLevelFont("+idx+",this.value)")}</div>`;
+  s += `<hr class="section-divider">`;
+  s += `<div class="form-row-stacked"><label>Description</label>
+    ${enhancedTextarea(lv.description, "updateLevel("+idx+",'description',this.value)", 'five-line level description', 5)}</div>`;
+  // Auto-sync palette from tiles silently
+  const defs = (design.tile_defs || []);
+  const pal = lv.palette || [];
+  while (pal.length < defs.length) pal.push('#555555');
+  lv.palette = pal;
+  s += `<hr class="section-divider">`;
+  s += `<button class="ai-btn" style="width:100%;padding:8px;" onclick="aiGenFullLevel(${idx})">&#10024; Generate Full Level Design (AI)</button>`;
+  s += `<hr class="section-divider">`;
+  s += renderMessages(idx, design);
+  return s;
+}
+
+function renderTilesTab(idx, lv, design, pal) {
+  return renderTileDefs(idx, design, pal);
+}
+
+function renderCreaturesTab(c, idx, design) {
+  let s = '';
+  s += `<h3>Boss</h3>`;
+  s += renderBoss(idx, design);
+  return s;
+}
+
+function renderItemsTab(idx, design) {
+  let s = '';
+  s += `<h3>Weapon</h3>`;
+  s += renderWeapon(idx, design);
+  s += `<hr class="section-divider">`;
+  s += `<h3>Armor</h3>`;
+  s += renderArmor(idx, design);
+  s += `<hr class="section-divider">`;
+  s += `<h3>Traps</h3>`;
+  s += renderTraps(idx, design);
+  return s;
+}
+
+function renderMusicTab(idx, design) {
+  return renderMode(idx, design);
+}
+
+async function generateMonsterSprite(i) {
+  const c = getCampaign(selectedCampaignId);
+  const m = c.monster_templates && c.monster_templates[i];
+  if (!m) return;
+  const desc = m.description || '';
+  const prompt = `2D pixel art sprite of a roguelike game monster called "${m.name}". ${desc}. ` +
+    `Top-down view, 32x32 pixel art, single creature centered on a pure solid BLACK background (#000000). ` +
+    `Simple, readable silhouette. Bright colorful creature on BLACK. No text, no UI, no ground, no shadows.`;
+  showToast('Generating sprite...', 'info');
+  try {
+    const r = await api('POST', '/api/generate-image', { prompt, width: 64, height: 64 });
+    const transparent = await removeBlackBackground(r.image_base64);
+    const cropped = await cropToContent(transparent);
+    m.image = cropped;
+    document.getElementById('left-panel').innerHTML = renderLeftPanel(c);
+    showToast('Sprite generated!', 'success');
+  } catch(e) { showToast('Sprite failed: ' + e.message, 'error'); }
+}
+
+function removeBlackBackground(b64) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width;
+      c.height = img.height;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, c.width, c.height);
+      const px = data.data;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i], g = px[i+1], b = px[i+2];
+        const brightness = (r + g + b) / 3;
+        if (brightness < 30) {
+          // Near-black → fully transparent
+          px[i+3] = 0;
+        } else if (brightness < 60) {
+          // Dark → fade to transparent (smooth edge)
+          px[i+3] = Math.round((brightness - 30) / 30 * 255);
+        }
+        // else: keep as-is
+      }
+      ctx.putImageData(data, 0, 0);
+      resolve(c.toDataURL('image/png').split(',')[1]);
+    };
+    img.onerror = () => resolve(b64);
+    img.src = 'data:image/png;base64,' + b64;
+  });
+}
+
+function cropToContent(b64) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width;
+      c.height = img.height;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, c.width, c.height);
+      const px = data.data;
+      let minX = c.width, minY = c.height, maxX = 0, maxY = 0;
+      for (let y = 0; y < c.height; y++) {
+        for (let x = 0; x < c.width; x++) {
+          const a = px[(y * c.width + x) * 4 + 3];
+          if (a > 10) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (maxX <= minX || maxY <= minY) { resolve(b64); return; }
+      // Add 1px padding
+      minX = Math.max(0, minX - 1);
+      minY = Math.max(0, minY - 1);
+      maxX = Math.min(c.width - 1, maxX + 1);
+      maxY = Math.min(c.height - 1, maxY + 1);
+      const cw = maxX - minX + 1, ch = maxY - minY + 1;
+      // Make it square (use the larger dimension)
+      const size = Math.max(cw, ch);
+      const out = document.createElement('canvas');
+      out.width = size;
+      out.height = size;
+      const octx = out.getContext('2d');
+      octx.drawImage(c, minX, minY, cw, ch, (size - cw) / 2, (size - ch) / 2, cw, ch);
+      resolve(out.toDataURL('image/png').split(',')[1]);
+    };
+    img.onerror = () => resolve(b64);
+    img.src = 'data:image/png;base64,' + b64;
+  });
+}
+
+function clearMonsterSprite(i) {
+  const c = getCampaign(selectedCampaignId);
+  if (c.monster_templates && c.monster_templates[i]) {
+    delete c.monster_templates[i].image;
+    document.getElementById('left-panel').innerHTML = renderLeftPanel(c);
+  }
+}
+
+function addCampaignMonster() {
+  const c = getCampaign(selectedCampaignId);
+  if (!c.monster_templates) c.monster_templates = [];
+  c.monster_templates.push({ name: 'New Monster', hp: 0, attack: 0, defense: 0, xp_value: 0, description: '' });
+  render();
+}
+function removeCampaignMonster(i) {
+  const c = getCampaign(selectedCampaignId);
+  if (c.monster_templates) c.monster_templates.splice(i, 1);
+  render();
+}
+function updateCampaignMonster(i, field, val) {
+  const c = getCampaign(selectedCampaignId);
+  if (c.monster_templates && c.monster_templates[i]) c.monster_templates[i][field] = val;
+}
+function aiGenCampaignMonsterDesc(i) {
+  const c = getCampaign(selectedCampaignId);
+  const m = c.monster_templates && c.monster_templates[i];
+  if (!m) return;
+  aiGenField(`monster description for "${m.name}" in campaign "${c.overworld.name}"`, (text) => { m.description = text; render(); });
+}
+function aiGenField(target, cb) {
+  const c = getCampaign(selectedCampaignId);
+  const context = c.overworld.name + ' - ' + c.overworld.description;
+  fetch('/api/generate/description', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({context, target}) })
+    .then(r => r.json()).then(d => cb(d.text)).catch(e => showToast('AI error: '+e, true));
+}
+
+function toggleConnectionMode() {
+  addConnectionMode = !addConnectionMode;
+  connectionSource = null;
+  const btn = document.getElementById('conn-btn');
+  if (btn) btn.style.background = addConnectionMode ? '#5a3a8e' : '';
+  const st = document.getElementById('dag-status');
+  if (st) st.textContent = addConnectionMode ? 'Click source node...' : '';
+}
+
+function addLevel() {
+  const c = getCampaign(selectedCampaignId);
+  const idx = c.overworld.levels.length;
+  c.overworld.levels.push({
+    name: 'New Level', font: null, description: '', theme: '',
+    color: '#4a4a4a', palette: ['#1a1a1a', '#3a3a3a', '#5a5a5a'], budget: 150
+  });
+  // Add matching design
+  while (c.designs.length < c.overworld.levels.length) {
+    c.designs.push({
+      tile_defs: [{ name: 'wall', char: '#' }, { name: 'floor', char: '.' }],
+      boss: { name: '', hp: 0, attack: 0, defense: 0, xp_value: 0, description: '' },
+      monster_types: [],
+      weapon: { name: '', description: '' },
+      armor: { name: '', description: '' },
+      traps: [],
+      mode: { root: 'C', scale: 'aeolian' },
+      victory_message: '', defeat_message: '', budget_spent: null
+    });
+  }
+  autoLayoutPositions(c, 'horizontal');
+  render();
+}
+
+function removeSelectedLevel() {
+  if (selectedLevelIdx === null) { showToast('Select a level first', 'info'); return; }
+  const c = getCampaign(selectedCampaignId);
+  if (!confirm(`Remove level "${c.overworld.levels[selectedLevelIdx].name}"?`)) return;
+  c.overworld.levels.splice(selectedLevelIdx, 1);
+  if (c.designs.length > selectedLevelIdx) c.designs.splice(selectedLevelIdx, 1);
+  selectedLevelIdx = null;
+  // Clear positions for this campaign so they re-layout
+  delete dagPositions[c.id];
+  render();
+}
+
+// ── Screen 3: Level Editor ──
+function renderLevelEditor(c, idx) {
+  const lv = c.overworld.levels[idx];
+  const design = c.designs[idx] || {};
+  if (lv.font) loadGoogleFont(lv.font);
+
+  let html = `<div style="display:flex;flex-direction:column;gap:10px;">`;
+
+  // Header
+  html += `<div class="form-row-stacked"><label>Level Name</label>
+    ${enhancedInput(lv.name, "updateLevel("+idx+",'name',this.value)", 'level name for roguelike dungeon', 'font-size:18px;font-weight:600;')}</div>`;
+  // Typography
+  html += `<hr class="section-divider">`;
+  html += `<h3 style="margin-bottom:8px;color:#888;text-transform:uppercase;font-size:10px;letter-spacing:1px;">Typography</h3>`;
+  html += `<div class="form-row"><label>Font</label>${fontSelect(lv.font, `updateLevelFont(${idx},this.value)`)}</div>`;
+
+  // Description
+  html += `<hr class="section-divider">`;
+  html += `<div class="form-row-stacked"><label>Description</label>
+    ${enhancedTextarea(lv.description, "updateLevel("+idx+",'description',this.value)", 'five-line level description', 5)}</div>`;
+
+  // Theme
+  html += `<div class="form-row-stacked"><label>Theme</label>
+    ${enhancedTextarea(lv.theme, "updateLevel("+idx+",'theme',this.value)", 'five-line level theme for roguelike', 5)}</div>`;
+
+  // Budget
+  html += `<div class="form-row"><label>Budget</label><input type="number" value="${lv.budget||0}" min="0" max="500" onchange="updateLevel(${idx},'budget',+this.value)"></div>`;
+
+  // Palette
+  html += `<div class="form-row-stacked"><label>Palette</label><div class="palette-row" id="palette-row">`;
+  const pal = lv.palette || [];
+  for (let pi = 0; pi < pal.length; pi++) {
+    html += `<div class="palette-swatch">
+      <input type="color" value="${pal[pi]}" onchange="updatePalette(${idx},${pi},this.value)">
+      <div class="remove-color" onclick="removePaletteColor(${idx},${pi})">x</div></div>`;
+  }
+  html += `<button style="padding:2px 8px;font-size:11px;" onclick="addPaletteColor(${idx})">+</button>`;
+  html += `</div></div>`;
+
+  // Level color
+  html += `<div class="form-row"><label>Level Color</label>
+    <input type="color" value="${lv.color||'#4a4a4a'}" onchange="updateLevel(${idx},'color',this.value)">
+    <span style="font-size:11px;color:#888;">${lv.color||''}</span></div>`;
+
+  html += `<hr class="section-divider">`;
+
+  // Generate full level design
+  html += `<button class="ai-btn" style="width:100%;padding:8px;" onclick="aiGenFullLevel(${idx})">&#10024; Generate Full Level Design (AI)</button>`;
+  html += `<hr class="section-divider">`;
+
+  // Tile defs
+  html += collapsible('Tile Definitions', renderTileDefs(idx, design, pal), true);
+  html += collapsible('Boss', renderBoss(idx, design), true);
+  html += collapsible('Monster Templates', renderMonsters(idx, design), true);
+  html += collapsible('Weapon', renderWeapon(idx, design), false);
+  html += collapsible('Armor', renderArmor(idx, design), false);
+  html += collapsible('Traps', renderTraps(idx, design), false);
+  html += collapsible('Musical Mode', renderMode(idx, design), false);
+  html += collapsible('Messages', renderMessages(idx, design), false);
+  html += collapsible('Map Preview', renderMapPreviewSection(idx), false);
+
+  html += '</div>';
+  return html;
+}
+
+function updateLevel(idx, key, val) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld.levels[idx][key] = val;
+  if (key === 'name') renderDAG(c);
+}
+function updateLevelFont(idx, val) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld.levels[idx].font = val || null;
+  if (val) loadGoogleFont(val);
+}
+function syncPaletteFromTiles(idx) {
+  const c = getCampaign(selectedCampaignId);
+  const lv = c.overworld.levels[idx];
+  const design = c.designs[idx] || {};
+  const defs = design.tile_defs || [];
+  if (!lv.palette) lv.palette = [];
+  let pending = 0;
+  let done = 0;
+  for (let i = 0; i < defs.length; i++) {
+    if (defs[i].image) {
+      pending++;
+      dominantColor(defs[i].image, (color) => {
+        lv.palette[i] = color;
+        done++;
+        if (done >= pending) {
+          // Also set level color to the floor tile color (index 1)
+          if (lv.palette[1]) lv.color = lv.palette[1];
+          refreshLevelEditor();
+          showToast('Palette synced from tiles', 'success');
+        }
+      });
+    }
+  }
+  if (pending === 0) showToast('No tile images to sample from', 'info');
+}
+
+function dominantColor(b64, cb) {
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const data = ctx.getImageData(0, 0, c.width, c.height).data;
+    let tr = 0, tg = 0, tb = 0, count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i+3] > 30) { // skip transparent
+        tr += data[i]; tg += data[i+1]; tb += data[i+2]; count++;
+      }
+    }
+    if (count === 0) { cb('#555555'); return; }
+    const r = Math.round(tr/count), g = Math.round(tg/count), b = Math.round(tb/count);
+    cb('#' + [r,g,b].map(v => v.toString(16).padStart(2,'0')).join(''));
+  };
+  img.onerror = () => cb('#555555');
+  img.src = 'data:image/png;base64,' + b64;
+}
+
+function updatePalette(idx, pi, val) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld.levels[idx].palette[pi] = val;
+  renderDAG(c);
+  refreshLevelEditor();
+}
+function removePaletteColor(idx, pi) {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld.levels[idx].palette.splice(pi, 1);
+  refreshLevelEditor();
+}
+function addPaletteColor(idx) {
+  const c = getCampaign(selectedCampaignId);
+  if (!c.overworld.levels[idx].palette) c.overworld.levels[idx].palette = [];
+  c.overworld.levels[idx].palette.push('#555555');
+  refreshLevelEditor();
+}
+function refreshLevelEditor() {
+  if (selectedLevelIdx !== null) {
+    renderLevelScreen(document.getElementById('screen-container'));
+    showCurrentMap();
+  }
+}
+function showCurrentMap() {
+  setTimeout(async () => {
+    const c = getCampaign(selectedCampaignId);
+    if (!c || selectedLevelIdx === null) return;
+    const design = c.designs[selectedLevelIdx];
+    const lv = c.overworld.levels[selectedLevelIdx];
+    if (design && design.prebuilt_map) {
+      mapPreviewData = design.prebuilt_map;
+      await renderMapCanvas(design.prebuilt_map, lv.palette || [], design.tile_defs || [], design.placed_entities);
+    }
+  }, 50);
+}
+
+// Design updaters
+function ensureDesign(idx) {
+  const c = getCampaign(selectedCampaignId);
+  while (c.designs.length <= idx) {
+    c.designs.push({
+      tile_defs: [{ name: 'wall', char: '#' }, { name: 'floor', char: '.' }],
+      boss: { name: '', hp: 0, attack: 0, defense: 0, xp_value: 0, description: '' },
+      monster_types: [], weapon: { name: '', description: '' }, armor: { name: '', description: '' },
+      traps: [], mode: { root: 'C', scale: 'aeolian' }, victory_message: '', defeat_message: '', budget_spent: null
+    });
+  }
+  return c.designs[idx];
+}
+
+// Tile defs
+function renderTileDefs(idx, design, palette) {
+  const defs = design.tile_defs || [];
+  let html = '';
+  for (let i = 0; i < defs.length; i++) {
+    const col = palette[i] || '#333';
+    const td = defs[i];
+    const isWall = i === 0;
+    html += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;">`;
+    html += `<div class="flex gap-4 items-center mb-8">
+      <div class="color-swatch" style="background:${col};flex-shrink:0;"></div>
+      ${enhancedInput(td.name||'', "updateTileDef("+idx+","+i+",'name',this.value)", 'tile type name for roguelike dungeon floor/wall', 'flex:1;font-weight:600;')}
+      <input value="${h(td.char||'')}" maxlength="1" style="width:30px;text-align:center;" onchange="updateTileDef(${idx},${i},'char',this.value)" placeholder="Ch">
+      <button style="padding:2px 6px;font-size:10px;" onclick="removeTileDef(${idx},${i})">x</button>
+    </div>`;
+    // Image preview + generate button
+    html += `<div class="flex gap-8 items-center">`;
+    if (td.image) {
+      html += `<img src="data:image/png;base64,${td.image}" style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">`;
+      html += `<button class="ai-btn" onclick="generateTileImage(${idx},${i})" style="font-size:11px;">&#10024; Regenerate</button>`;
+      html += `<button style="font-size:10px;padding:2px 6px;" onclick="clearTileImage(${idx},${i})">Clear</button>`;
+    } else {
+      html += `<div style="width:48px;height:48px;border-radius:4px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:#555;background:${col}">${h(td.char||'')}</div>`;
+      html += `<button class="ai-btn" onclick="generateTileImage(${idx},${i})">&#10024; Generate Tile Image</button>`;
+    }
+    html += `</div>`;
+    html += `<p class="note" style="margin-top:4px;">${isWall ? 'Wall (not walkable)' : 'Walkable'}</p>`;
+    html += `</div>`;
+  }
+  html += `<button style="font-size:12px;" onclick="addTileDef(${idx})">+ Add Tile Def</button>`;
+  return html;
+}
+
+async function generateTileImage(levelIdx, tileIdx) {
+  const c = getCampaign(selectedCampaignId);
+  const d = ensureDesign(levelIdx);
+  const lv = c.overworld.levels[levelIdx];
+  const td = d.tile_defs[tileIdx];
+  const isWall = tileIdx === 0;
+  const pal = lv.palette || [];
+  const col = pal[tileIdx] || '#333';
+
+  const prompt = `Generate a single square tile texture for a top-down 2D roguelike game. ` +
+    `The tile is: "${td.name}". ${isWall ? 'It is a solid wall or obstacle — should look dense and impassable.' : 'It is a walkable floor tile — should look open and traversable.'} ` +
+    `The level theme is: "${lv.theme || 'dungeon'}". ` +
+    `STYLE REQUIREMENTS: Simple flat pixel art. Use color ${col} as the dominant color. ` +
+    `Bright and saturated, NOT dark or muddy. Minimal detail — just enough to suggest the material. ` +
+    `Perfectly seamless and tileable in all directions. Uniform texture with NO focal point, NO objects, NO borders, NO text. ` +
+    `Think classic SNES/GBA RPG tile. Fill the ENTIRE image with the texture edge to edge.`;
+
+  showToast('Generating tile image...', 'info');
+  try {
+    const r = await api('POST', '/api/generate-image', { prompt, width: 64, height: 64 });
+    const blended = await blendWithColor(r.image_base64, col, 0.45);
+    d.tile_defs[tileIdx].image = blended;
+    refreshLevelEditor();
+    showToast('Tile image generated!', 'success');
+  } catch (e) {
+    showToast('Image generation failed: ' + e.message, 'error');
+  }
+}
+
+// Blend a base64 image with a solid color. strength=0 is original, strength=1 is solid color.
+function blendWithColor(b64, hexColor, strength) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width;
+      c.height = img.height;
+      const ctx = c.getContext('2d');
+      // Draw original
+      ctx.drawImage(img, 0, 0);
+      // Overlay solid color with opacity = strength
+      ctx.globalAlpha = strength;
+      ctx.fillStyle = hexColor;
+      ctx.fillRect(0, 0, c.width, c.height);
+      // Extract as base64 (strip data URL prefix)
+      const dataUrl = c.toDataURL('image/png');
+      resolve(dataUrl.split(',')[1]);
+    };
+    img.onerror = () => resolve(b64); // fallback to original on error
+    img.src = 'data:image/png;base64,' + b64;
+  });
+}
+
+function clearTileImage(levelIdx, tileIdx) {
+  const d = ensureDesign(levelIdx);
+  delete d.tile_defs[tileIdx].image;
+  refreshLevelEditor();
+}
+
+// ── Entity Placement ──
+
+function ensurePlacedEntities(levelIdx) {
+  const d = ensureDesign(levelIdx);
+  if (!d.placed_entities) d.placed_entities = { monsters: [], items: [], traps: [] };
+  return d.placed_entities;
+}
+
+function onMapClick(e, levelIdx) {
+  // Handled by mapEntityDragStart/End
+}
+
+let mapDragEntity = null; // { levelIdx, type, index, origX, origY }
+
+function mapEntityDragStart(e, levelIdx) {
+  if (e.button !== 0) return; // left click only
+  if (!mapPreviewData?.tiles) return;
+  const canvas = document.getElementById('map-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+  const tx = Math.floor((e.clientX - rect.left) * scaleX / cellW);
+  const ty = Math.floor((e.clientY - rect.top) * scaleY / cellH);
+
+  const pe = ensurePlacedEntities(levelIdx);
+  // Check boss (2x2 hit area)
+  if (pe.boss) {
+    const [bx, by] = pe.boss;
+    if (tx >= bx && tx < bx + 2 && ty >= by && ty < by + 2) {
+      mapDragEntity = { levelIdx, type: 'boss', origX: bx, origY: by };
+      canvas.style.cursor = 'grabbing';
+      canvas.addEventListener('mousemove', mapEntityDragMove);
+      canvas.addEventListener('mouseup', mapEntityDragEnd);
+      e.preventDefault();
+      return;
+    }
+  }
+  // Check monsters
+  for (let i = 0; i < pe.monsters.length; i++) {
+    if (pe.monsters[i].x === tx && pe.monsters[i].y === ty) {
+      mapDragEntity = { levelIdx, type: 'monster', index: i, origX: tx, origY: ty };
+      canvas.style.cursor = 'grabbing';
+      canvas.addEventListener('mousemove', mapEntityDragMove);
+      canvas.addEventListener('mouseup', mapEntityDragEnd);
+      e.preventDefault();
+      return;
+    }
+  }
+  // Check items
+  for (let i = 0; i < pe.items.length; i++) {
+    if (pe.items[i].x === tx && pe.items[i].y === ty) {
+      mapDragEntity = { levelIdx, type: 'item', index: i, origX: tx, origY: ty };
+      canvas.style.cursor = 'grabbing';
+      canvas.addEventListener('mousemove', mapEntityDragMove);
+      canvas.addEventListener('mouseup', mapEntityDragEnd);
+      e.preventDefault();
+      return;
+    }
+  }
+  // Check traps
+  for (let i = 0; i < pe.traps.length; i++) {
+    if (pe.traps[i].x === tx && pe.traps[i].y === ty) {
+      mapDragEntity = { levelIdx, type: 'trap', index: i, origX: tx, origY: ty };
+      canvas.style.cursor = 'grabbing';
+      canvas.addEventListener('mousemove', mapEntityDragMove);
+      canvas.addEventListener('mouseup', mapEntityDragEnd);
+      e.preventDefault();
+      return;
+    }
+  }
+}
+
+function mapEntityDragMove(e) {
+  if (!mapDragEntity || !mapPreviewData?.tiles) return;
+  const canvas = document.getElementById('map-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+  const tx = Math.floor((e.clientX - rect.left) * scaleX / cellW);
+  const ty = Math.floor((e.clientY - rect.top) * scaleY / cellH);
+  if (tx < 0 || ty < 0 || tx >= cols || ty >= rows) return;
+
+  // Show highlight at target
+  const c = getCampaign(selectedCampaignId);
+  const lv = c.overworld.levels[selectedLevelIdx];
+  const design = c.designs[selectedLevelIdx] || {};
+  const pe = ensurePlacedEntities(selectedLevelIdx);
+  renderMapCanvas(mapPreviewData, lv.palette || [], design.tile_defs || [], pe).then(() => {
+    const ctx = canvas.getContext('2d');
+    const size = mapDragEntity.type === 'boss' ? 2 : 1;
+    ctx.fillStyle = 'rgba(102, 187, 106, 0.35)';
+    ctx.fillRect(tx * cellW, ty * cellH, cellW * size, cellH * size);
+    ctx.strokeStyle = '#66bb6a';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(tx * cellW + 1, ty * cellH + 1, cellW * size - 2, cellH * size - 2);
+  });
+}
+
+function mapEntityDragEnd(e) {
+  const canvas = document.getElementById('map-canvas');
+  canvas.removeEventListener('mousemove', mapEntityDragMove);
+  canvas.removeEventListener('mouseup', mapEntityDragEnd);
+  canvas.style.cursor = 'default';
+  if (!mapDragEntity || !mapPreviewData?.tiles) { mapDragEntity = null; return; }
+
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cols = mapPreviewData.tiles[0].length;
+  const rows = mapPreviewData.tiles.length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+  const tx = Math.floor((e.clientX - rect.left) * scaleX / cellW);
+  const ty = Math.floor((e.clientY - rect.top) * scaleY / cellH);
+
+  if (tx >= 0 && ty >= 0 && tx < cols && ty < rows && (tx !== mapDragEntity.origX || ty !== mapDragEntity.origY)) {
+    const pe = ensurePlacedEntities(mapDragEntity.levelIdx);
+    if (mapDragEntity.type === 'boss') {
+      pe.boss = [tx, ty];
+    } else if (mapDragEntity.type === 'monster') {
+      pe.monsters[mapDragEntity.index].x = tx;
+      pe.monsters[mapDragEntity.index].y = ty;
+    } else if (mapDragEntity.type === 'item') {
+      pe.items[mapDragEntity.index].x = tx;
+      pe.items[mapDragEntity.index].y = ty;
+    } else if (mapDragEntity.type === 'trap') {
+      pe.traps[mapDragEntity.index].x = tx;
+      pe.traps[mapDragEntity.index].y = ty;
+    }
+  }
+
+  mapDragEntity = null;
+  const c = getCampaign(selectedCampaignId);
+  const lv = c.overworld.levels[selectedLevelIdx];
+  const design = c.designs[selectedLevelIdx] || {};
+  const pe = ensurePlacedEntities(selectedLevelIdx);
+  renderMapCanvas(mapPreviewData, lv.palette || [], design.tile_defs || [], pe);
+}
+
+// ── Scrabble Tray ──
+
+function packItemSprite(itemType) {
+  return (pack.item_sprites && pack.item_sprites[itemType]) || null;
+}
+function packItemName(itemType) {
+  const defaults = { potion: 'Health Potion', speed_potion: 'Speed Potion', bomb: 'Bomb', gold: 'Gold', key: 'Key' };
+  return (pack.item_names && pack.item_names[itemType]) || defaults[itemType] || itemType;
+}
+
+function generateTray(c, levelIdx, placed) {
+  const lv = c.overworld.levels[levelIdx];
+  const design = c.designs[levelIdx] || {};
+  const budget = lv.budget || 150;
+  const floor = levelIdx + 1;
+  const monsters = c.monster_templates || design.monster_types || [];
+  const trapDefs = design.traps || [];
+
+  // Compute what the budget buys (mirroring gen.rs logic)
+  let rem = budget;
+  const tray = [];
+
+  // Boss: ~20% of budget (always 1, designer places it)
+  const bossCost = Math.round(budget * 0.20);
+  rem -= bossCost;
+  const bossName = design.boss?.name || 'Boss';
+  tray.push({ type: 'boss', name: bossName, icon: '💀', image: design.boss?.image || null, item_type: 'boss' });
+
+  // Split remaining budget: ~60% monsters, ~25% gold, ~15% traps
+  const monBudget = Math.round(rem * 0.6);
+  const goldBudget = Math.round(rem * 0.25);
+  const trapBudget = rem - monBudget - goldBudget;
+
+  // Monsters: 6 cost each
+  if (monsters.length > 0) {
+    let mi = 0, mrem = monBudget;
+    while (mrem >= 5) {
+      mrem -= 6;
+      const tmpl = monsters[mi % monsters.length];
+      tray.push({ type: 'monster', name: tmpl.name, icon: '👾', image: tmpl.image || null, item_type: 'monster' });
+      mi++;
+    }
+  }
+
+  // Gold piles: 3 cost each
+  let grem = goldBudget;
+  let gi = 0;
+  while (grem >= 3 && gi < 6) {
+    grem -= 3;
+    tray.push({ type: 'item', name: packItemName('gold'), icon: '💰', item_type: 'gold', image: packItemSprite('gold') });
+    gi++;
+  }
+
+  // Traps: 5 cost each
+  if (trapDefs.length > 0) {
+    let trem = trapBudget, ti = 0;
+    while (trem >= 5) {
+      trem -= 5;
+      const td = trapDefs[ti % trapDefs.length];
+      tray.push({ type: 'trap', name: td.name || 'Trap', icon: '⚠', item_type: 'trap', image: td.image || null });
+      ti++;
+    }
+  }
+
+  // Free items: weapon, armor, potions, key
+  tray.push({ type: 'item', name: design.weapon?.name || 'Weapon', icon: '⚔', item_type: 'weapon', image: design.weapon?.image || null });
+  tray.push({ type: 'item', name: design.armor?.name || 'Armor', icon: '🛡', item_type: 'armor', image: design.armor?.image || null });
+  const monCount = tray.filter(t => t.type === 'monster').length;
+  const potionCount = Math.max(1, Math.floor(monCount / 6));
+  for (let i = 0; i < potionCount; i++) {
+    tray.push({ type: 'item', name: packItemName('potion'), icon: '🧪', item_type: 'potion', image: packItemSprite('potion') });
+  }
+  if (design.prebuilt_map?.key_position) {
+    tray.push({ type: 'item', name: packItemName('key'), icon: '🔑', item_type: 'key', image: packItemSprite('key') });
+  }
+
+  // Remove already-placed entities from the tray
+  const placedMonsters = [...(placed.monsters || [])];
+  const placedItems = [...(placed.items || [])];
+  const placedTraps = [...(placed.traps || [])];
+
+  return tray.filter(t => {
+    if (t.type === 'boss') {
+      if (placed.boss) return false; // boss already placed
+    } else if (t.type === 'monster') {
+      const idx = placedMonsters.findIndex(pm => pm.name === t.name);
+      if (idx >= 0) { placedMonsters.splice(idx, 1); return false; }
+    } else if (t.type === 'item') {
+      const idx = placedItems.findIndex(pi => pi.item_type === t.item_type);
+      if (idx >= 0) { placedItems.splice(idx, 1); return false; }
+    } else if (t.type === 'trap') {
+      const idx = placedTraps.findIndex(pt => pt.name === t.name);
+      if (idx >= 0) { placedTraps.splice(idx, 1); return false; }
+    }
+    return true;
+  });
+}
+
+let draggedTrayItem = null;
+let dragHighlightTile = null; // {x, y} of currently highlighted tile during drag
+
+function displaceAll(levelIdx) {
+  const c = getCampaign(selectedCampaignId);
+  const d = ensureDesign(levelIdx);
+  d.placed_entities = { monsters: [], items: [], traps: [], boss: null };
+}
+
+function autoplaceAll(levelIdx) {
+  const c = getCampaign(selectedCampaignId);
+  const pe = ensurePlacedEntities(levelIdx);
+  const tray = generateTray(c, levelIdx, pe);
+  if (tray.length === 0) { showToast('Nothing to place', 'info'); return; }
+  if (!mapPreviewData?.tiles) return;
+
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const design = c.designs[levelIdx] || {};
+  const defs = design.tile_defs || [];
+  const wallName = defs[0]?.name || 'wall';
+  const occupied = new Set();
+  for (const m of pe.monsters) occupied.add(m.x + ',' + m.y);
+  for (const i of pe.items) occupied.add(i.x + ',' + i.y);
+  for (const t of pe.traps) occupied.add(t.x + ',' + t.y);
+  if (mapPreviewData.player_start) occupied.add(mapPreviewData.player_start[0] + ',' + mapPreviewData.player_start[1]);
+  if (pe.boss) occupied.add(pe.boss[0]+','+pe.boss[1]);
+
+  const isOpen = (x,y) => x>=0 && y>=0 && x<cols && y<rows &&
+    mapPreviewData.tiles[y][x] !== wallName && mapPreviewData.tiles[y][x] !== 'locked_door' && !occupied.has(x+','+y);
+
+  // Place boss first — needs 2x2 area, prefer the map's suggested boss room (farthest from player)
+  const bossTray = tray.find(t => t.type === 'boss');
+  if (bossTray) {
+    // Find all valid 2x2 spots
+    const spots2x2 = [];
+    for (let y = 0; y < rows - 1; y++) {
+      for (let x = 0; x < cols - 1; x++) {
+        if (isOpen(x,y) && isOpen(x+1,y) && isOpen(x,y+1) && isOpen(x+1,y+1)) {
+          spots2x2.push([x, y]);
+        }
+      }
+    }
+    if (spots2x2.length > 0) {
+      // Pick the spot farthest from player start
+      const [px, py] = mapPreviewData.player_start || [0, 0];
+      spots2x2.sort((a, b) => {
+        const da = (a[0]-px)**2 + (a[1]-py)**2;
+        const db = (b[0]-px)**2 + (b[1]-py)**2;
+        return db - da;
+      });
+      const [bx, by] = spots2x2[0];
+      pe.boss = [bx, by];
+      // Mark 2x2 as occupied
+      for (let dy=0;dy<2;dy++) for (let dx=0;dx<2;dx++) occupied.add((bx+dx)+','+(by+dy));
+    }
+  }
+
+  // Collect walkable tiles for everything else
+  const walkable = [];
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (isOpen(x,y)) walkable.push([x, y]);
+    }
+  }
+  // Shuffle
+  for (let i = walkable.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [walkable[i], walkable[j]] = [walkable[j], walkable[i]];
+  }
+
+  let wi = 0;
+  for (const t of tray) {
+    if (t.type === 'boss') continue; // already placed
+    if (wi >= walkable.length) break;
+    const [rx, ry] = walkable[wi++];
+    if (t.type === 'monster') pe.monsters.push({ name: t.name, x: rx, y: ry });
+    else if (t.type === 'item') pe.items.push({ name: t.name, item_type: t.item_type, x: rx, y: ry });
+    else if (t.type === 'trap') pe.traps.push({ name: t.name, x: rx, y: ry });
+  }
+
+  renderLevelScreen(document.getElementById('screen-container'));
+  showCurrentMap();
+  showToast(`Placed ${Math.min(tray.length, wi)} entities`, 'success');
+}
+
+function trayDragOver(e) {
+  e.preventDefault();
+  if (!draggedTrayItem || !mapPreviewData?.tiles) return;
+  const canvas = document.getElementById('map-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+  const tx = Math.floor((e.clientX - rect.left) * scaleX / cellW);
+  const ty = Math.floor((e.clientY - rect.top) * scaleY / cellH);
+  if (tx < 0 || ty < 0 || tx >= cols || ty >= rows) { trayDragLeave(); return; }
+  if (!dragHighlightTile || dragHighlightTile.x !== tx || dragHighlightTile.y !== ty) {
+    dragHighlightTile = { x: tx, y: ty };
+    // Draw highlight on the canvas
+    const ctx = canvas.getContext('2d');
+    // Redraw map first (restore from last full render), then overlay highlight
+    const c = getCampaign(selectedCampaignId);
+    const lv = c.overworld.levels[selectedLevelIdx];
+    const design = c.designs[selectedLevelIdx] || {};
+    const pe = ensurePlacedEntities(selectedLevelIdx);
+    renderMapCanvas(mapPreviewData, lv.palette || [], design.tile_defs || [], pe).then(() => {
+      const ctx2 = canvas.getContext('2d');
+      ctx2.fillStyle = 'rgba(102, 187, 106, 0.35)';
+      ctx2.fillRect(tx * cellW, ty * cellH, cellW, cellH);
+      ctx2.strokeStyle = '#66bb6a';
+      ctx2.lineWidth = 2;
+      ctx2.strokeRect(tx * cellW + 1, ty * cellH + 1, cellW - 2, cellH - 2);
+    });
+  }
+}
+
+function trayDragLeave() {
+  if (dragHighlightTile) {
+    dragHighlightTile = null;
+    // Redraw without highlight
+    const c = getCampaign(selectedCampaignId);
+    if (c && selectedLevelIdx !== null) {
+      const lv = c.overworld.levels[selectedLevelIdx];
+      const design = c.designs[selectedLevelIdx] || {};
+      const pe = ensurePlacedEntities(selectedLevelIdx);
+      renderMapCanvas(mapPreviewData, lv.palette || [], design.tile_defs || [], pe);
+    }
+  }
+}
+
+function trayAutoPlace(levelIdx, trayIdx) {
+  const c = getCampaign(selectedCampaignId);
+  const pe = ensurePlacedEntities(levelIdx);
+  const tray = generateTray(c, levelIdx, pe);
+  if (trayIdx >= tray.length) return;
+  const t = tray[trayIdx];
+  if (!mapPreviewData?.tiles) return;
+
+  // Find a random walkable tile not occupied by anything
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const design = c.designs[levelIdx] || {};
+  const defs = design.tile_defs || [];
+  const wallName = defs[0]?.name || 'wall';
+  const occupied = new Set();
+  for (const m of pe.monsters) occupied.add(m.x + ',' + m.y);
+  for (const i of pe.items) occupied.add(i.x + ',' + i.y);
+  for (const t of pe.traps) occupied.add(t.x + ',' + t.y);
+  if (mapPreviewData.player_start) occupied.add(mapPreviewData.player_start[0] + ',' + mapPreviewData.player_start[1]);
+  if (mapPreviewData.boss_position) {
+    const [bx,by] = mapPreviewData.boss_position;
+    for (let dy=0;dy<2;dy++) for (let dx=0;dx<2;dx++) occupied.add((bx+dx)+','+(by+dy));
+  }
+
+  const candidates = [];
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const tile = mapPreviewData.tiles[y][x];
+      if (tile !== wallName && tile !== 'locked_door' && !occupied.has(x+','+y)) {
+        candidates.push([x, y]);
+      }
+    }
+  }
+  if (t.type === 'boss') {
+    // Boss needs 2x2, pick farthest from player
+    const [px, py] = mapPreviewData.player_start || [0, 0];
+    const spots = [];
+    for (let y = 0; y < rows - 1; y++) {
+      for (let x = 0; x < cols - 1; x++) {
+        const ok = [[x,y],[x+1,y],[x,y+1],[x+1,y+1]].every(([cx,cy]) =>
+          mapPreviewData.tiles[cy][cx] !== wallName && mapPreviewData.tiles[cy][cx] !== 'locked_door' && !occupied.has(cx+','+cy));
+        if (ok) spots.push([x, y, (x-px)**2 + (y-py)**2]);
+      }
+    }
+    if (spots.length === 0) { showToast('No 2x2 area for boss!', 'error'); return; }
+    spots.sort((a,b) => b[2] - a[2]);
+    pe.boss = [spots[0][0], spots[0][1]];
+  } else {
+    if (candidates.length === 0) { showToast('No open tiles!', 'error'); return; }
+    const [rx, ry] = candidates[Math.floor(Math.random() * candidates.length)];
+    if (t.type === 'monster') pe.monsters.push({ name: t.name, x: rx, y: ry });
+    else if (t.type === 'item') pe.items.push({ name: t.name, item_type: t.item_type, x: rx, y: ry });
+    else if (t.type === 'trap') pe.traps.push({ name: t.name, x: rx, y: ry });
+  }
+
+  renderLevelScreen(document.getElementById('screen-container'));
+  showCurrentMap();
+}
+
+function trayDragStart(e, levelIdx, trayIdx) {
+  const c = getCampaign(selectedCampaignId);
+  const pe = ensurePlacedEntities(levelIdx);
+  const tray = generateTray(c, levelIdx, pe);
+  draggedTrayItem = { levelIdx, item: tray[trayIdx] };
+  e.dataTransfer.setData('text/plain', 'tray');
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function trayDrop(e, levelIdx) {
+  e.preventDefault();
+  if (!draggedTrayItem || !mapPreviewData?.tiles) return;
+
+  const canvas = document.getElementById('map-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+  const tx = Math.floor((e.clientX - rect.left) * scaleX / cellW);
+  const ty = Math.floor((e.clientY - rect.top) * scaleY / cellH);
+  if (tx < 0 || ty < 0 || tx >= cols || ty >= rows) return;
+
+  const t = draggedTrayItem.item;
+  const pe = ensurePlacedEntities(levelIdx);
+
+  if (t.type === 'boss') {
+    pe.boss = [tx, ty];
+  } else if (t.type === 'monster') {
+    pe.monsters.push({ name: t.name, x: tx, y: ty });
+  } else if (t.type === 'item') {
+    pe.items.push({ name: t.name, item_type: t.item_type, x: tx, y: ty });
+  } else if (t.type === 'trap') {
+    pe.traps.push({ name: t.name, x: tx, y: ty });
+  }
+
+  draggedTrayItem = null;
+  dragHighlightTile = null;
+  // Re-render to update tray and map
+  renderLevelScreen(document.getElementById('screen-container'));
+  showCurrentMap();
+}
+
+function onMapRightClick(e, levelIdx) {
+  e.preventDefault();
+  if (!mapPreviewData?.tiles) return;
+
+  const canvas = document.getElementById('map-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+  const tx = Math.floor((e.clientX - rect.left) * scaleX / cellW);
+  const ty = Math.floor((e.clientY - rect.top) * scaleY / cellH);
+
+  const pe = ensurePlacedEntities(levelIdx);
+  // Remove any entity at this position
+  const hadMonster = pe.monsters.length;
+  const hadItem = pe.items.length;
+  const hadTrap = pe.traps.length;
+  let hadBoss = false;
+  if (pe.boss) {
+    const [bx, by] = pe.boss;
+    if (tx >= bx && tx < bx + 2 && ty >= by && ty < by + 2) { pe.boss = null; hadBoss = true; }
+  }
+  pe.monsters = pe.monsters.filter(m => m.x !== tx || m.y !== ty);
+  pe.items = pe.items.filter(i => i.x !== tx || i.y !== ty);
+  pe.traps = pe.traps.filter(t => t.x !== tx || t.y !== ty);
+
+  if (hadBoss || pe.monsters.length < hadMonster || pe.items.length < hadItem || pe.traps.length < hadTrap) {
+    renderLevelScreen(document.getElementById('screen-container'));
+    showCurrentMap();
+  }
+}
+
+function updateTileDef(levelIdx, tileIdx, key, val) {
+  const d = ensureDesign(levelIdx);
+  d.tile_defs[tileIdx][key] = val;
+}
+function addTileDef(levelIdx) {
+  const d = ensureDesign(levelIdx);
+  d.tile_defs.push({ name: '', char: '.' });
+  refreshLevelEditor();
+}
+function removeTileDef(levelIdx, tileIdx) {
+  const d = ensureDesign(levelIdx);
+  d.tile_defs.splice(tileIdx, 1);
+  refreshLevelEditor();
+}
+
+// Boss
+function renderBoss(idx, design) {
+  const b = design.boss || {};
+  let s = `
+    <div class="form-row"><label>Name</label>${enhancedInput(b.name||'', "updateDesignField("+idx+",'boss','name',this.value)", 'boss monster name for roguelike level')}</div>
+    <div class="form-row-stacked"><label>Description</label>
+      ${enhancedTextarea(b.description||'', "updateDesignField("+idx+",'boss','description',this.value)", 'five-line physical description of a boss monster — describe what it looks like and how it behaves', 5)}</div>
+    <div class="flex gap-8 items-center" style="margin-top:4px;">`;
+  if (b.image) {
+    s += `<img src="data:image/png;base64,${b.image}" style="width:64px;height:64px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+      <button class="ai-btn" onclick="generateBossSprite(${idx})" style="font-size:10px;">&#10024; Regen</button>
+      <button style="font-size:9px;padding:2px 4px;" onclick="clearBossSprite(${idx})">Clear</button>`;
+  } else {
+    s += `<button class="ai-btn" onclick="generateBossSprite(${idx})">&#10024; Generate Sprite</button>`;
+  }
+  s += `</div>`;
+  s += `<div class="note">(Stats are computed by the engine from budget)</div>`;
+  return s;
+}
+
+// Monsters
+function renderMonsters(idx, design) {
+  const monsters = design.monster_types || [];
+  let html = '';
+  for (let i = 0; i < monsters.length; i++) {
+    const m = monsters[i];
+    html += `<div class="entry-item">
+      <div class="entry-header">
+        ${enhancedInput(m.name||'', "updateMonster("+idx+","+i+",'name',this.value)", 'monster name for roguelike level', 'flex:1;')}
+        <button style="padding:2px 6px;font-size:10px;margin-left:4px;" onclick="removeMonster(${idx},${i})">x</button>
+      </div>
+      ${enhancedTextarea(m.description||'', "updateMonster("+idx+","+i+",'description',this.value)", 'five-line monster description', 5)}
+      <div class="note">(Stats are computed by the engine)</div>
+    </div>`;
+  }
+  html += `<button style="font-size:12px;" onclick="addMonster(${idx})">Add Monster</button>`;
+  return html;
+}
+function updateMonster(levelIdx, mIdx, key, val) {
+  const d = ensureDesign(levelIdx);
+  d.monster_types[mIdx][key] = val;
+}
+function addMonster(levelIdx) {
+  const d = ensureDesign(levelIdx);
+  if (!d.monster_types) d.monster_types = [];
+  d.monster_types.push({ name: '', hp: 0, attack: 0, defense: 0, xp_value: 0, description: '' });
+  refreshLevelEditor();
+}
+function removeMonster(levelIdx, mIdx) {
+  const d = ensureDesign(levelIdx);
+  d.monster_types.splice(mIdx, 1);
+  refreshLevelEditor();
+}
+
+// Weapon
+function renderWeapon(idx, design) {
+  const w = design.weapon || {};
+  let s = `
+    <div class="form-row"><label>Name</label>${enhancedInput(w.name||'', "updateDesignField("+idx+",'weapon','name',this.value)", 'weapon name for roguelike game')}</div>
+    <div class="form-row-stacked"><label>Description</label>
+      ${enhancedTextarea(w.description||'', "updateDesignField("+idx+",'weapon','description',this.value)", 'five-line weapon description', 5)}</div>`;
+  s += `<div class="flex gap-8 items-center" style="margin-top:4px;">`;
+  if (w.image) {
+    s += `<img src="data:image/png;base64,${w.image}" style="width:40px;height:40px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+      <button class="ai-btn" onclick="generateItemSprite(${idx},'weapon')" style="font-size:10px;">&#10024; Regen</button>
+      <button style="font-size:9px;padding:2px 4px;" onclick="clearItemSprite(${idx},'weapon')">Clear</button>`;
+  } else {
+    s += `<button class="ai-btn" onclick="generateItemSprite(${idx},'weapon')">&#10024; Generate Sprite</button>`;
+  }
+  s += `</div>`;
+  return s;
+}
+
+function renderArmor(idx, design) {
+  const a = design.armor || {};
+  let s = `
+    <div class="form-row"><label>Name</label>${enhancedInput(a.name||'', "updateDesignField("+idx+",'armor','name',this.value)", 'armor name for roguelike game')}</div>
+    <div class="form-row-stacked"><label>Description</label>
+      ${enhancedTextarea(a.description||'', "updateDesignField("+idx+",'armor','description',this.value)", 'five-line armor description', 5)}</div>`;
+  s += `<div class="flex gap-8 items-center" style="margin-top:4px;">`;
+  if (a.image) {
+    s += `<img src="data:image/png;base64,${a.image}" style="width:40px;height:40px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+      <button class="ai-btn" onclick="generateItemSprite(${idx},'armor')" style="font-size:10px;">&#10024; Regen</button>
+      <button style="font-size:9px;padding:2px 4px;" onclick="clearItemSprite(${idx},'armor')">Clear</button>`;
+  } else {
+    s += `<button class="ai-btn" onclick="generateItemSprite(${idx},'armor')">&#10024; Generate Sprite</button>`;
+  }
+  s += `</div>`;
+  return s;
+}
+
+function renderTraps(idx, design) {
+  const traps = design.traps || [];
+  let html = '';
+  for (let i = 0; i < traps.length; i++) {
+    html += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:6px;margin-bottom:6px;">
+      <div class="flex gap-4 items-center">
+        ${enhancedInput(traps[i].name||'', "updateTrap("+idx+","+i+",this.value)", 'trap name for roguelike dungeon', 'flex:1;')}
+        <button style="padding:2px 6px;font-size:10px;" onclick="removeTrap(${idx},${i})">x</button>
+      </div>
+      <div class="flex gap-8 items-center" style="margin-top:4px;">
+        ${traps[i].image
+          ? `<img src="data:image/png;base64,${traps[i].image}" style="width:32px;height:32px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+             <button class="ai-btn" onclick="generateTrapSprite(${idx},${i})" style="font-size:10px;">&#10024; Regen</button>
+             <button style="font-size:9px;padding:2px 4px;" onclick="clearTrapSprite(${idx},${i})">Clear</button>`
+          : `<button class="ai-btn" onclick="generateTrapSprite(${idx},${i})" style="font-size:10px;">&#10024; Sprite</button>`}
+      </div>
+    </div>`;
+  }
+  html += `<button style="font-size:12px;" onclick="addTrap(${idx})">Add Trap</button>`;
+  return html;
+}
+
+async function generateItemSprite(levelIdx, itemType) {
+  const d = ensureDesign(levelIdx);
+  const item = d[itemType];
+  if (!item) return;
+  const typeLabel = itemType === 'weapon' ? 'weapon' : 'armor/shield';
+  const prompt = `2D pixel art sprite of a roguelike game ${typeLabel} called "${item.name}". ${item.description||''}. ` +
+    `Top-down view, 32x32 pixel art, single item centered on pure solid BLACK background (#000000). No text.`;
+  showToast(`Generating ${itemType} sprite...`, 'info');
+  try {
+    const r = await api('POST', '/api/generate-image', { prompt, width: 64, height: 64 });
+    const transparent = await removeBlackBackground(r.image_base64);
+    const cropped = await cropToContent(transparent);
+    item.image = cropped;
+    refreshLevelEditor();
+    showToast('Sprite generated!', 'success');
+  } catch(e) { showToast('Sprite failed: ' + e.message, 'error'); }
+}
+
+async function generateBossSprite(levelIdx) {
+  const d = ensureDesign(levelIdx);
+  const b = d.boss;
+  if (!b) return;
+  const prompt = `2D pixel art sprite of a roguelike game boss monster called "${b.name}". ${b.description||''}. ` +
+    `Top-down view, 64x64 pixel art, single large creature centered on pure solid BLACK background (#000000). ` +
+    `Imposing, detailed. Bright colorful creature on BLACK. No text, no UI, no ground, no shadows.`;
+  showToast('Generating boss sprite...', 'info');
+  try {
+    const r = await api('POST', '/api/generate-image', { prompt, width: 128, height: 128 });
+    const transparent = await removeBlackBackground(r.image_base64);
+    const cropped = await cropToContent(transparent);
+    b.image = cropped;
+    refreshLevelEditor();
+    showToast('Boss sprite generated!', 'success');
+  } catch(e) { showToast('Sprite failed: ' + e.message, 'error'); }
+}
+
+function clearBossSprite(levelIdx) {
+  const d = ensureDesign(levelIdx);
+  if (d.boss) { delete d.boss.image; refreshLevelEditor(); }
+}
+
+function clearItemSprite(levelIdx, itemType) {
+  const d = ensureDesign(levelIdx);
+  if (d[itemType]) { delete d[itemType].image; refreshLevelEditor(); }
+}
+
+async function generateTrapSprite(levelIdx, trapIdx) {
+  const d = ensureDesign(levelIdx);
+  const trap = d.traps && d.traps[trapIdx];
+  if (!trap) return;
+  const prompt = `2D pixel art sprite of a roguelike dungeon trap called "${trap.name}". ` +
+    `Top-down view, 32x32 pixel art, single trap mechanism centered on pure solid BLACK background (#000000). No text.`;
+  showToast('Generating trap sprite...', 'info');
+  try {
+    const r = await api('POST', '/api/generate-image', { prompt, width: 64, height: 64 });
+    const transparent = await removeBlackBackground(r.image_base64);
+    const cropped = await cropToContent(transparent);
+    trap.image = cropped;
+    refreshLevelEditor();
+    showToast('Trap sprite generated!', 'success');
+  } catch(e) { showToast('Sprite failed: ' + e.message, 'error'); }
+}
+
+function clearTrapSprite(levelIdx, trapIdx) {
+  const d = ensureDesign(levelIdx);
+  if (d.traps && d.traps[trapIdx]) { delete d.traps[trapIdx].image; refreshLevelEditor(); }
+}
+function updateTrap(levelIdx, tIdx, val) {
+  const d = ensureDesign(levelIdx);
+  d.traps[tIdx].name = val;
+}
+function addTrap(levelIdx) {
+  const d = ensureDesign(levelIdx);
+  if (!d.traps) d.traps = [];
+  d.traps.push({ name: '', x: null, y: null, damage: null });
+  refreshLevelEditor();
+}
+function removeTrap(levelIdx, tIdx) {
+  const d = ensureDesign(levelIdx);
+  d.traps.splice(tIdx, 1);
+  refreshLevelEditor();
+}
+
+// Mode
+function renderMode(idx, design) {
+  const m = design.mode || {};
+  let rootOpts = ROOTS.map(r => `<option ${r===(m.root||'C')?'selected':''}>${r}</option>`).join('');
+  let scaleOpts = SCALES.map(s => `<option ${s===(m.scale||'aeolian')?'selected':''}>${s}</option>`).join('');
+  return `
+    <div class="form-row"><label>Root</label><select onchange="updateMode(${idx},'root',this.value)">${rootOpts}</select></div>
+    <div class="form-row"><label>Scale</label><select onchange="updateMode(${idx},'scale',this.value)">${scaleOpts}</select></div>`;
+}
+function updateMode(levelIdx, key, val) {
+  const d = ensureDesign(levelIdx);
+  if (!d.mode) d.mode = { root: 'C', scale: 'aeolian' };
+  d.mode[key] = val;
+}
+
+// Messages
+function renderMessages(idx, design) {
+  return `
+    <div class="form-row-stacked"><label>Victory Message</label>
+      ${enhancedInput(design.victory_message||'', "updateDesignDirect("+idx+",'victory_message',this.value)", 'one-line victory message for roguelike level')}</div>
+    <div class="form-row-stacked"><label>Defeat Message</label>
+      ${enhancedInput(design.defeat_message||'', "updateDesignDirect("+idx+",'defeat_message',this.value)", 'one-line defeat message for roguelike level')}</div>`;
+}
+
+function updateDesignField(levelIdx, obj, key, val) {
+  const d = ensureDesign(levelIdx);
+  if (!d[obj]) d[obj] = {};
+  d[obj][key] = val;
+}
+function updateDesignDirect(levelIdx, key, val) {
+  const d = ensureDesign(levelIdx);
+  d[key] = val;
+}
+
+// Map preview
+function renderMapPreviewSection(idx) {
+  return `
+    <div style="text-align:center;">
+      <canvas id="map-canvas" class="map-canvas" width="600" height="360"></canvas>
+      <div style="margin-top:8px;">
+        <button onclick="regenerateMap(${idx})">Regenerate Map</button>
+        <span id="map-status" style="font-size:12px;color:#888;margin-left:8px;"></span>
+      </div>
+    </div>`;
+}
+
+async function regenerateMap(levelIdx) {
+  const c = getCampaign(selectedCampaignId);
+  const design = c.designs[levelIdx];
+  const lv = c.overworld.levels[levelIdx];
+  if (!design || !design.tile_defs || design.tile_defs.length < 2) {
+    showToast('Need at least 2 tile definitions', 'error');
+    return;
+  }
+  const st = document.getElementById('map-status');
+  if (st) st.innerHTML = '<span class="spinner"></span> Generating...';
+  try {
+    const result = await api('POST', '/api/generate-map', {
+      tile_defs: design.tile_defs,
+      palette: lv.palette || []
+    });
+    mapPreviewData = result;
+    design.prebuilt_map = result;
+    // Displace all entities — new map means old positions are invalid
+    displaceAll(levelIdx);
+    renderLevelScreen(document.getElementById('screen-container'));
+    showCurrentMap();
+    if (st) st.textContent = 'Map regenerated — entities returned to tray';
+  } catch(e) {
+    showToast('Map generation failed: ' + e.message, 'error');
+    if (st) st.textContent = 'Failed';
+  }
+}
+
+// Cache for loaded tile images
+let tileImageCache = {};
+
+function loadTileImages(tileDefs) {
+  const promises = [];
+  for (let i = 0; i < tileDefs.length; i++) {
+    const td = tileDefs[i];
+    if (td.image && !tileImageCache[td.name]) {
+      const img = new Image();
+      const p = new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
+      img.src = 'data:image/png;base64,' + td.image;
+      tileImageCache[td.name] = img;
+      promises.push(p);
+    }
+  }
+  return Promise.all(promises);
+}
+
+async function renderMapCanvas(data, palette, tileDefs, placedEntities) {
+  const canvas = document.getElementById('map-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const tiles = data.tiles;
+  if (!tiles || !tiles.length) return;
+  const rows = tiles.length;
+  const cols = tiles[0].length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+
+  // Load any tile images first
+  tileImageCache = {};
+  await loadTileImages(tileDefs);
+
+  // Build tileName → color map
+  const nameToColor = {};
+  const nameToChar = {};
+  const nameToImg = {};
+  for (let i = 0; i < tileDefs.length; i++) {
+    const name = tileDefs[i].name;
+    nameToColor[name] = palette[i] || (i === 0 ? '#444' : '#333');
+    if (tileDefs[i].char) nameToChar[name] = tileDefs[i].char;
+    if (tileImageCache[name]) nameToImg[name] = tileImageCache[name];
+  }
+  nameToColor['wall'] = nameToColor['wall'] || '#444';
+  nameToColor['locked_door'] = '#aa6622';
+  nameToChar['locked_door'] = '🔒';
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const name = tiles[r][c];
+      const img = nameToImg[name];
+      if (img && img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, c * cellW, r * cellH, cellW, cellH);
+      } else {
+        ctx.fillStyle = nameToColor[name] || '#222';
+        ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
+        const ch = nameToChar[name];
+        if (ch && cellW >= 6) {
+          ctx.fillStyle = 'rgba(255,255,255,0.3)';
+          ctx.font = `${Math.min(cellW, cellH) * 0.7}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(ch, c * cellW + cellW/2, r * cellH + cellH/2);
+        }
+      }
+    }
+  }
+
+  // Player start (green)
+  if (data.player_start) {
+    const [px, py] = data.player_start;
+    ctx.fillStyle = '#66bb6a';
+    ctx.fillRect(px * cellW + 2, py * cellH + 2, cellW - 4, cellH - 4);
+  }
+  // Boss room tint — highlight the room around the map's suggested boss position
+  const peCheck = placedEntities || (selectedLevelIdx !== null ? getCampaign(selectedCampaignId)?.designs?.[selectedLevelIdx]?.placed_entities : null);
+  if (data.boss_position && !(peCheck && peCheck.boss)) {
+    const [bx, by] = data.boss_position;
+    const wallName = tileDefs[0]?.name || 'wall';
+    // Flood fill the boss room, but don't pass through chokepoints (1-wide passages)
+    const isWalkable = (x,y) => x>=0&&y>=0&&x<cols&&y<rows&&tiles[y][x]!==wallName&&tiles[y][x]!=='locked_door';
+    const isChokepoint = (x,y) => {
+      // A tile is a chokepoint if it has walls on opposite sides (N+S or E+W)
+      const n=!isWalkable(x,y-1), s=!isWalkable(x,y+1), e=!isWalkable(x+1,y), w=!isWalkable(x-1,y);
+      return (n&&s)||(e&&w);
+    };
+    const visited = new Set();
+    const queue = [[bx, by]];
+    visited.add(bx+','+by);
+    while (queue.length > 0) {
+      const [cx, cy] = queue.shift();
+      for (const [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+        const nx=cx+dx, ny=cy+dy, key=nx+','+ny;
+        if (isWalkable(nx,ny) && !visited.has(key) && !isChokepoint(nx,ny)) {
+          visited.add(key);
+          queue.push([nx, ny]);
+        }
+      }
+    }
+    ctx.fillStyle = 'rgba(233,69,96,0.12)';
+    for (const key of visited) {
+      const [rx, ry] = key.split(',').map(Number);
+      ctx.fillRect(rx * cellW, ry * cellH, cellW, cellH);
+    }
+  }
+  // Key position (cyan)
+  if (data.key_position) {
+    const [kx, ky] = data.key_position;
+    ctx.fillStyle = '#4dd0e1';
+    ctx.fillRect(kx * cellW + 2, ky * cellH + 2, cellW - 4, cellH - 4);
+  }
+
+  // ── Draw placed entities ──
+  const pe = placedEntities || (selectedLevelIdx !== null ? getCampaign(selectedCampaignId)?.designs?.[selectedLevelIdx]?.placed_entities : null);
+  if (pe) {
+    ctx.font = `${Math.min(cellW, cellH) * 0.7}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // Boss (red, 2x2)
+    if (pe.boss) {
+      const [bx, by] = pe.boss;
+      // Try to draw boss sprite
+      const c2 = getCampaign(selectedCampaignId);
+      const bossImg = c2?.designs?.[selectedLevelIdx]?.boss?.image;
+      if (bossImg) {
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + bossImg;
+        if (img.complete) {
+          ctx.drawImage(img, bx * cellW, by * cellH, cellW * 2, cellH * 2);
+        } else {
+          img.onload = () => ctx.drawImage(img, bx * cellW, by * cellH, cellW * 2, cellH * 2);
+        }
+      } else {
+        ctx.fillStyle = 'rgba(233,69,96,0.7)';
+        ctx.fillRect(bx * cellW, by * cellH, cellW * 2, cellH * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('💀', bx * cellW + cellW, by * cellH + cellH);
+      }
+      ctx.strokeStyle = '#e94560';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bx * cellW, by * cellH, cellW * 2, cellH * 2);
+    }
+    // Monsters — use campaign sprite if available
+    const c3 = getCampaign(selectedCampaignId);
+    const campaignMonsters = c3?.monster_templates || [];
+    for (const m of (pe.monsters || [])) {
+      const tmpl = campaignMonsters.find(t => t.name === m.name);
+      if (tmpl && tmpl.image) {
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + tmpl.image;
+        const mx = m.x, my = m.y;
+        const drawIt = () => ctx.drawImage(img, mx * cellW + 1, my * cellH + 1, cellW - 2, cellH - 2);
+        if (img.complete) drawIt(); else img.onload = drawIt;
+      } else {
+        ctx.fillStyle = 'rgba(255,105,180,0.6)';
+        ctx.fillRect(m.x * cellW, m.y * cellH, cellW, cellH);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('👾', m.x * cellW + cellW/2, m.y * cellH + cellH/2);
+      }
+    }
+    // Items — use sprite if available (pack-level or design-level), else emoji
+    const itemIcons = { potion: '🧪', gold: '💰', weapon: '⚔', armor: '🛡', key: '🔑', speed_potion: '⚡', bomb: '💣' };
+    for (const it of (pe.items || [])) {
+      const sprite = packItemSprite(it.item_type);
+      if (sprite) {
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + sprite;
+        const ix = it.x, iy = it.y;
+        const drawIt = () => ctx.drawImage(img, ix * cellW + 1, iy * cellH + 1, cellW - 2, cellH - 2);
+        if (img.complete) drawIt(); else img.onload = drawIt;
+      } else {
+        ctx.fillStyle = 'rgba(255,167,38,0.5)';
+        ctx.fillRect(it.x * cellW, it.y * cellH, cellW, cellH);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(itemIcons[it.item_type] || '📦', it.x * cellW + cellW/2, it.y * cellH + cellH/2);
+      }
+    }
+    // Traps (red X)
+    for (const t of (pe.traps || [])) {
+      ctx.fillStyle = 'rgba(255,68,68,0.5)';
+      ctx.fillRect(t.x * cellW, t.y * cellH, cellW, cellH);
+      ctx.strokeStyle = '#ff4444';
+      ctx.lineWidth = 2;
+      const cx = t.x * cellW, cy = t.y * cellH;
+      ctx.beginPath(); ctx.moveTo(cx+2, cy+2); ctx.lineTo(cx+cellW-2, cy+cellH-2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx+cellW-2, cy+2); ctx.lineTo(cx+2, cy+cellH-2); ctx.stroke();
+    }
+  }
+}
+
+// ── AI Generation ──
+async function aiGenDesc(levelIdx, target) {
+  const c = getCampaign(selectedCampaignId);
+  const lv = c.overworld.levels[levelIdx];
+  const context = `Campaign: ${c.overworld.name}. Level: ${lv.name}. Theme: ${lv.theme}`;
+  try {
+    showToast('Generating...', 'info');
+    const r = await api('POST', '/api/generate/description', { context, target });
+    if (target.includes('description')) {
+      lv.description = r.text;
+    } else if (target.includes('theme')) {
+      lv.theme = r.text;
+    }
+    refreshLevelEditor();
+    showToast('Generated!', 'success');
+  } catch(e) { showToast('AI generation failed: ' + e.message, 'error'); }
+}
+
+async function aiGenField(levelIdx, target) {
+  const c = getCampaign(selectedCampaignId);
+  const lv = c.overworld.levels[levelIdx];
+  const d = ensureDesign(levelIdx);
+  const context = `Campaign: ${c.overworld.name}. Level: ${lv.name}. Theme: ${lv.theme}`;
+  try {
+    showToast('Generating...', 'info');
+    const r = await api('POST', '/api/generate/description', { context, target });
+    const text = r.text.trim();
+    if (target.includes('boss name')) d.boss.name = text;
+    else if (target.includes('boss description')) d.boss.description = text;
+    else if (target.startsWith('monster')) {
+      const parts = target.split(' ');
+      const mi = parseInt(parts[1]);
+      if (target.includes('name')) d.monster_types[mi].name = text;
+      else d.monster_types[mi].description = text;
+    }
+    else if (target.includes('weapon name')) d.weapon.name = text;
+    else if (target.includes('weapon description')) d.weapon.description = text;
+    else if (target.includes('armor name')) d.armor.name = text;
+    else if (target.includes('armor description')) d.armor.description = text;
+    else if (target.includes('victory')) d.victory_message = text;
+    else if (target.includes('defeat')) d.defeat_message = text;
+    refreshLevelEditor();
+    showToast('Generated!', 'success');
+  } catch(e) { showToast('AI generation failed: ' + e.message, 'error'); }
+}
+
+async function aiGenFullLevel(levelIdx) {
+  const c = getCampaign(selectedCampaignId);
+  const lv = c.overworld.levels[levelIdx];
+  const theme = prompt('Describe the level theme/vibe for the AI:', lv.theme || '');
+  if (theme === null) return;
+  lv.theme = theme;
+  showToast('Generating full level design...', 'info');
+  try {
+    const result = await api('POST', '/api/generate/level-design', {
+      campaign_name: c.overworld.name,
+      campaign_desc: c.overworld.description,
+      level_config: {
+        title: lv.name,
+        font: lv.font || c.overworld.font || '',
+        description: lv.description,
+        theme: theme,
+        palette: lv.palette || [],
+        budget: lv.budget || 150,
+        floor: levelIdx + 1,
+        campaign_tier: 0
+      },
+      theme: pack.theme || null
+    });
+    c.designs[levelIdx] = result;
+    refreshLevelEditor();
+    showToast('Full level design generated!', 'success');
+  } catch(e) { showToast('Generation failed: ' + e.message, 'error'); }
+}
+
+// ── Init ──
+async function init() {
+  await Promise.all([loadPack(), loadFonts()]);
+  render();
+}
+init();
+</script>
+</body>
+</html>
