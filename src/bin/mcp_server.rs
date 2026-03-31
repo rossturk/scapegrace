@@ -749,7 +749,7 @@ fn simulate_campaign_with_store(
         design_idx += 1;
 
         let (level, start, _remaining) = match gen::build_level_from_design_with_settings(
-            &config, design, &campaign.settings, campaign.monster_templates.as_deref(),
+            &config, design, &campaign.settings, campaign.monster_templates.as_deref(), &Default::default(),
         ) {
             Ok(r) => r,
             Err(e) => {

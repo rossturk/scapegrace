@@ -180,6 +180,14 @@ pub struct Overworld {
     pub store_stock: Vec<StoreSlot>,
     pub bg_image: Option<String>,
     pub bg_gradient: Option<String>,
+    pub bg_terrain: bool,
+    pub terrain_seed: u32,
+    pub title_x: f32,
+    pub title_y: f32,
+    pub title_font_size: f32,
+    pub desc_x: f32,
+    pub desc_y: f32,
+    pub desc_font_size: f32,
 }
 
 impl Overworld {
@@ -195,6 +203,34 @@ impl Overworld {
             slot.price = (slot.price as f32 * multiplier).ceil() as i32;
         }
     }
+}
+
+/// Unified overworld tile grid — all levels stitched together with hallways
+#[derive(Clone)]
+pub struct OverworldMap {
+    pub width: i32,
+    pub height: i32,
+    pub tiles: Vec<Vec<String>>,
+    pub tile_defs: std::collections::HashMap<String, TileDef>,
+    pub level_regions: Vec<LevelRegion>,
+    pub hallways: Vec<HallwaySegment>,
+    pub player_pos: [i32; 2], // current player position on the overworld
+}
+
+#[derive(Clone)]
+pub struct LevelRegion {
+    pub node_idx: usize,
+    pub ox: i32, pub oy: i32, // offset in the overworld grid
+    pub w: i32, pub h: i32,
+    pub entry_pos: Option<[i32; 2]>, // world coords of entry door
+    pub exit_pos: Option<[i32; 2]>,  // world coords of exit door
+}
+
+#[derive(Clone)]
+pub struct HallwaySegment {
+    pub from_level: usize,
+    pub to_level: usize,
+    pub tiles: Vec<(i32, i32)>, // ordered floor tile positions for stats scroll
 }
 
 #[derive(Clone)]
@@ -221,6 +257,7 @@ pub struct OverworldNode {
     pub unlocked: bool,
     pub is_final: bool,
     pub node_type: NodeType,
+    pub exit_direction: String, // "n", "s", "e", "w" — default "e"
 }
 
 pub struct GameState {
@@ -230,6 +267,7 @@ pub struct GameState {
     pub game_over: bool,
     pub victory: bool,
     pub vision_radius: i32,
+    pub item_sprites: std::collections::HashMap<String, String>,
 }
 
 impl GameState {
@@ -248,6 +286,7 @@ impl GameState {
             log: vec![],
             game_over: false,
             victory: false,
+            item_sprites: Default::default(),
             vision_radius: 5,
         }
     }
@@ -301,7 +340,22 @@ pub fn player_attack(state: &mut GameState, monster_idx: usize) -> bool {
         maybe_drop_loot(state, monster_idx);
         if is_boss {
             state.log("THE BOSS IS SLAIN!", "#ffd700");
-            state.victory = true;
+            // Unlock exit door
+            let mut found_exit = false;
+            for row in &mut state.level.tiles {
+                for tile in row.iter_mut() {
+                    if tile == "exit_door_locked" {
+                        *tile = "exit_door".to_string();
+                        found_exit = true;
+                    }
+                }
+            }
+            if found_exit {
+                state.log("An exit door has opened!", "#44ccff");
+            } else {
+                // No exit door placed — fall back to immediate victory
+                state.victory = true;
+            }
         }
         return true;
     } else {
@@ -367,7 +421,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
             name: format!("{} Gold", gold),
             x: mx, y: my,
             item_type: "gold".into(), value: gold,
-            description: String::new(), image: None,
+            description: String::new(), image: state.item_sprites.get("gold").cloned(),
         }
     } else {
         Item {
@@ -375,7 +429,7 @@ fn maybe_drop_loot(state: &mut GameState, monster_idx: usize) {
             name: "Health Potion".into(),
             x: mx, y: my,
             item_type: "potion".into(), value: 0,
-            description: String::new(), image: None,
+            description: String::new(), image: state.item_sprites.get("potion").cloned(),
         }
     };
 
@@ -436,6 +490,14 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
 
     state.player.x = nx;
     state.player.y = ny;
+
+    // Check if player stepped on exit door
+    if state.level.tiles[ny as usize][nx as usize] == "exit_door" {
+        state.log("You exit the level!", "#ffd700");
+        state.victory = true;
+        return serde_json::json!({"moved": true, "victory": true});
+    }
+
     let newly = reveal_around(&mut state.level, nx, ny, state.vision_radius);
 
     // Pick up items
@@ -617,7 +679,20 @@ pub fn use_bomb(state: &mut GameState) -> bool {
                 check_level_up(state);
                 maybe_drop_loot(state, i);
                 state.log("THE BOSS IS SLAIN!", "#ffd700");
-                state.victory = true;
+                let mut found_exit = false;
+                for row in &mut state.level.tiles {
+                    for tile in row.iter_mut() {
+                        if tile == "exit_door_locked" {
+                            *tile = "exit_door".to_string();
+                            found_exit = true;
+                        }
+                    }
+                }
+                if found_exit {
+                    state.log("An exit door has opened!", "#44ccff");
+                } else {
+                    state.victory = true;
+                }
             }
         } else {
             // Non-bosses are instantly killed

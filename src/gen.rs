@@ -65,6 +65,12 @@ pub struct PlacedEntities {
     /// Designer-placed boss position. Overrides prebuilt_map.boss_position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boss: Option<[i32; 2]>,
+    /// Designer-placed exit door position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_door: Option<[i32; 2]>,
+    /// Designer-placed entry door position (levels 2+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_door: Option<[i32; 2]>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -82,6 +88,8 @@ pub struct PlacedItem {
     pub y: i32,
     #[serde(default)]
     pub value: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -184,6 +192,8 @@ pub struct OverworldNodeRaw {
     pub color: Option<String>,
     pub palette: Option<Vec<String>>,
     pub budget: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_direction: Option<String>, // "n", "s", "e", "w"
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -212,6 +222,18 @@ pub struct OverworldResult {
     /// CSS gradient string for overworld background
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bg_gradient: Option<String>,
+    /// Background mode: "solid", "gradient", "image", "terrain"
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "_bg_mode")]
+    pub bg_mode: Option<String>,
+    /// Terrain generation seed
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "_terrain_seed")]
+    pub terrain_seed: Option<u32>,
+    /// Image generation prompt (preserved for re-generation)
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "_bg_prompt")]
+    pub bg_prompt: Option<String>,
+    /// Overworld region offsets (designer-dragged level positions)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ow_region_offsets: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -673,25 +695,15 @@ fn apply_saved_positions(ow: &mut crate::game::Overworld, positions: &serde_json
         Some(m) => m,
         None => return,
     };
-    // Find bounding box of all positions to normalize
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
-    for (_key, val) in pos_map {
-        if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
-            min_x = min_x.min(x as f32);
-            min_y = min_y.min(y as f32);
-            max_x = max_x.max(x as f32 + 120.0);
-            max_y = max_y.max(y as f32 + 50.0);
-        }
-    }
-    let w = (max_x - min_x).max(1.0);
-    let h = (max_y - min_y).max(1.0);
-    // Add padding
-    let pad = 0.05;
 
-    // Build key list first to avoid borrow issues
+    // Positions are saved as 0..1 normalized coordinates.
+    // Detect old pixel-coord format (values > 2) and fall back to bounding-box normalization.
+    let is_normalized = pos_map.values().all(|v| {
+        let x = v["x"].as_f64().unwrap_or(0.0);
+        let y = v["y"].as_f64().unwrap_or(0.0);
+        x <= 2.0 && y <= 2.0
+    });
+
     let keys: Vec<String> = {
         let mut level_count = 0usize;
         ow.nodes.iter().map(|node| {
@@ -706,11 +718,66 @@ fn apply_saved_positions(ow: &mut crate::game::Overworld, positions: &serde_json
             }
         }).collect()
     };
-    for (i, node) in ow.nodes.iter_mut().enumerate() {
-        if let Some(val) = pos_map.get(&keys[i]) {
+
+    if is_normalized {
+        // New format: 0..1 coords, use directly
+        for (i, node) in ow.nodes.iter_mut().enumerate() {
+            if let Some(val) = pos_map.get(&keys[i]) {
+                if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
+                    node.x = x as f32;
+                    node.y = y as f32;
+                }
+            }
+        }
+        if let Some(val) = pos_map.get("title") {
             if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
-                node.x = pad + ((x as f32 - min_x) / w) * (1.0 - pad * 2.0);
-                node.y = pad + ((y as f32 - min_y) / h) * (1.0 - pad * 2.0);
+                // Title pos is top-left of box; center it (box is ~300/1600 wide, ~52/900 tall)
+                ow.title_x = x as f32 + 150.0 / 1600.0;
+                ow.title_y = y as f32 + 26.0 / 900.0;
+            }
+            if let Some(fs) = val["font_size"].as_f64() {
+                ow.title_font_size = fs as f32;
+            }
+        }
+        // Desc node
+        if let Some(val) = pos_map.get("desc") {
+            if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
+                ow.desc_x = x as f32;
+                ow.desc_y = y as f32;
+            }
+            if let Some(fs) = val["font_size"].as_f64() {
+                ow.desc_font_size = fs as f32;
+            }
+        }
+    } else {
+        // Legacy pixel-coord format: normalize via bounding box
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for (_key, val) in pos_map {
+            if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
+                min_x = min_x.min(x as f32);
+                min_y = min_y.min(y as f32);
+                max_x = max_x.max(x as f32 + 120.0);
+                max_y = max_y.max(y as f32 + 50.0);
+            }
+        }
+        let w = (max_x - min_x).max(1.0);
+        let h = (max_y - min_y).max(1.0);
+        let pad = 0.05;
+        for (i, node) in ow.nodes.iter_mut().enumerate() {
+            if let Some(val) = pos_map.get(&keys[i]) {
+                if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
+                    node.x = pad + ((x as f32 - min_x) / w) * (1.0 - pad * 2.0);
+                    node.y = pad + ((y as f32 - min_y) / h) * (1.0 - pad * 2.0);
+                }
+            }
+        }
+        if let Some(val) = pos_map.get("title") {
+            if let (Some(x), Some(y)) = (val["x"].as_f64(), val["y"].as_f64()) {
+                ow.title_x = pad + ((x as f32 + 150.0 - min_x) / w) * (1.0 - pad * 2.0);
+                ow.title_y = pad + ((y as f32 + 26.0 - min_y) / h) * (1.0 - pad * 2.0);
             }
         }
     }
@@ -835,6 +902,12 @@ where F: FnMut(PhaseUpdate) + Send, T: Fn() + Send
     Ok(overworld)
 }
 
+/// Build an Overworld from a BundledCampaign for preview purposes (no LLM needed)
+pub fn build_overworld_inner_for_preview(campaign: &BundledCampaign) -> Result<crate::game::Overworld, String> {
+    let font = campaign.overworld.font.clone().unwrap_or_default();
+    build_overworld_inner(campaign.overworld.clone(), font)
+}
+
 fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<crate::game::Overworld, String> {
     use crate::game::{NodeType, OverworldNode};
     use rand::Rng;
@@ -861,6 +934,7 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
         unlocked: true,
         is_final: false,
         node_type: NodeType::Start,
+        exit_direction: "e".into(),
     });
 
     // Main path levels (last one is the boss)
@@ -878,6 +952,7 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
             unlocked: i == 0, // first main path level unlocked
             is_final: if let Some(bl) = result.boss_level { i == bl } else { i == main_count_levels - 1 },
             node_type: NodeType::Level,
+            exit_direction: lv.exit_direction.clone().unwrap_or_else(|| "e".into()),
         });
     }
 
@@ -898,6 +973,7 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
         unlocked: false,
         is_final: false,
         node_type: NodeType::Level,
+        exit_direction: branch_level.exit_direction.clone().unwrap_or_else(|| "e".into()),
     });
 
     // Store node
@@ -913,6 +989,7 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
         unlocked: false,
         is_final: false,
         node_type: NodeType::Store,
+        exit_direction: "e".into(),
     });
 
     // Build connections: main chain + branch
@@ -987,6 +1064,14 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
         store_stock,
         bg_image: result.bg_image.clone(),
         bg_gradient: result.bg_gradient.clone(),
+        bg_terrain: result.bg_mode.as_deref() == Some("terrain"),
+        terrain_seed: result.terrain_seed.unwrap_or(42),
+        title_x: 0.5,
+        title_y: 0.05,
+        title_font_size: 36.0,
+        desc_x: 0.5,
+        desc_y: 0.15,
+        desc_font_size: 14.0,
     };
 
     // Use saved positions from the builder if available, otherwise random layout
@@ -1004,7 +1089,7 @@ pub fn build_level_from_design(
     config: &LevelConfig,
     design: &Phase2Result,
 ) -> Result<(Level, [i32; 2], i32), String> {
-    build_level_from_design_with_settings(config, design, &CampaignSettings::default(), None)
+    build_level_from_design_with_settings(config, design, &CampaignSettings::default(), None, &Default::default())
 }
 
 pub fn build_level_from_design_with_settings(
@@ -1012,6 +1097,7 @@ pub fn build_level_from_design_with_settings(
     design: &Phase2Result,
     settings: &CampaignSettings,
     campaign_monsters: Option<&[MonsterTemplateRaw]>,
+    item_sprites: &std::collections::HashMap<String, String>,
 ) -> Result<(Level, [i32; 2], i32), String> {
     let floor = config.floor;
     let tier_scale = 1.0 + config.campaign_tier as f32 * 0.25;
@@ -1033,7 +1119,7 @@ pub fn build_level_from_design_with_settings(
     } else {
         crate::mapgen::generate_map_with_options(&full_defs, skip_locked_door)
     };
-    assemble_level_with_settings(floor, budget, &p1, design, &map, settings, campaign_monsters, campaign_tier)
+    assemble_level_with_settings(floor, budget, &p1, design, &map, settings, campaign_monsters, campaign_tier, item_sprites)
 }
 
 // ── Three-phase generation (legacy, still used if no pre-generated design) ──
@@ -1219,7 +1305,7 @@ fn assemble_level(
     floor: i32, budget: i32,
     p1: &Phase1Result, p2: &Phase2Result, map: &crate::mapgen::MapGenResult,
 ) -> Result<(Level, [i32; 2], i32), String> {
-    assemble_level_with_settings(floor, budget, p1, p2, map, &CampaignSettings::default(), None, 0)
+    assemble_level_with_settings(floor, budget, p1, p2, map, &CampaignSettings::default(), None, 0, &Default::default())
 }
 
 fn assemble_level_with_settings(
@@ -1228,6 +1314,7 @@ fn assemble_level_with_settings(
     settings: &CampaignSettings,
     campaign_monsters: Option<&[MonsterTemplateRaw]>,
     campaign_tier: i32,
+    item_sprites: &std::collections::HashMap<String, String>,
 ) -> Result<(Level, [i32; 2], i32), String> {
     let width = 60_i32;
     let height = 36_i32;
@@ -1267,8 +1354,46 @@ fn assemble_level_with_settings(
         });
     }
 
-    // Use the procedurally generated grid directly
-    let tiles = map.tiles.clone();
+    // Exit door tile defs (locked until boss dies, then walkable)
+    tile_defs.insert("exit_door_locked".into(), TileDef {
+        name: "exit_door_locked".into(), color: "#553311".into(), walkable: false,
+        char_display: String::new(), damage: 0, image: None,
+    });
+    tile_defs.insert("exit_door".into(), TileDef {
+        name: "exit_door".into(), color: "#ffcc00".into(), walkable: true,
+        char_display: String::new(), damage: 0, image: None,
+    });
+    // Entry door (where player enters from previous level's hallway)
+    tile_defs.insert("entry_door".into(), TileDef {
+        name: "entry_door".into(), color: "#44ccff".into(), walkable: true,
+        char_display: String::new(), damage: 0, image: None,
+    });
+
+    // Use the procedurally generated grid, placing exit door
+    let mut tiles = map.tiles.clone();
+    // Check for designer-placed exit door first
+    let designer_exit = p2.placed_entities.as_ref().and_then(|pe| pe.exit_door);
+    let exit_door_pos = if let Some(pos) = designer_exit {
+        tiles[pos[1] as usize][pos[0] as usize] = "exit_door_locked".to_string();
+        Some(pos)
+    } else if let Some(pos) = map.exit_door_position {
+        Some(pos)
+    } else {
+        // Auto-place: derive bounds from boss position (5x5 area)
+        let bounds = map.boss_room_bounds.unwrap_or_else(|| {
+            let bp = map.boss_position;
+            [bp[0] - 2, bp[1] - 2, 5, 5]
+        });
+        crate::mapgen::place_exit_door(&mut tiles, bounds, "e", &p1.tile_defs)
+    };
+    // Place entry door if designer specified one
+    if let Some(pe) = &p2.placed_entities {
+        if let Some(pos) = pe.entry_door {
+            if pos[1] >= 0 && (pos[1] as usize) < tiles.len() && pos[0] >= 0 && (pos[0] as usize) < tiles[0].len() {
+                tiles[pos[1] as usize][pos[0] as usize] = "entry_door".to_string();
+            }
+        }
+    }
     let player_start = map.player_start;
 
     // Two flood fills: player side (blocked by locked door) and full map (ignoring lock)
@@ -1384,12 +1509,14 @@ fn assemble_level_with_settings(
                 "gold" => rng.gen_range(5..=15) + floor * 2,
                 _ => 0,
             });
-            // Look up image from design templates
-            let item_image = match pi.item_type.as_str() {
-                "weapon" => p2.weapon.image.clone(),
-                "armor" => p2.armor.image.clone(),
-                _ => None,
-            };
+            // Use placed item's own image, fall back to design templates, then pack-level sprites
+            let item_image = pi.image.clone()
+                .or_else(|| match pi.item_type.as_str() {
+                    "weapon" => p2.weapon.image.clone(),
+                    "armor" => p2.armor.image.clone(),
+                    _ => None,
+                })
+                .or_else(|| item_sprites.get(&pi.item_type).cloned());
             itms.push(Item {
                 id: format!("pi_{}_{}", floor, i),
                 name: pi.name.clone(),
@@ -1520,7 +1647,7 @@ fn assemble_level_with_settings(
                 if let Some(&(gx, gy)) = pick_random_reachable(tiles, player_start, 2, &monsters, &mut rng) {
                     itms.push(Item {
                         id: format!("gold_{}_{}", floor, gold_i), name: format!("{} Gold", amount),
-                        x: gx, y: gy, item_type: "gold".into(), value: amount, description: String::new(), image: None,
+                        x: gx, y: gy, item_type: "gold".into(), value: amount, description: String::new(), image: item_sprites.get("gold").cloned(),
                     });
                 }
                 gold_i += 1;
@@ -1550,7 +1677,7 @@ fn assemble_level_with_settings(
                 if let Some(&(px, py)) = pick_random_reachable(&reachable_vec, player_start, 2, &monsters, &mut rng) {
                     itms.push(Item {
                         id: format!("pot_{}_{}", floor, i), name: "Health Potion".into(),
-                        x: px, y: py, item_type: "potion".into(), value: 0, description: String::new(), image: None,
+                        x: px, y: py, item_type: "potion".into(), value: 0, description: String::new(), image: item_sprites.get("potion").cloned(),
                     });
                 }
             }
@@ -1679,4 +1806,434 @@ pub fn build_scale(root: &str, scale_name: &str) -> Vec<f32> {
         }
     }
     freqs
+}
+
+// ── Overworld Map Generation: stitch all levels into one big tile grid ──
+
+use crate::game::{OverworldMap, LevelRegion, HallwaySegment, TileDef};
+
+/// Build a unified overworld tile grid from a campaign's level designs.
+/// Each level's prebuilt_map is copied into the grid at an offset determined by
+/// exit directions and connections. Hallways connect exit doors to entry doors.
+pub fn generate_overworld_map(
+    campaign: &BundledCampaign,
+    overworld: &crate::game::Overworld,
+) -> Option<OverworldMap> {
+    let levels = &overworld.nodes;
+    let designs = &campaign.designs;
+    let connections = &overworld.connections;
+    let mw = 60_i32;
+    let mh = 36_i32;
+    let hallway_gap = 20_i32;
+
+    // Only include Level-type nodes
+    // Include Level and Store nodes (skip Start)
+    let level_indices: Vec<usize> = levels.iter().enumerate()
+        .filter(|(_, n)| n.node_type == crate::game::NodeType::Level || n.node_type == crate::game::NodeType::Store)
+        .map(|(i, _)| i)
+        .collect();
+
+    if level_indices.is_empty() { return None; }
+
+    // Map from node index to design index (count of Level nodes before it — Store has no design)
+    let node_to_design: std::collections::HashMap<usize, usize> = levels.iter().enumerate()
+        .filter(|(_, n)| n.node_type == crate::game::NodeType::Level)
+        .enumerate()
+        .map(|(di, (ni, _))| (ni, di))
+        .collect();
+
+    // Store nodes use smaller dimensions
+    let store_w = 15_i32;
+    let store_h = 10_i32;
+
+    // Title room: the Start node becomes the title room
+    let title_room_w = 40_i32;
+    let title_room_h = 40_i32;
+    let start_idx = levels.iter().position(|n| n.node_type == crate::game::NodeType::Start);
+
+    // Layout: place title room at origin, first level to the right
+    let mut placed: std::collections::HashMap<usize, (i32, i32)> = std::collections::HashMap::new();
+    let first = level_indices[0];
+    if let Some(si) = start_idx {
+        placed.insert(si, (0, 0));
+    }
+    placed.insert(first, (title_room_w + hallway_gap, 0));
+
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(first);
+
+    // Build connections between all placeable nodes (Level, Store, Start)
+    let mut placeable: Vec<usize> = level_indices.clone();
+    if let Some(si) = start_idx { if !placeable.contains(&si) { placeable.push(si); } }
+    let level_conns: Vec<(usize, usize)> = connections.iter()
+        .filter(|(a, b)| placeable.contains(a) && placeable.contains(b))
+        .cloned()
+        .collect();
+
+    while let Some(from_idx) = queue.pop_front() {
+        let (fx, fy) = placed[&from_idx];
+
+        // Derive exit direction from the actual exit door position
+        let from_di = node_to_design.get(&from_idx).copied();
+        let exit_door_local = from_di
+            .and_then(|di| designs.get(di))
+            .and_then(|d| d.placed_entities.as_ref())
+            .and_then(|pe| pe.exit_door);
+
+        let exit_dir = if let Some(ed) = exit_door_local {
+            // Determine which wall the exit door is on
+            if ed[0] <= 1 { "w" }
+            else if ed[0] >= mw - 2 { "e" }
+            else if ed[1] <= 1 { "n" }
+            else if ed[1] >= mh - 2 { "s" }
+            else { levels[from_idx].exit_direction.as_str() }
+        } else {
+            levels[from_idx].exit_direction.as_str()
+        };
+
+        for &(a, b) in &level_conns {
+            let to_idx = if a == from_idx { b } else if b == from_idx { a } else { continue };
+            if placed.contains_key(&to_idx) { continue; }
+
+            // Use smaller dimensions for store nodes
+            let from_w = if levels[from_idx].node_type == crate::game::NodeType::Store { store_w } else { mw };
+            let from_h = if levels[from_idx].node_type == crate::game::NodeType::Store { store_h } else { mh };
+            let to_w = if levels[to_idx].node_type == crate::game::NodeType::Store { store_w } else { mw };
+            let to_h = if levels[to_idx].node_type == crate::game::NodeType::Store { store_h } else { mh };
+
+            let (mut ox, mut oy) = match exit_dir {
+                "e" => (fx + from_w + hallway_gap, fy),
+                "w" => (fx - to_w - hallway_gap, fy),
+                "s" => (fx, fy + from_h + hallway_gap),
+                "n" => (fx, fy - to_h - hallway_gap),
+                _ => (fx + from_w + hallway_gap, fy),
+            };
+            // Collision avoidance
+            let mut attempts = 0;
+            while placed.values().any(|&(px, py)| {
+                let pw = mw; let ph = mh; // approximate
+                ox < px + pw && ox + to_w > px && oy < py + ph && oy + to_h > py
+            }) && attempts < 10 {
+                match exit_dir {
+                    "e" | "w" => oy += to_h + hallway_gap,
+                    _ => ox += to_w + hallway_gap,
+                }
+                attempts += 1;
+            }
+            placed.insert(to_idx, (ox, oy));
+            queue.push_back(to_idx);
+        }
+    }
+
+    // Normalize to positive coordinates
+    let min_x = placed.values().map(|p| p.0).min().unwrap_or(0);
+    let min_y = placed.values().map(|p| p.1).min().unwrap_or(0);
+    let mut regions: Vec<LevelRegion> = Vec::new();
+    let mut placed_norm: std::collections::HashMap<usize, (i32, i32)> = std::collections::HashMap::new();
+    for (&ni, &(x, y)) in &placed {
+        let ox = x - min_x;
+        let oy = y - min_y;
+        placed_norm.insert(ni, (ox, oy));
+    }
+
+    // Compute total grid size (account for different node sizes)
+    let node_w = |ni: usize| -> i32 {
+        if Some(ni) == start_idx { title_room_w }
+        else if levels.get(ni).map(|n| n.node_type == crate::game::NodeType::Store).unwrap_or(false) { store_w }
+        else { mw }
+    };
+    let node_h = |ni: usize| -> i32 {
+        if Some(ni) == start_idx { title_room_h }
+        else if levels.get(ni).map(|n| n.node_type == crate::game::NodeType::Store).unwrap_or(false) { store_h }
+        else { mh }
+    };
+    let total_w = placed_norm.iter().map(|(&ni, p)| p.0 + node_w(ni)).max().unwrap_or(mw);
+    let total_h = placed_norm.iter().map(|(&ni, p)| p.1 + node_h(ni)).max().unwrap_or(mh);
+
+    // Create the grid filled with void
+    let mut tiles = vec![vec!["ow_void".to_string(); total_w as usize]; total_h as usize];
+    let mut tile_defs: std::collections::HashMap<String, TileDef> = std::collections::HashMap::new();
+
+    // Add void tile def
+    tile_defs.insert("ow_void".into(), TileDef {
+        name: "ow_void".into(), color: "#000000".into(), walkable: false,
+        char_display: String::new(), damage: 0, image: None,
+    });
+
+    // Add title room tile defs — use the first level's palette if available
+    let first_palette = level_indices.first()
+        .map(|&ni| &levels[ni].palette)
+        .filter(|p| !p.is_empty());
+    let title_wall_color = first_palette
+        .and_then(|p| p.first().cloned())
+        .unwrap_or_else(|| "#333344".into());
+    let title_floor_color = first_palette
+        .and_then(|p| p.get(1).or(p.first()).cloned())
+        .unwrap_or_else(|| "#222233".into());
+    tile_defs.insert("title_wall".into(), TileDef {
+        name: "title_wall".into(), color: title_wall_color, walkable: false,
+        char_display: String::new(), damage: 0, image: None,
+    });
+    tile_defs.insert("title_floor".into(), TileDef {
+        name: "title_floor".into(), color: title_floor_color, walkable: true,
+        char_display: String::new(), damage: 0, image: None,
+    });
+
+    // Generate title room at (0, 0) — before the normalization offset
+    // After normalization, title room is at normalized (0 - min_x, 0 - min_y)
+    // We placed it conceptually at x=0, so after norm it's at (0 - min_x, ...)
+    // Actually, let's just generate it at the normalized position after we know it
+    // We'll do this after the main grid is created
+
+    // Add store tile defs
+    tile_defs.insert("store_wall".into(), TileDef {
+        name: "store_wall".into(), color: "#5d4e37".into(), walkable: false,
+        char_display: String::new(), damage: 0, image: None,
+    });
+    tile_defs.insert("store_floor".into(), TileDef {
+        name: "store_floor".into(), color: "#aa8800".into(), walkable: true,
+        char_display: String::new(), damage: 0, image: None,
+    });
+    tile_defs.insert("store_merchant".into(), TileDef {
+        name: "store_merchant".into(), color: "#ffd700".into(), walkable: true,
+        char_display: "M".into(), damage: 0, image: None,
+    });
+
+    // Copy each node's tiles into the grid
+    for &ni in &level_indices {
+        let (ox, oy) = match placed_norm.get(&ni) {
+            Some(p) => *p,
+            None => continue,
+        };
+        let is_store = levels[ni].node_type == crate::game::NodeType::Store;
+        let nw = if is_store { store_w } else { mw };
+        let nh = if is_store { store_h } else { mh };
+
+        if is_store {
+            // Generate a simple store room: walls on perimeter, floor inside, merchant in center
+            for y in 0..nh {
+                for x in 0..nw {
+                    let gy = oy as usize + y as usize;
+                    let gx = ox as usize + x as usize;
+                    if gy < tiles.len() && gx < tiles[0].len() {
+                        let is_wall = x == 0 || x == nw - 1 || y == 0 || y == nh - 1;
+                        let is_merchant = x == nw / 2 && y == nh / 2;
+                        tiles[gy][gx] = if is_merchant { "store_merchant".into() }
+                            else if is_wall { "store_wall".into() }
+                            else { "store_floor".into() };
+                    }
+                }
+            }
+            regions.push(LevelRegion {
+                node_idx: ni, ox, oy, w: nw, h: nh,
+                entry_pos: None, exit_pos: None,
+            });
+            continue;
+        }
+
+        // Level node: copy from prebuilt_map
+        let di = match node_to_design.get(&ni) {
+            Some(d) => *d,
+            None => continue,
+        };
+        let design = match designs.get(di) {
+            Some(d) => d,
+            None => continue,
+        };
+        let map = match &design.prebuilt_map {
+            Some(m) => m,
+            None => continue,
+        };
+
+        for (y, row) in map.tiles.iter().enumerate() {
+            for (x, tname) in row.iter().enumerate() {
+                let gy = oy as usize + y;
+                let gx = ox as usize + x;
+                if gy < tiles.len() && gx < tiles[0].len() {
+                    let prefixed = format!("L{}_{}", di, tname);
+                    tiles[gy][gx] = prefixed.clone();
+
+                    if !tile_defs.contains_key(&prefixed) {
+                        let palette = &levels[ni].palette;
+                        let def_idx = design.tile_defs.iter().position(|d| d.name == *tname);
+                        let color = def_idx
+                            .and_then(|i| palette.get(i % palette.len()))
+                            .cloned()
+                            .unwrap_or_else(|| "#444444".into());
+                        let walkable = design.tile_defs.first()
+                            .map(|first| first.name != *tname)
+                            .unwrap_or(false);
+                        tile_defs.insert(prefixed.clone(), TileDef {
+                            name: prefixed,
+                            color,
+                            walkable,
+                            char_display: String::new(),
+                            damage: 0,
+                            image: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Determine door positions in world coords
+        let pe = design.placed_entities.as_ref();
+        let exit_pos = pe.and_then(|p| p.exit_door).map(|d| [ox + d[0], oy + d[1]]);
+        let entry_pos = pe.and_then(|p| p.entry_door).map(|d| [ox + d[0], oy + d[1]]);
+
+        regions.push(LevelRegion {
+            node_idx: ni,
+            ox, oy, w: mw, h: mh,
+            entry_pos, exit_pos,
+        });
+    }
+
+    // Generate title room with doorway on the right side
+    if let Some(si) = start_idx {
+        if let Some(&(ox, oy)) = placed_norm.get(&si) {
+            let exit_y = oy + title_room_h / 2;
+            for y in 0..title_room_h {
+                for x in 0..title_room_w {
+                    let gy = oy as usize + y as usize;
+                    let gx = ox as usize + x as usize;
+                    if gy < tiles.len() && gx < tiles[0].len() {
+                        let abs_y = oy + y;
+                        let is_exit_opening = x == title_room_w - 1 && (abs_y >= exit_y - 1 && abs_y <= exit_y + 1);
+                        let is_wall = !is_exit_opening && (x == 0 || x == title_room_w - 1 || y == 0 || y == title_room_h - 1);
+                        tiles[gy][gx] = if is_wall { "title_wall".into() } else { "title_floor".into() };
+                    }
+                }
+            }
+            regions.push(LevelRegion {
+                node_idx: si, ox, oy, w: title_room_w, h: title_room_h,
+                entry_pos: None,
+                exit_pos: Some([ox + title_room_w - 1, exit_y]),
+            });
+        }
+    }
+
+    // Add hallway tile defs
+    tile_defs.insert("hw_wall".into(), TileDef {
+        name: "hw_wall".into(), color: "#333333".into(), walkable: false,
+        char_display: String::new(), damage: 0, image: None,
+    });
+    tile_defs.insert("hw_floor".into(), TileDef {
+        name: "hw_floor".into(), color: "#555555".into(), walkable: true,
+        char_display: String::new(), damage: 0, image: None,
+    });
+
+    // Build hallways between connected levels
+    let mut hallways = Vec::new();
+    let region_map: std::collections::HashMap<usize, &LevelRegion> = regions.iter()
+        .map(|r| (r.node_idx, r))
+        .collect();
+
+    for &(a, b) in &level_conns {
+        let ra = match region_map.get(&a) { Some(r) => *r, None => continue };
+        let rb = match region_map.get(&b) { Some(r) => *r, None => continue };
+
+        let exit_pos = ra.exit_pos.unwrap_or([ra.ox + mw - 1, ra.oy + mh / 2]);
+        let entry_pos = rb.entry_pos.unwrap_or([rb.ox, rb.oy + mh / 2]);
+
+        let exit_dir = &levels[a].exit_direction;
+        let is_horiz = exit_dir == "e" || exit_dir == "w";
+
+        let mut hallway_tiles = Vec::new();
+
+        if is_horiz {
+            // Horizontal then vertical
+            let dx = if entry_pos[0] > exit_pos[0] { 1 } else { -1 };
+            let mut x = exit_pos[0];
+            while x != entry_pos[0] {
+                x += dx;
+                let y = exit_pos[1];
+                // 3-wide: wall, floor, wall
+                if y - 1 >= 0 && (y - 1) < total_h && x >= 0 && x < total_w {
+                    tiles[(y - 1) as usize][x as usize] = "hw_wall".into();
+                }
+                if y >= 0 && y < total_h && x >= 0 && x < total_w {
+                    tiles[y as usize][x as usize] = "hw_floor".into();
+                    hallway_tiles.push((x, y));
+                }
+                if y + 1 >= 0 && (y + 1) < total_h && x >= 0 && x < total_w {
+                    tiles[(y + 1) as usize][x as usize] = "hw_wall".into();
+                }
+            }
+            // Vertical segment to reach entry door Y
+            let dy = if entry_pos[1] > exit_pos[1] { 1 } else { -1 };
+            let mut y = exit_pos[1];
+            let x = entry_pos[0];
+            while y != entry_pos[1] {
+                y += dy;
+                if x - 1 >= 0 && (x - 1) < total_w && y >= 0 && y < total_h {
+                    tiles[y as usize][(x - 1) as usize] = "hw_wall".into();
+                }
+                if x >= 0 && x < total_w && y >= 0 && y < total_h {
+                    tiles[y as usize][x as usize] = "hw_floor".into();
+                    hallway_tiles.push((x, y));
+                }
+                if x + 1 >= 0 && (x + 1) < total_w && y >= 0 && y < total_h {
+                    tiles[y as usize][(x + 1) as usize] = "hw_wall".into();
+                }
+            }
+        } else {
+            // Vertical then horizontal
+            let dy = if entry_pos[1] > exit_pos[1] { 1 } else { -1 };
+            let mut y = exit_pos[1];
+            while y != entry_pos[1] {
+                y += dy;
+                let x = exit_pos[0];
+                if x - 1 >= 0 && (x - 1) < total_w && y >= 0 && y < total_h {
+                    tiles[y as usize][(x - 1) as usize] = "hw_wall".into();
+                }
+                if x >= 0 && x < total_w && y >= 0 && y < total_h {
+                    tiles[y as usize][x as usize] = "hw_floor".into();
+                    hallway_tiles.push((x, y));
+                }
+                if x + 1 >= 0 && (x + 1) < total_w && y >= 0 && y < total_h {
+                    tiles[y as usize][(x + 1) as usize] = "hw_wall".into();
+                }
+            }
+            // Horizontal segment
+            let dx = if entry_pos[0] > exit_pos[0] { 1 } else { -1 };
+            let mut x = exit_pos[0];
+            let y = entry_pos[1];
+            while x != entry_pos[0] {
+                x += dx;
+                if y - 1 >= 0 && (y - 1) < total_h && x >= 0 && x < total_w {
+                    tiles[(y - 1) as usize][x as usize] = "hw_wall".into();
+                }
+                if y >= 0 && y < total_h && x >= 0 && x < total_w {
+                    tiles[y as usize][x as usize] = "hw_floor".into();
+                    hallway_tiles.push((x, y));
+                }
+                if y + 1 >= 0 && (y + 1) < total_h && x >= 0 && x < total_w {
+                    tiles[(y + 1) as usize][x as usize] = "hw_wall".into();
+                }
+            }
+        }
+
+        hallways.push(HallwaySegment {
+            from_level: a,
+            to_level: b,
+            tiles: hallway_tiles,
+        });
+    }
+
+    // Player starts in the title room
+    let player_pos = if let Some(si) = start_idx {
+        if let Some(&(ox, oy)) = placed_norm.get(&si) {
+            [ox + title_room_w / 2, oy + title_room_h / 2]
+        } else { [0, 0] }
+    } else { [0, 0] };
+
+    Some(OverworldMap {
+        width: total_w,
+        height: total_h,
+        tiles,
+        tile_defs,
+        level_regions: regions,
+        hallways,
+        player_pos,
+    })
 }

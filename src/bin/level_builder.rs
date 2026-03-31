@@ -13,6 +13,7 @@ use scapegrace::fonts::FONT_NAMES;
 use scapegrace::gen::{
     call_llm_streaming, expand_tile_defs, llm_api_key, llm_model,
     build_overworld_prompt_themed, build_single_level_design_prompt_themed,
+    build_overworld_inner_for_preview, generate_overworld_map,
     BundledCampaign, BundledPack, CampaignQuality, CampaignSettings, LevelConfig,
     OverworldResult, PackStrings, Phase2Result, QualityBreakdown, StoreRaw, TileDefSlim,
 };
@@ -80,6 +81,8 @@ struct ImageRequest {
     width: u32,
     #[serde(default = "default_512")]
     height: u32,
+    #[serde(default)]
+    aspect_ratio: Option<String>,
 }
 
 fn default_512() -> u32 { 512 }
@@ -138,6 +141,10 @@ async fn create_campaign(
             node_positions: None,
             bg_image: None,
             bg_gradient: None,
+            bg_mode: None,
+            terrain_seed: None,
+            bg_prompt: None,
+            ow_region_offsets: None,
         },
         designs: vec![],
         quality: CampaignQuality {
@@ -307,6 +314,9 @@ async fn generate_image(
                     "model": model,
                     "messages": [{"role": "user", "content": req.prompt}],
                     "modalities": ["image", "text"],
+                    "image_config": {
+                        "aspect_ratio": req.aspect_ratio.as_deref().unwrap_or("16:9"),
+                    },
                 }))
                 .timeout(std::time::Duration::from_secs(120))
                 .send()
@@ -384,6 +394,49 @@ async fn generate_image(
     Ok(Json(ImageResponse { image_base64: result }))
 }
 
+// ── Overworld Map ──
+
+async fn get_overworld_map(
+    State(state): State<Arc<Mutex<AppState>>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let campaign_id = params.get("id").cloned().unwrap_or_default();
+    let st = state.lock().unwrap();
+    let campaign = st.pack.campaigns.iter()
+        .find(|c| c.id == campaign_id)
+        .ok_or((StatusCode::NOT_FOUND, "Campaign not found".into()))?;
+
+    // Build a temporary Overworld to pass to the generator
+    let ow = build_overworld_inner_for_preview(campaign)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let map = generate_overworld_map(campaign, &ow)
+        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate map".into()))?;
+
+    // Serialize just the tile grid and tile defs (not images)
+    let tile_defs: std::collections::HashMap<String, serde_json::Value> = map.tile_defs.iter()
+        .map(|(k, v)| (k.clone(), serde_json::json!({
+            "name": v.name, "color": v.color, "walkable": v.walkable
+        })))
+        .collect();
+
+    let regions: Vec<serde_json::Value> = map.level_regions.iter()
+        .map(|r| serde_json::json!({
+            "node_idx": r.node_idx, "ox": r.ox, "oy": r.oy, "w": r.w, "h": r.h,
+            "entry_pos": r.entry_pos, "exit_pos": r.exit_pos,
+        }))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "width": map.width,
+        "height": map.height,
+        "tiles": map.tiles,
+        "tile_defs": tile_defs,
+        "regions": regions,
+        "player_pos": map.player_pos,
+    })))
+}
+
 // ── Main ──
 
 #[tokio::main]
@@ -427,6 +480,8 @@ async fn main() {
         .route("/api/generate/level-design", post(generate_level_design))
         .route("/api/generate/description", post(generate_description))
         .route("/api/generate-image", post(generate_image))
+        .route("/api/overworld-map", get(get_overworld_map))
+        .fallback(get(index_handler))
         .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB
         .layer(CorsLayer::permissive())
         .with_state(state);

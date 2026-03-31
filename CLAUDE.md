@@ -2,6 +2,11 @@
 
 Hand-crafted roguelike. Rust backend, browser client. Levels designed in level builder.
 
+## Dev Commands
+
+- `just builder-dev` — run level builder server (http://localhost:3001) with dev campaigns
+- `cargo run` — run the game
+
 ## Architecture Principle
 
 The designer is the brain. The engine is the body.

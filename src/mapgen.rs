@@ -17,6 +17,10 @@ pub struct MapGenResult {
     pub player_start: [i32; 2],
     pub boss_position: [i32; 2],
     pub key_position: Option<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_door_position: Option<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boss_room_bounds: Option<[i32; 4]>, // [x, y, w, h]
 }
 
 struct BspNode {
@@ -493,6 +497,107 @@ pub fn generate_map_with_options(tile_defs: &HashMap<String, TileDefRaw>, skip_l
         player_start,
         boss_position: boss_pos,
         key_position,
+        exit_door_position: None, // set later in Phase 2
+        boss_room_bounds: Some([boss_room.x, boss_room.y, boss_room.w, boss_room.h]),
+    }
+}
+
+/// Place an exit door on a wall of the boss room in the given exit direction.
+/// Returns the position of the exit door, or None if no suitable wall tile found.
+pub fn place_exit_door(
+    grid: &mut Vec<Vec<String>>,
+    boss_room_bounds: [i32; 4], // [x, y, w, h]
+    exit_direction: &str,
+    tile_defs: &HashMap<String, TileDefRaw>,
+) -> Option<[i32; 2]> {
+    let [rx, ry, rw, rh] = boss_room_bounds;
+    let height = grid.len() as i32;
+    let width = grid[0].len() as i32;
+
+    let wall_name = tile_defs.values()
+        .find(|d| !d.walkable)
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "wall".into());
+
+    // Candidates: wall tiles on the target edge of the boss room that are adjacent to a floor tile inside
+    let mut candidates: Vec<[i32; 2]> = Vec::new();
+
+    match exit_direction {
+        "e" => {
+            let x = rx + rw; // one tile east of the room
+            if x < width {
+                for y in ry..ry + rh {
+                    if y >= 0 && y < height && grid[y as usize][x as usize] == wall_name
+                        && x - 1 >= 0 && tile_defs.values().any(|d| d.walkable && d.name == grid[y as usize][(x-1) as usize]) {
+                        candidates.push([x, y]);
+                    }
+                }
+            }
+        }
+        "w" => {
+            let x = rx - 1;
+            if x >= 0 {
+                for y in ry..ry + rh {
+                    if y >= 0 && y < height && grid[y as usize][x as usize] == wall_name
+                        && x + 1 < width && tile_defs.values().any(|d| d.walkable && d.name == grid[y as usize][(x+1) as usize]) {
+                        candidates.push([x, y]);
+                    }
+                }
+            }
+        }
+        "s" => {
+            let y = ry + rh;
+            if y < height {
+                for x in rx..rx + rw {
+                    if x >= 0 && x < width && grid[y as usize][x as usize] == wall_name
+                        && y - 1 >= 0 && tile_defs.values().any(|d| d.walkable && d.name == grid[(y-1) as usize][x as usize]) {
+                        candidates.push([x, y]);
+                    }
+                }
+            }
+        }
+        "n" => {
+            let y = ry - 1;
+            if y >= 0 {
+                for x in rx..rx + rw {
+                    if x >= 0 && x < width && grid[y as usize][x as usize] == wall_name
+                        && y + 1 < height && tile_defs.values().any(|d| d.walkable && d.name == grid[(y+1) as usize][x as usize]) {
+                        candidates.push([x, y]);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if candidates.is_empty() {
+        // Fallback: try all edges
+        for dir in &["e", "w", "s", "n"] {
+            if *dir != exit_direction {
+                if let Some(pos) = place_exit_door(grid, boss_room_bounds, dir, tile_defs) {
+                    return Some(pos);
+                }
+            }
+        }
+        return None;
+    }
+
+    // Pick the candidate closest to the center of the edge
+    let center_y = ry as f32 + rh as f32 / 2.0;
+    let center_x = rx as f32 + rw as f32 / 2.0;
+    let best = candidates.iter()
+        .min_by_key(|c| {
+            let dx = c[0] as f32 - center_x;
+            let dy = c[1] as f32 - center_y;
+            (dx * dx + dy * dy) as i32
+        })
+        .copied();
+
+    if let Some(pos) = best {
+        grid[pos[1] as usize][pos[0] as usize] = "exit_door_locked".to_string();
+        Some(pos)
+    } else {
+        None
     }
 }
 

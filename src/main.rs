@@ -73,8 +73,8 @@ enum GenMsg {
 fn window_conf() -> Conf {
     Conf {
         window_title: "Scapegrace".to_owned(),
-        window_width: 1900,
-        window_height: 1000,
+        window_width: 1600,
+        window_height: 900,
         window_resizable: true,
         high_dpi: true,
         icon: Some(miniquad::conf::Icon {
@@ -473,6 +473,8 @@ async fn main() {
     let mut state = GameState::new();
     let bundled_pack = gen::load_bundled_pack();
     let pack_strings = bundled_pack.as_ref().map(|p| p.strings.clone()).unwrap_or_default();
+    let pack_item_sprites = bundled_pack.as_ref().map(|p| p.item_sprites.clone()).unwrap_or_default();
+    state.item_sprites = pack_item_sprites.clone();
     let bundled_campaigns: Vec<gen::BundledCampaign> = bundled_pack.map(|p| p.campaigns).unwrap_or_default();
     let has_bundled = !bundled_campaigns.is_empty();
     let has_llm = !has_bundled && (!gen::llm_api_key().is_empty() || std::env::var("LLM_BASE_URL").is_ok());
@@ -491,7 +493,9 @@ async fn main() {
     let mut confetti: Vec<Confetti> = vec![];
     let mut title_font: Option<Font> = None;
     let mut tile_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
-    let mut current_zoom: f32 = 1.0; // smoothly interpolated zoom level
+    let mut current_zoom: f32 = 1.5;
+    let mut target_zoom: f32 = 1.5;
+    let mut last_player_pos: (i32, i32) = (0, 0);
     let mut monster_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
     let mut item_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
     let mut overworld_font: Option<Font> = None;
@@ -757,6 +761,7 @@ async fn main() {
                                     }
                                     ghost_town = true;
                                     state = GameState::new();
+                                    state.item_sprites = pack_item_sprites.clone();
                                 } else if let (true, Some(progress)) = (resuming, save) {
                                     ghost_town = false;
                                     state.player = progress.player;
@@ -773,6 +778,7 @@ async fn main() {
                                 } else {
                                     ghost_town = false;
                                     state = GameState::new();
+                                    state.item_sprites = pack_item_sprites.clone();
                                     if let Some(save) = load_player_save() {
                                         apply_player_save(&mut state.player, &save);
                                         eprintln!("Applied player save: level {}, {} gold", save.level, save.gold);
@@ -1329,7 +1335,7 @@ async fn main() {
                             if let Some(s) = &sfx { s.confirm(); }
                             player_snapshot = Some(state.player.clone());
                             level_snapshot = None;
-                            start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), true, current_campaign_idx as i32, current_campaign_monsters.clone());
+                            start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), true, current_campaign_idx as i32, current_campaign_monsters.clone(), &pack_item_sprites);
                             screen = Screen::GenLevel;
                             phase_text = overworld_loading_phrase();
                             phase_detail.clear();
@@ -1425,7 +1431,7 @@ async fn main() {
                                 }
                                 screen = Screen::Playing;
                             } else {
-                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town, current_campaign_idx as i32, current_campaign_monsters.clone());
+                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town, current_campaign_idx as i32, current_campaign_monsters.clone(), &pack_item_sprites);
                                 screen = Screen::GenLevel;
                                 phase_text = overworld_loading_phrase();
                                 phase_detail.clear();
@@ -1581,7 +1587,7 @@ async fn main() {
 
                 if phase_detail == "Press ENTER to retry" && is_key_pressed(KeyCode::Enter) {
                     if let Some(ow) = &overworld {
-                        start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town, current_campaign_idx as i32, current_campaign_monsters.clone());
+                        start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town, current_campaign_idx as i32, current_campaign_monsters.clone(), &pack_item_sprites);
                         phase_text = "creating universe".into();
                         phase_detail.clear();
                     }
@@ -1607,11 +1613,46 @@ async fn main() {
                         .fold(f32::MAX, f32::min);
                     s.update_boss_drone(dist);
                 }
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures);
+                // Step zoom: only recalculate target on player move, only boss triggers zoom
+                {
+                    let cur_pos = (state.player.x, state.player.y);
+                    if cur_pos != last_player_pos {
+                        last_player_pos = cur_pos;
+                        let px = state.player.x as f32;
+                        let py = state.player.y as f32;
+                        let near_range = 6.0_f32;
+                        let mut boss_dist = f32::MAX;
+                        for mon in &state.level.monsters {
+                            if !mon.is_boss || !mon.is_alive() { continue; }
+                            let d = ((mon.x as f32 - px).powi(2) + (mon.y as f32 - py).powi(2)).sqrt();
+                            if d < boss_dist { boss_dist = d; }
+                        }
+                        target_zoom = if boss_dist <= near_range { 3.0 } else if boss_dist <= near_range + 3.0 {
+                            let t = (boss_dist - near_range) / 3.0;
+                            3.0 - t * 1.5
+                        } else { 1.5 };
+                    }
+                    current_zoom = target_zoom; // instant snap per step
+                }
+                // Load textures for newly dropped items (e.g. monster loot)
+                for item in &state.level.items {
+                    if !item_textures.contains_key(&item.name) {
+                        if let Some(b64) = &item.image {
+                            if let Some(bytes) = decode_base64(b64) {
+                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                    let tex = Texture2D::from_image(&img);
+                                    tex.set_filter(FilterMode::Nearest);
+                                    item_textures.insert(item.name.clone(), tex);
+                                }
+                            }
+                        }
+                    }
+                }
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom);
             }
 
             Screen::Dead => {
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom);
                 draw_death_overlay(&ui_font, &ui_font_bold, &state);
 
                 if is_key_pressed(KeyCode::Enter) {
@@ -1628,7 +1669,7 @@ async fn main() {
             }
 
             Screen::Victory => {
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom);
                 update_confetti(&mut confetti);
                 draw_confetti(&confetti);
                 draw_victory_overlay(&ui_font, &ui_font_bold, &state);
@@ -1750,6 +1791,7 @@ async fn main() {
                 if is_key_pressed(KeyCode::Enter) {
                     // Full reset — preserve persistent player progression
                     state = GameState::new();
+                    state.item_sprites = pack_item_sprites.clone();
                     if let Some(psave) = load_player_save() {
                         apply_player_save(&mut state.player, &psave);
                     }
@@ -1989,6 +2031,7 @@ fn start_level_generation(
     ghost: bool,
     campaign_tier: i32,
     campaign_monsters: Option<Vec<gen::MonsterTemplateRaw>>,
+    pack_item_sprites: &std::collections::HashMap<String, String>,
 ) {
     let (tx, rx) = mpsc::channel();
     *gen_rx = Some(rx);
@@ -2013,8 +2056,9 @@ fn start_level_generation(
         // Use pre-generated design — no LLM call needed
         let design = design.clone();
         let cm = campaign_monsters.clone();
+        let sprites = pack_item_sprites.clone();
         std::thread::spawn(move || {
-            match gen::build_level_from_design_with_settings(&config, &design, &campaign_settings, cm.as_deref()) {
+            match gen::build_level_from_design_with_settings(&config, &design, &campaign_settings, cm.as_deref(), &sprites) {
                 Ok((level, start, _remaining)) => {
                     let font_bytes = fetch_google_font(&level.font);
                     let _ = tx.send(GenMsg::LevelDone(level, start, font_bytes));
@@ -2695,22 +2739,137 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_c
 // ── Overworld rendering ──
 
 fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Option<&Font>, d_font: Option<&Font>, l_font: Option<&Font>, design_flashes: &[Vec<f64>], bg_tex: Option<&Texture2D>) {
-    let sw = screen_width();
-    let sh = screen_height();
+    let raw_sw = screen_width();
+    let raw_sh = screen_height();
+
+    // Letterbox to 16:9
+    let target_aspect = 16.0 / 9.0;
+    let current_aspect = raw_sw / raw_sh;
+    let (sw, sh, vx, vy) = if current_aspect > target_aspect {
+        // Window is wider than 16:9 — pillarbox (bars on sides)
+        let w = raw_sh * target_aspect;
+        (w, raw_sh, (raw_sw - w) / 2.0, 0.0)
+    } else {
+        // Window is taller than 16:9 — letterbox (bars top/bottom)
+        let h = raw_sw / target_aspect;
+        (raw_sw, h, 0.0, (raw_sh - h) / 2.0)
+    };
+
+    // Black bars
+    draw_rectangle(0.0, 0.0, raw_sw, raw_sh, Color::new(0.0, 0.0, 0.0, 1.0));
+
     let bg = hex_to_color(&ow.bg_color);
     let text_col = hex_to_color(&ow.text_color);
     let desc_col = Color::new(text_col.r * 0.7, text_col.g * 0.7, text_col.b * 0.7, 1.0);
 
     // Background: image > gradient color > solid color
     if let Some(tex) = bg_tex {
-        draw_texture_ex(tex, 0.0, 0.0, WHITE, DrawTextureParams {
+        draw_texture_ex(tex, vx, vy, WHITE, DrawTextureParams {
             dest_size: Some(Vec2::new(sw, sh)),
             ..Default::default()
         });
         // Darken overlay so text is readable
-        draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.3));
+        draw_rectangle(vx, vy, sw, sh, Color::new(0.0, 0.0, 0.0, 0.3));
     } else {
-        draw_rectangle(0.0, 0.0, sw, sh, bg);
+        draw_rectangle(vx, vy, sw, sh, bg);
+    }
+
+    // Procedural terrain background — full screen, L-shaped corridors, palette-blended
+    if ow.bg_terrain {
+        let tile = sw / 120.0; // ~13px at 1600w
+        let cols = (sw / tile).ceil() as i32;
+        let rows = (sh / tile).ceil() as i32;
+        let base_seed = ow.terrain_seed;
+        let next_from = |s: &mut u32| -> f32 {
+            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((*s >> 16) & 0x7FFF) as f32 / 0x7FFF as f32
+        };
+
+        // Build grid: 0=wall, 1=corridor, 2=room
+        let mut grid = vec![vec![0u8; cols as usize]; rows as usize];
+
+        // Node centers in grid coords
+        let node_gc: Vec<(i32, i32)> = ow.nodes.iter().map(|n| {
+            ((n.x * cols as f32) as i32, (n.y * rows as f32) as i32)
+        }).collect();
+
+        // Stamp rooms
+        for (i, &(gx, gy)) in node_gc.iter().enumerate() {
+            let radius: i32 = if ow.nodes[i].node_type == NodeType::Start || ow.nodes[i].node_type == NodeType::Store { 7 } else { 9 };
+            let mut s = base_seed.wrapping_add(gx as u32 * 7919 + gy as u32 * 104729);
+            for dy in -radius..=radius {
+                for dx in -radius..=radius {
+                    let dist = ((dx*dx + dy*dy) as f32).sqrt();
+                    if dist > radius as f32 { continue; }
+                    let prob = 1.0 - (dist / radius as f32).powf(1.5) * 0.8;
+                    if next_from(&mut s) > prob { continue; }
+                    let cx = gx + dx; let cy = gy + dy;
+                    if cx >= 0 && cx < cols && cy >= 0 && cy < rows { grid[cy as usize][cx as usize] = 2; }
+                }
+            }
+        }
+
+        // L-shaped corridors (3 tiles wide)
+        for &(a, b) in &ow.connections {
+            if a >= node_gc.len() || b >= node_gc.len() { continue; }
+            let (ax, ay) = node_gc[a]; let (bx, by) = node_gc[b];
+            let x0 = ax.min(bx); let x1 = ax.max(bx);
+            for x in x0..=x1 { for w in -1..=1i32 {
+                let gy = ay + w;
+                if gy >= 0 && gy < rows && x >= 0 && x < cols && grid[gy as usize][x as usize] == 0 { grid[gy as usize][x as usize] = 1; }
+            }}
+            let y0 = ay.min(by); let y1 = ay.max(by);
+            for y in y0..=y1 { for w in -1..=1i32 {
+                let gx = bx + w;
+                if y >= 0 && y < rows && gx >= 0 && gx < cols && grid[y as usize][gx as usize] == 0 { grid[y as usize][gx as usize] = 1; }
+            }}
+        }
+
+        // Nearest node for palette
+        let mut nearest: Vec<Vec<usize>> = vec![vec![0; cols as usize]; rows as usize];
+        for y in 0..rows { for x in 0..cols {
+            let mut best = f32::MAX; let mut bi = 0usize;
+            for (i, &(gx, gy)) in node_gc.iter().enumerate() {
+                let d = ((x-gx)*(x-gx) + (y-gy)*(y-gy)) as f32;
+                if d < best { best = d; bi = i; }
+            }
+            nearest[y as usize][x as usize] = bi;
+        }}
+
+        // Palettes (darkened)
+        let pals: Vec<Vec<Color>> = ow.nodes.iter().map(|n| {
+            n.palette.iter().map(|c| { let c = hex_to_color(c); Color::new(c.r * 0.45, c.g * 0.45, c.b * 0.45, 1.0) }).collect()
+        }).collect();
+
+        // Render all tiles
+        for y in 0..rows { for x in 0..cols {
+            let ni = nearest[y as usize][x as usize];
+            let pal = &pals[ni.min(pals.len()-1)];
+            let mut s = base_seed.wrapping_mul(31).wrapping_add(y as u32 * cols as u32 + x as u32);
+            let ci = next_from(&mut s) as usize % pal.len().max(1);
+            let c = pal[ci];
+            let px = vx + x as f32 * tile;
+            let py = vy + y as f32 * tile;
+            let cell = grid[y as usize][x as usize];
+
+            if cell == 0 {
+                // Wall — very dark
+                let wb = 0.12 + next_from(&mut s) * 0.08;
+                draw_rectangle(px, py, tile, tile, Color::new(
+                    c.r * wb + bg.r * (1.0 - wb),
+                    c.g * wb + bg.g * (1.0 - wb),
+                    c.b * wb + bg.b * (1.0 - wb), 1.0));
+            } else {
+                // Floor
+                let bright = if cell == 2 { 0.7 + next_from(&mut s) * 0.3 } else { 0.5 + next_from(&mut s) * 0.3 };
+                draw_rectangle(px, py, tile, tile, Color::new(c.r * bright, c.g * bright, c.b * bright, 1.0));
+                // Wall edge shadows
+                let wall_n = y == 0 || grid[(y-1) as usize][x as usize] == 0;
+                let wall_w = x == 0 || grid[y as usize][(x-1) as usize] == 0;
+                if wall_n { draw_rectangle(px, py, tile, 2.0, Color::new(0.0, 0.0, 0.0, 0.4)); }
+                if wall_w { draw_rectangle(px, py, 2.0, tile, Color::new(0.0, 0.0, 0.0, 0.35)); }
+            }
+        }}
     }
 
     // Parallax floating entity-shaped particles
@@ -2740,8 +2899,8 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
                 let phase = next(&mut seed) * std::f32::consts::TAU;
                 let shape = (next(&mut seed) * entity_colors.len() as f32) as usize;
                 let rot = next(&mut seed) * std::f32::consts::TAU;
-                let px = base_x + (time * speed + phase).sin() * 15.0;
-                let py = (base_y + time * speed * 6.0) % sh;
+                let px = vx + base_x + (time * speed + phase).sin() * 15.0;
+                let py = vy + (base_y + time * speed * 6.0) % sh;
                 let r = 4.0 * scale;
                 let c = entity_colors[shape % entity_colors.len()];
                 let col = Color::new(c.r, c.g, c.b, alpha);
@@ -2773,27 +2932,30 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         }
     }
 
-    // Layout
-    let margin = 80.0;
-    let top_bar = 100.0;
-    let bottom_bar = 60.0;
-    let map_left = margin;
-    let map_right = sw - margin;
-    let map_bottom = sh - bottom_bar;
+    // Layout — 0..1 maps directly to viewport (no margins, designer has full control)
+    let map_left = vx;
+    let map_right = vx + sw;
+    let map_top = vy;
+    let map_bottom = vy + sh;
     let map_w = map_right - map_left;
+    let map_h = map_bottom - map_top;
 
-    // Title
+    // Title (positioned by title_x/title_y — no bobbing)
+    let title_cx = map_left + ow.title_x * map_w;
+    let title_cy = map_top + ow.title_y * map_h;
     let tfont = ow_font.unwrap_or(ui_bold);
-    let ts = 36u16;
+    let ts = ow.title_font_size as u16;
     let tw = measure_text(&ow.name, Some(tfont), ts, 1.0).width;
-    draw_text_ex(&ow.name, (sw - tw) / 2.0, 50.0, TextParams {
+    draw_text_ex(&ow.name, title_cx - tw / 2.0, title_cy, TextParams {
         font: Some(tfont), font_size: ts, color: text_col, ..Default::default()
     });
 
-    // Description (word-wrapped, balanced to avoid orphans)
+    // Description (positioned by desc_x/desc_y — no bobbing)
+    let desc_cx = map_left + ow.desc_x * map_w;
+    let desc_cy = map_top + ow.desc_y * map_h;
     let dfont = d_font.unwrap_or(ui_font);
-    let ds = 16u16;
-    let max_desc_w = sw - margin * 2.0;
+    let ds = ow.desc_font_size as u16;
+    let max_desc_w = sw * 0.5;
     let wrap_at = |max_w: f32| -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
         let mut cur = String::new();
@@ -2809,26 +2971,15 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         if !cur.is_empty() { lines.push(cur); }
         lines
     };
-    let mut desc_lines = wrap_at(max_desc_w);
-    if desc_lines.len() >= 2 {
-        let last_w = measure_text(desc_lines.last().unwrap(), Some(dfont), ds, 1.0).width;
-        if last_w < max_desc_w * 0.4 {
-            desc_lines = wrap_at(max_desc_w * 0.65);
-        }
-    }
-    let line_h = ds as f32 + 4.0;
-    let desc_height = desc_lines.len() as f32 * line_h;
+    let desc_lines = wrap_at(max_desc_w);
+    let line_h = ds as f32 * 1.3;
+    let total_h = desc_lines.len() as f32 * line_h;
     for (i, line) in desc_lines.iter().enumerate() {
         let lw = measure_text(line, Some(dfont), ds, 1.0).width;
-        draw_text_ex(line, (sw - lw) / 2.0, 78.0 + i as f32 * line_h, TextParams {
+        draw_text_ex(line, desc_cx - lw / 2.0, desc_cy - total_h / 2.0 + i as f32 * line_h, TextParams {
             font: Some(dfont), font_size: ds, color: desc_col, ..Default::default()
         });
     }
-
-    // Adjust top_bar to account for wrapped description
-    let top_bar = top_bar + (desc_height - line_h).max(0.0);
-    let map_top = top_bar + 20.0;
-    let map_h = map_bottom - map_top;
 
     // Helper to convert node coords to screen coords with bobbing
     let time = get_time(); // f64 for smooth precision
@@ -2841,8 +2992,9 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
         (base_x + bob_x as f32, base_y + bob_y as f32)
     };
 
-    // Draw connections as tile trails
+    // Draw connections as tile trails (skip when terrain provides corridors)
     let conn_tile = 5.0;
+    if !ow.bg_terrain {
     for &(a, b) in &ow.connections {
         if a >= ow.nodes.len() || b >= ow.nodes.len() { continue; }
         let (ax, ay) = node_screen(a, &ow.nodes[a]);
@@ -2889,6 +3041,7 @@ fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Optio
             draw_rectangle(tx - conn_tile / 2.0, ty - conn_tile / 2.0, conn_tile, conn_tile, c);
         }
     }
+    } // end if !bg_terrain
 
     // Draw nodes as organic tile blobs
     let tile_px = 15.0;
@@ -3334,7 +3487,7 @@ fn draw_confetti(confetti: &[Confetti]) {
 
 // ── Game rendering ──
 
-fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, tile_textures: &std::collections::HashMap<String, Texture2D>, monster_textures: &std::collections::HashMap<String, Texture2D>, item_textures: &std::collections::HashMap<String, Texture2D>) {
+fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, tile_textures: &std::collections::HashMap<String, Texture2D>, monster_textures: &std::collections::HashMap<String, Texture2D>, item_textures: &std::collections::HashMap<String, Texture2D>, zoom: f32) {
     if state.level.tiles.is_empty() {
         return;
     }
@@ -3366,24 +3519,44 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     // ── MIDDLE ROW: Map (left) + Log (right) ──
 
     let map_left = 0.0;
-    let tiles_x = (map_width / TILE) as i32;
-    let tiles_y = (mid_height / TILE) as i32;
-    let camera_x = state.player.x - tiles_x / 2;
-    let camera_y = state.player.y - tiles_y / 2;
-    // Player center in screen coords (for light falloff)
-    let player_screen_x = map_left + (state.player.x - camera_x) as f32 * TILE + TILE / 2.0;
-    let player_screen_y = mid_top + (state.player.y - camera_y) as f32 * TILE + TILE / 2.0;
-    let light_radius = state.vision_radius as f32 * TILE;
+    // Zoom: scale tile size, player always pixel-perfectly centered
+    let tz = TILE * zoom;
+    let tiles_x = (map_width / tz) as i32 + 4;
+    let tiles_y = (mid_height / tz) as i32 + 4;
+    // Float camera: player is exactly at center of map area
+    let cam_fx = state.player.x as f32 + 0.5 - (map_width / tz) / 2.0;
+    let cam_fy = state.player.y as f32 + 0.5 - (mid_height / tz) / 2.0;
+    let camera_x = cam_fx.floor() as i32 - 1;
+    let camera_y = cam_fy.floor() as i32 - 1;
+    // Sub-tile pixel offset for smooth centering
+    let sub_x = -(cam_fx - camera_x as f32) * tz;
+    let sub_y = -(cam_fy - camera_y as f32) * tz;
+    // Fold sub-tile offset into map_left/mid_top so all position calculations are correct
+    let map_left = map_left + sub_x;
+    let mid_top = mid_top + sub_y;
+    let player_screen_x = map_left + (state.player.x - camera_x) as f32 * tz + tz / 2.0;
+    let player_screen_y = mid_top + (state.player.y - camera_y) as f32 * tz + tz / 2.0;
+    let light_radius = state.vision_radius as f32 * tz;
+
+    // Fill map area with wall color so edges don't show black when zoomed
+    let wall_color = state.level.tile_defs.values()
+        .find(|d| !d.walkable)
+        .map(|d| hex_to_color(&d.color))
+        .unwrap_or(Color::new(0.1, 0.1, 0.1, 1.0));
+    draw_rectangle(0.0, top_height, sw, sh - top_height, wall_color);
 
     // Tiles
     for sy in 0..=tiles_y {
         for sx in 0..=tiles_x {
             let tx = camera_x + sx;
             let ty = camera_y + sy;
-            if tx < 0 || ty < 0 || tx >= state.level.width || ty >= state.level.height {
-                continue;
-            }
-            if !state.level.revealed.contains(&(tx, ty)) {
+            let out_of_bounds = tx < 0 || ty < 0 || tx >= state.level.width || ty >= state.level.height;
+            let unrevealed = !out_of_bounds && !state.level.revealed.contains(&(tx, ty));
+            if out_of_bounds || unrevealed {
+                // Draw wall-colored tile so radial light falloff doesn't reveal black gaps
+                let screen_x = map_left + sx as f32 * tz;
+                let screen_y = mid_top + sy as f32 * tz;
+                draw_rectangle(screen_x, screen_y, tz, tz, wall_color);
                 continue;
             }
 
@@ -3393,13 +3566,13 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
                 None => continue,
             };
 
-            let screen_x = map_left + sx as f32 * TILE;
-            let screen_y = mid_top + sy as f32 * TILE;
+            let screen_x = map_left + sx as f32 * tz;
+            let screen_y = mid_top + sy as f32 * tz;
 
-            if screen_y + TILE < mid_top || screen_y > mid_top + mid_height {
+            if screen_y + tz < top_height || screen_y > top_height + (sh - top_height - bottom_height) {
                 continue;
             }
-            if screen_x + TILE > map_width {
+            if screen_x + tz > map_width {
                 continue;
             }
 
@@ -3407,35 +3580,35 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
 
             if let Some(tex) = tile_textures.get(tile_name) {
                 draw_texture_ex(tex, screen_x, screen_y, WHITE, DrawTextureParams {
-                    dest_size: Some(Vec2::new(TILE, TILE)),
+                    dest_size: Some(Vec2::new(tz, tz)),
                     ..Default::default()
                 });
             } else {
-                draw_rectangle(screen_x, screen_y, TILE, TILE, hex_to_color(&def.color));
+                draw_rectangle(screen_x, screen_y, tz, tz, hex_to_color(&def.color));
             }
 
             // Bomb scorch overlay
             if let Some(&intensity) = state.level.char_marks.get(&(tx, ty)) {
                 let alpha = intensity * 0.6;
-                draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.05, 0.02, 0.0, alpha));
+                draw_rectangle(screen_x, screen_y, tz, tz, Color::new(0.05, 0.02, 0.0, alpha));
             }
 
             if !def.char_display.is_empty() && !tile_textures.contains_key(tile_name) {
                 let alpha = if in_vision { 0.27 } else { 0.13 };
-                let font_size = (TILE * 0.55) as u16;
+                let font_size = (tz * 0.55) as u16;
                 let text = &def.char_display;
                 let tm = measure_text(text, None, font_size, 1.0);
                 draw_text(
                     text,
-                    screen_x + (TILE - tm.width) / 2.0,
-                    screen_y + TILE / 2.0 + tm.height / 2.0,
+                    screen_x + (tz - tm.width) / 2.0,
+                    screen_y + tz / 2.0 + tm.height / 2.0,
                     font_size as f32,
                     Color::new(1.0, 1.0, 1.0, alpha),
                 );
             }
 
             if !in_vision {
-                draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.0, 0.0, 0.0, 0.5));
+                draw_rectangle(screen_x, screen_y, tz, tz, Color::new(0.0, 0.0, 0.0, 0.5));
             }
         }
     }
@@ -3451,9 +3624,9 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             let def = match state.level.tile_defs.get(tile_name) { Some(d) => d, None => continue };
             if !def.walkable { continue; }
 
-            let screen_x = map_left + sx as f32 * TILE;
-            let screen_y = mid_top + sy as f32 * TILE;
-            if screen_y + TILE < mid_top || screen_y > mid_top + mid_height || screen_x + TILE > map_width { continue; }
+            let screen_x = map_left + sx as f32 * tz;
+            let screen_y = mid_top + sy as f32 * tz;
+            if screen_y + tz < mid_top || screen_y > mid_top + mid_height || screen_x + tz > map_width { continue; }
 
             // Count adjacent walls
             let mut wall_count = 0u8;
@@ -3471,7 +3644,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             }
             if wall_count > 0 {
                 let ao = (wall_count as f32 / 8.0) * 0.25;
-                draw_rectangle(screen_x, screen_y, TILE, TILE, Color::new(0.0, 0.0, 0.0, ao));
+                draw_rectangle(screen_x, screen_y, tz, tz, Color::new(0.0, 0.0, 0.0, ao));
             }
         }
     }
@@ -3479,22 +3652,22 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     // Items
     for item in &state.level.items {
         if !state.level.visible.contains(&(item.x, item.y)) { continue; }
-        let sx = map_left + (item.x - camera_x) as f32 * TILE;
-        let sy = mid_top + (item.y - camera_y) as f32 * TILE;
-        if sy + TILE < mid_top || sy > mid_top + mid_height || sx + TILE > map_width { continue; }
+        let sx = map_left + (item.x - camera_x) as f32 * tz;
+        let sy = mid_top + (item.y - camera_y) as f32 * tz;
+        if sy + tz < mid_top || sy > mid_top + mid_height || sx + tz > map_width { continue; }
 
         if let Some(tex) = item_textures.get(&item.name) {
-            let size = TILE * 0.85;
-            let ox = sx + (TILE - size) / 2.0;
-            let oy = sy + (TILE - size) / 2.0;
+            let size = tz * 0.85;
+            let ox = sx + (tz - size) / 2.0;
+            let oy = sy + (tz - size) / 2.0;
             draw_texture_ex(tex, ox, oy, WHITE, DrawTextureParams {
                 dest_size: Some(Vec2::new(size, size)),
                 ..Default::default()
             });
         } else {
-            let cx = sx + TILE / 2.0;
-            let cy = sy + TILE / 2.0;
-            let r = TILE * 0.38;
+            let cx = sx + tz / 2.0;
+            let cy = sy + tz / 2.0;
+            let r = tz * 0.38;
             let color = item_color(&item.item_type);
 
             match item.item_type.as_str() {
@@ -3519,22 +3692,22 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     for trap in &state.level.traps {
         if !trap.triggered { continue; }
         if !state.level.revealed.contains(&(trap.x, trap.y)) { continue; }
-        let sx = map_left + (trap.x - camera_x) as f32 * TILE;
-        let sy = mid_top + (trap.y - camera_y) as f32 * TILE;
-        if sy + TILE < mid_top || sy > mid_top + mid_height || sx + TILE > map_width { continue; }
+        let sx = map_left + (trap.x - camera_x) as f32 * tz;
+        let sy = mid_top + (trap.y - camera_y) as f32 * tz;
+        if sy + tz < mid_top || sy > mid_top + mid_height || sx + tz > map_width { continue; }
 
         if let Some(tex) = item_textures.get(&trap.name) {
-            let size = TILE * 0.85;
-            let ox = sx + (TILE - size) / 2.0;
-            let oy = sy + (TILE - size) / 2.0;
+            let size = tz * 0.85;
+            let ox = sx + (tz - size) / 2.0;
+            let oy = sy + (tz - size) / 2.0;
             draw_texture_ex(tex, ox, oy, WHITE, DrawTextureParams {
                 dest_size: Some(Vec2::new(size, size)),
                 ..Default::default()
             });
         } else {
-            let cx = sx + TILE / 2.0;
-            let cy = sy + TILE / 2.0;
-            let half = TILE * 0.38 * 0.85;
+            let cx = sx + tz / 2.0;
+            let cy = sy + tz / 2.0;
+            let half = tz * 0.38 * 0.85;
             let trap_fill = Color::new(1.0, 0.0, 0.0, 0.4);
             let trap_line = hex_to_color("#ff4444");
             draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, trap_fill);
@@ -3554,9 +3727,9 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
         };
         if !mon_visible { continue; }
 
-        let sx = map_left + (mon.x - camera_x) as f32 * TILE;
-        let sy = mid_top + (mon.y - camera_y) as f32 * TILE;
-        if sy + TILE < mid_top || sy > mid_top + mid_height || sx + TILE > map_width { continue; }
+        let sx = map_left + (mon.x - camera_x) as f32 * tz;
+        let sy = mid_top + (mon.y - camera_y) as f32 * tz;
+        if sy + tz < mid_top || sy > mid_top + mid_height || sx + tz > map_width { continue; }
 
         // Monsters face toward the player
         let mon_facing = ((state.player.y - mon.y) as f32).atan2((state.player.x - mon.x) as f32);
@@ -3568,18 +3741,18 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
 
             // If boss has a sprite, draw it over the 2x2 area
             if let Some(tex) = monster_textures.get(&mon.name) {
-                let bsx = map_left + (mon.x - camera_x) as f32 * TILE;
-                let bsy = mid_top + (mon.y - camera_y) as f32 * TILE;
+                let bsx = map_left + (mon.x - camera_x) as f32 * tz;
+                let bsy = mid_top + (mon.y - camera_y) as f32 * tz;
                 draw_texture_ex(tex, bsx, bsy, WHITE, DrawTextureParams {
-                    dest_size: Some(Vec2::new(TILE * 2.0, TILE * 2.0)),
+                    dest_size: Some(Vec2::new(tz * 2.0, tz * 2.0)),
                     ..Default::default()
                 });
                 // HP bar below
                 if pct < 1.0 {
-                    let bar_w = TILE * 1.6;
+                    let bar_w = tz * 1.6;
                     let bar_h = 3.0;
-                    let bar_x = bsx + (TILE * 2.0 - bar_w) / 2.0;
-                    let bar_y = bsy + TILE * 2.0 + 2.0;
+                    let bar_x = bsx + (tz * 2.0 - bar_w) / 2.0;
+                    let bar_y = bsy + tz * 2.0 + 2.0;
                     draw_rectangle(bar_x, bar_y, bar_w, bar_h, Color::new(0.2, 0.2, 0.2, 0.8));
                     draw_rectangle(bar_x, bar_y, bar_w * pct, bar_h, hp_bar_color(pct));
                 }
@@ -3613,14 +3786,14 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
                         let ty = by + oy;
                         if body_set.contains(&(tx, ty)) { continue; }
                         if !state.level.visible.contains(&(tx, ty)) { continue; }
-                        let tile_sx = map_left + (tx - camera_x) as f32 * TILE;
-                        let tile_sy = mid_top + (ty - camera_y) as f32 * TILE;
+                        let tile_sx = map_left + (tx - camera_x) as f32 * tz;
+                        let tile_sy = mid_top + (ty - camera_y) as f32 * tz;
                         let min_dist = body.iter()
                             .map(|&(bbx, bby)| ((tx - bbx) as f32).hypot((ty - bby) as f32))
                             .fold(f32::MAX, f32::min);
                         let falloff = 1.0 - (min_dist / (glow_range as f32 + 1.0));
                         if falloff > 0.0 {
-                            draw_rectangle(tile_sx, tile_sy, TILE, TILE,
+                            draw_rectangle(tile_sx, tile_sy, tz, tz,
                                 Color::new(base_color.r, base_color.g, base_color.b, glow_alpha * falloff));
                         }
                     }
@@ -3640,13 +3813,13 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
 
             // Shadow pass
             for &(bx, by) in body {
-                let tsx = map_left + (bx - camera_x) as f32 * TILE;
-                let tsy = mid_top + (by - camera_y) as f32 * TILE;
+                let tsx = map_left + (bx - camera_x) as f32 * tz;
+                let tsy = mid_top + (by - camera_y) as f32 * tz;
                 let (el, er, et, eb) = tile_edges(bx, by);
                 let layers: [(f32, f32); 3] = [(1.5, 0.16), (3.0, 0.10), (5.0, 0.04)];
                 for &(off, alpha) in &layers {
                     draw_rectangle(tsx - el + off, tsy - et + off,
-                        TILE + el + er + off * 0.5, TILE + et + eb + off * 0.5,
+                        tz + el + er + off * 0.5, tz + et + eb + off * 0.5,
                         Color::new(0.0, 0.0, 0.0, alpha));
                 }
             }
@@ -3654,21 +3827,21 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             // Unified HP fill height
             let min_y = body.iter().map(|t| t.1).min().unwrap();
             let max_y = body.iter().map(|t| t.1).max().unwrap();
-            let shape_top = mid_top + (min_y - camera_y) as f32 * TILE - expand;
-            let shape_bottom = mid_top + (max_y - camera_y) as f32 * TILE + TILE + expand;
+            let shape_top = mid_top + (min_y - camera_y) as f32 * tz - expand;
+            let shape_bottom = mid_top + (max_y - camera_y) as f32 * tz + tz + expand;
             let total_h = shape_bottom - shape_top;
             let fill_h = total_h * pct;
             let fill_top = shape_bottom - fill_h;
 
             // Dark core + HP fill
             for &(bx, by) in body {
-                let tsx = map_left + (bx - camera_x) as f32 * TILE;
-                let tsy = mid_top + (by - camera_y) as f32 * TILE;
+                let tsx = map_left + (bx - camera_x) as f32 * tz;
+                let tsy = mid_top + (by - camera_y) as f32 * tz;
                 let (el, er, et, eb) = tile_edges(bx, by);
                 let rx = tsx - el;
                 let ry = tsy - et;
-                let rw = TILE + el + er;
-                let rh = TILE + et + eb;
+                let rw = tz + el + er;
+                let rh = tz + et + eb;
 
                 draw_rectangle(rx, ry, rw, rh, dark_core);
 
@@ -3689,28 +3862,28 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             let border_color = Color::new(base_color.r, base_color.g * 0.4, base_color.b * 0.4, border_alpha);
             let t = 2.0;
             for &(bx, by) in body {
-                let tsx = map_left + (bx - camera_x) as f32 * TILE;
-                let tsy = mid_top + (by - camera_y) as f32 * TILE;
+                let tsx = map_left + (bx - camera_x) as f32 * tz;
+                let tsy = mid_top + (by - camera_y) as f32 * tz;
                 let (el, er, et, eb) = tile_edges(bx, by);
                 if !body_set.contains(&(bx, by - 1)) {
-                    draw_rectangle(tsx - el, tsy - et, TILE + el + er, t, border_color);
+                    draw_rectangle(tsx - el, tsy - et, tz + el + er, t, border_color);
                 }
                 if !body_set.contains(&(bx, by + 1)) {
-                    draw_rectangle(tsx - el, tsy + TILE + eb - t, TILE + el + er, t, border_color);
+                    draw_rectangle(tsx - el, tsy + tz + eb - t, tz + el + er, t, border_color);
                 }
                 if !body_set.contains(&(bx - 1, by)) {
-                    draw_rectangle(tsx - el, tsy - et, t, TILE + et + eb, border_color);
+                    draw_rectangle(tsx - el, tsy - et, t, tz + et + eb, border_color);
                 }
                 if !body_set.contains(&(bx + 1, by)) {
-                    draw_rectangle(tsx + TILE + er - t, tsy - et, t, TILE + et + eb, border_color);
+                    draw_rectangle(tsx + tz + er - t, tsy - et, t, tz + et + eb, border_color);
                 }
             }
             } // end else (no boss texture)
         } else if let Some(tex) = monster_textures.get(&mon.name) {
             // Draw sprite texture
-            let size = TILE * 0.9;
-            let ox = sx + (TILE - size) / 2.0;
-            let oy = sy + (TILE - size) / 2.0;
+            let size = tz * 0.9;
+            let ox = sx + (tz - size) / 2.0;
+            let oy = sy + (tz - size) / 2.0;
             draw_texture_ex(tex, ox, oy, WHITE, DrawTextureParams {
                 dest_size: Some(Vec2::new(size, size)),
                 ..Default::default()
@@ -3718,17 +3891,17 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             // HP bar below sprite
             let pct = mon.hp as f32 / mon.max_hp as f32;
             if pct < 1.0 {
-                let bar_w = TILE * 0.8;
+                let bar_w = tz * 0.8;
                 let bar_h = 3.0;
-                let bar_x = sx + (TILE - bar_w) / 2.0;
-                let bar_y = sy + TILE - 2.0;
+                let bar_x = sx + (tz - bar_w) / 2.0;
+                let bar_y = sy + tz - 2.0;
                 draw_rectangle(bar_x, bar_y, bar_w, bar_h, Color::new(0.2, 0.2, 0.2, 0.8));
                 draw_rectangle(bar_x, bar_y, bar_w * pct, bar_h, hp_bar_color(pct));
             }
         } else {
-            let cx = sx + TILE / 2.0;
-            let cy = sy + TILE / 2.0;
-            let r = TILE * 0.4;
+            let cx = sx + tz / 2.0;
+            let cy = sy + tz / 2.0;
+            let r = tz * 0.4;
             let pct = mon.hp as f32 / mon.max_hp as f32;
             let base_color = hex_to_color(COLOR_MONSTER);
             draw_soft_circle_shadow(cx, cy, r);
@@ -3740,11 +3913,11 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     }
 
     // Player — HP pie + shield outline + weapon line
-    let px = map_left + (state.player.x - camera_x) as f32 * TILE + TILE / 2.0;
-    let py = mid_top + (state.player.y - camera_y) as f32 * TILE + TILE / 2.0;
+    let px = map_left + (state.player.x - camera_x) as f32 * tz + tz / 2.0;
+    let py = mid_top + (state.player.y - camera_y) as f32 * tz + tz / 2.0;
     let has_shield = state.player.armor != "None";
     let has_sword = state.player.weapon != "Fists";
-    let r = TILE * 0.38;
+    let r = tz * 0.38;
 
     let hp_pct = if state.player.max_hp > 0 {
         state.player.hp as f32 / state.player.max_hp as f32
@@ -3787,14 +3960,16 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     // ── Smooth radial light falloff (sub-tile grid, not aligned to tiles) ──
     let cell = 6.0_f32; // sub-tile cell size for smooth gradient
     let light_max_alpha = 0.5; // match fog-of-war darkness at edges
-    let cx_count = (map_width / cell) as i32 + 1;
-    let cy_count = (mid_height / cell) as i32 + 1;
+    let light_area_top = top_height;
+    let light_area_height = sh - top_height - bottom_height;
+    let cx_count = (map_width / cell) as i32 + 2;
+    let cy_count = (light_area_height / cell) as i32 + 2;
     for cy in 0..cy_count {
-        let y = mid_top + cy as f32 * cell;
-        if y + cell < mid_top || y > mid_top + mid_height { continue; }
+        let y = light_area_top + cy as f32 * cell;
+        if y > light_area_top + light_area_height { continue; }
         let dy = y + cell / 2.0 - player_screen_y;
         for cx in 0..cx_count {
-            let x = map_left + cx as f32 * cell;
+            let x = cx as f32 * cell;
             if x > map_width { continue; }
             let dx = x + cell / 2.0 - player_screen_x;
             let dist = (dx * dx + dy * dy).sqrt();
@@ -3806,15 +3981,29 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
         }
     }
 
-    // ── Log panel (right side) ──
+    // ── Redraw header/footer on top of map to clip any tile bleeding ──
+    draw_rectangle(0.0, 0.0, sw, top_height, Color::new(0.05, 0.05, 0.05, 1.0));
+    draw_line(0.0, top_height, sw, top_height, 1.0, Color::new(0.13, 0.13, 0.13, 1.0));
+    if !state.level.title.is_empty() {
+        let tfont = title_font.unwrap_or(ui_font);
+        let ts = 32u16;
+        let tw = measure_text(&state.level.title, Some(tfont), ts, 1.0).width;
+        draw_text_ex(&state.level.title, (sw - tw) / 2.0, 48.0, TextParams {
+            font: Some(tfont), font_size: ts, color: hex_to_color("#e0d5c0"), ..Default::default()
+        });
+    }
+
+    // ── Log panel (right side) — uses fixed top_height, not shifted mid_top ──
     let log_left = sw - log_width;
-    draw_rectangle(log_left, mid_top, log_width, mid_height, Color::new(0.04, 0.04, 0.04, 1.0));
-    draw_line(log_left, mid_top, log_left, mid_top + mid_height, 1.0, Color::new(0.15, 0.15, 0.15, 1.0));
+    let panel_top = top_height;
+    let panel_height = sh - top_height - bottom_height;
+    draw_rectangle(log_left, panel_top, log_width, panel_height, Color::new(0.04, 0.04, 0.04, 1.0));
+    draw_line(log_left, panel_top, log_left, panel_top + panel_height, 1.0, Color::new(0.15, 0.15, 0.15, 1.0));
 
     let log_font_size = 13u16;
     let line_h = 18.0;
     let log_pad = 12.0;
-    let log_text_top = mid_top + log_pad + log_font_size as f32;
+    let log_text_top = panel_top + log_pad + log_font_size as f32;
     let log_max_w = log_width - log_pad * 2.0;
     // Word-wrap log entries into visual lines
     let entry_gap = 4.0_f32; // small gap between log entries
@@ -3841,7 +4030,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     }
 
     // Calculate visible lines from the bottom, accounting for entry gaps
-    let mut y_cursor = mid_top + mid_height - 8.0;
+    let mut y_cursor = panel_top + panel_height - 8.0;
     let mut vis_start = wrapped.len();
     for i in (0..wrapped.len()).rev() {
         y_cursor -= line_h;

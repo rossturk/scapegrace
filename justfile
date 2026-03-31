@@ -12,6 +12,10 @@ run:
 builder:
     cargo run --bin level_builder
 
+# Run the level builder with dev campaigns
+builder-dev:
+    cargo run --bin level_builder -- -o campaigns_dev.json
+
 # Build macOS .app bundle
 app:
     cargo bundle --release

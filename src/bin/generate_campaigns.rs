@@ -714,6 +714,10 @@ fn main() {
                                 node_positions: None,
                                 bg_image: None,
                                 bg_gradient: None,
+                                bg_mode: None,
+                                terrain_seed: None,
+                                bg_prompt: None,
+                                ow_region_offsets: None,
                             };
                         }
                         eprint!("[{}/{}] Retrying overworld... ", campaign_idx + 1, count);
@@ -862,6 +866,9 @@ fn main() {
         theme: theme.clone(),
         campaigns: all_campaigns,
         strings: PackStrings::default(),
+        item_sprites: Default::default(),
+        item_names: Default::default(),
+        item_descriptions: Default::default(),
     };
     let json = serde_json::to_string(&pack).expect("Failed to serialize pack");
     std::fs::write(&output_file, &json).expect("Failed to write pack file");

@@ -78,11 +78,14 @@ h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
 .level-screen { display: flex; height: 100%; overflow: hidden; }
 .level-map-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0d0d1e; position: relative; min-width: 0; padding: 16px; }
 .level-map-area .level-back { position: absolute; top: 12px; left: 12px; z-index: 1; }
-.level-map-area .level-title { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); font-size: 20px; font-weight: 700; color: var(--text); text-align: center; }
-.level-map-area .level-subtitle { position: absolute; top: 38px; left: 50%; transform: translateX(-50%); font-size: 12px; color: #888; }
+.breadcrumb { font-size: 14px; color: #888; }
+.breadcrumb a { color: #6ea8d9; cursor: pointer; text-decoration: none; }
+.breadcrumb a:hover { color: #8ec4f0; text-decoration: underline; }
+.breadcrumb .bc-sep { color: #555; margin: 0 4px; }
+.breadcrumb .bc-current { color: var(--text); font-weight: 600; }
 .level-map-area .map-controls { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
 /* Entity tray */
-.entity-tray { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; padding: 6px 10px; margin-bottom: 6px; background: rgba(0,0,0,.3); border-radius: 8px; max-height: 80px; overflow-y: auto; }
+.entity-tray { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; padding: 6px 10px; margin-bottom: 6px; background: rgba(0,0,0,.3); border-radius: 8px; }
 .tray-item { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; background: rgba(255,255,255,.06); border: 1px solid var(--border); border-radius: 6px; cursor: grab; user-select: none; transition: transform .1s, box-shadow .1s; position: relative; }
 .tray-item:hover { background: rgba(255,255,255,.15); transform: translateY(-2px); box-shadow: 0 3px 8px rgba(0,0,0,.4); }
 .tray-item::after { content: attr(data-name); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: #111; color: #eee; font-size: 11px; padding: 3px 8px; border-radius: 4px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .1s; z-index: 20; }
@@ -99,13 +102,12 @@ h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
 .tab-content { flex: 1; overflow-y: auto; padding: 14px; }
 
 /* DAG */
-.dag-toolbar { background: var(--panel); padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-.dag-container { flex: 1; overflow: auto; position: relative; user-select: none; }
-.dag-container svg { display: block; margin: 0 auto; }
+.dag-toolbar { background: var(--panel); padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-shrink: 0; align-self: stretch; }
+.dag-container { flex: 1; overflow: hidden; position: relative; user-select: none; background: #000; }
+.dag-container svg { display: block; }
 .dag-header { text-align: center; padding: 20px 20px 8px; }
 .dag-header h2 { margin-bottom: 4px; }
 .dag-header p { opacity: 0.7; font-size: 13px; }
-.dag-container svg { display: block; }
 .dag-node { cursor: grab; }
 .dag-node.selected rect { stroke: var(--accent); stroke-width: 3; }
 .dag-node:hover rect { filter: brightness(1.3); }
@@ -171,7 +173,6 @@ h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
   <div class="title-bar">
     <div class="flex gap-8 items-center">
       <span id="back-btn"></span>
-      <h1>Scapegrace Level Builder</h1>
     </div>
     <div class="flex gap-8 items-center">
       <span id="save-status" style="font-size:12px;color:#888;"></span>
@@ -188,6 +189,17 @@ let pack = null;
 let fonts = [];
 let selectedCampaignId = null;
 let selectedLevelIdx = null;
+function readUrlState() {
+  const m = location.pathname.match(/^\/campaigns\/([^/]+)(?:\/levels\/(\d+))?/);
+  if (m) {
+    selectedCampaignId = m[1];
+    selectedLevelIdx = m[2] !== undefined ? Number(m[2]) : null;
+  } else {
+    selectedCampaignId = null;
+    selectedLevelIdx = null;
+  }
+}
+readUrlState();
 let dagPositions = {};
 let dagDragging = null;
 let dagDragOffset = { x: 0, y: 0 };
@@ -221,12 +233,17 @@ async function loadPack() {
     pack = await api('GET', '/api/pack');
     if (!pack.strings) pack.strings = {};
     if (!pack.campaigns) pack.campaigns = [];
+    // Validate restored nav state
+    if (selectedCampaignId && !getCampaign(selectedCampaignId)) {
+      selectedCampaignId = null; selectedLevelIdx = null; persistNav();
+    }
   } catch(e) { showToast('Failed to load pack: ' + e.message, 'error'); }
 }
 
 async function savePack() {
   try {
     await api('PUT', '/api/pack', pack);
+    owCanvasState.mapData = null; // invalidate overworld map cache
     showToast('Pack saved', 'success');
   } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
 }
@@ -258,27 +275,44 @@ function showToast(msg, type = 'info') {
 function navigate(screen, campaignId, levelIdx) {
   selectedCampaignId = campaignId || null;
   selectedLevelIdx = levelIdx !== undefined ? levelIdx : null;
+  persistNav();
   render();
+}
+function persistNav() {
+  let path = '/';
+  if (selectedCampaignId && selectedLevelIdx !== null) {
+    path = `/campaigns/${selectedCampaignId}/levels/${selectedLevelIdx}`;
+  } else if (selectedCampaignId) {
+    path = `/campaigns/${selectedCampaignId}`;
+  }
+  if (location.pathname !== path) history.pushState(null, '', path);
 }
 
 function render() {
   const el = document.getElementById('screen-container');
   const bb = document.getElementById('back-btn');
+  persistNav();
   if (selectedCampaignId && selectedLevelIdx !== null) {
     el.style.padding = '0';
     el.style.overflow = 'hidden';
-    bb.innerHTML = `<button onclick="selectedLevelIdx=null;render()" style="padding:4px 10px;">&larr; Campaign</button>`;
+    const c = getCampaign(selectedCampaignId);
+    const lv = c?.overworld?.levels?.[selectedLevelIdx];
+    const campName = c?.overworld?.name || 'Campaign';
+    const lvName = lv?.name || 'Level';
+    bb.innerHTML = `<span class="breadcrumb"><a onclick="navigate()">Pack</a> <span class="bc-sep">&rsaquo;</span> <a onclick="navigate(null,'${selectedCampaignId}')">${h(campName)}</a> <span class="bc-sep">&rsaquo;</span> <span class="bc-current">${h(lvName)}</span></span>`;
     renderLevelScreen(el);
     showCurrentMap();
   } else if (selectedCampaignId) {
     el.style.padding = '0';
     el.style.overflow = 'hidden';
-    bb.innerHTML = `<button onclick="navigate()" style="padding:4px 10px;">&larr; Campaigns</button>`;
+    const c = getCampaign(selectedCampaignId);
+    const campName = c?.overworld?.name || 'Campaign';
+    bb.innerHTML = `<span class="breadcrumb"><a onclick="navigate()">Pack</a> <span class="bc-sep">&rsaquo;</span> <span class="bc-current">${h(campName)}</span></span>`;
     renderCampaignEditor(el);
   } else {
     el.style.padding = '20px';
     el.style.overflow = 'auto';
-    bb.innerHTML = '';
+    bb.innerHTML = '<span class="breadcrumb"><span class="bc-current">Pack</span></span>';
     renderPackOverview(el);
   }
 }
@@ -462,20 +496,20 @@ function renderPackSettingsBody(s) {
 
   if (packSettingsTab === 'general') {
     body += `<div class="form-row"><label>Title</label>${enhancedInput(s.title||'', "pack.strings.title=this.value", 'one-line game title for a roguelike dungeon pack')}</div>`;
-    body += `<div class="form-row"><label>Subtitle</label>${enhancedInput(s.subtitle||'', "pack.strings.subtitle=this.value", 'one-line subtitle tagline for a roguelike game')}</div>`;
+    body += `<div class="form-row"><label>Subtitle</label><div class="enhanced-textarea"><textarea rows="3" onchange="pack.strings.subtitle=this.value" style="resize:vertical">${h(s.subtitle||'')}</textarea><button class="enhance-btn" onclick="enhanceText(this.previousElementSibling.id||(this.previousElementSibling.id='sub_'+Math.random().toString(36).substr(2,6)),'short subtitle tagline for a roguelike game')" title="Enhance with AI">&#10024;</button></div></div>`;
     body += `<div class="form-row-stacked"><label>Intro lines (one per line)</label>
       ${enhancedTextarea((s.intro||[]).join('\n'), "pack.strings.intro=this.value.split('\\n').filter(x=>x)", 'five-line intro narration for a roguelike game, one sentence per line', 5)}</div>`;
     body += `<div class="form-row-stacked"><label>Pack theme</label>${enhancedTextarea(pack.theme||'', "pack.theme=this.value||null", 'three-line theme description for a roguelike game pack', 3)}</div>`;
   }
   else if (packSettingsTab === 'prompts') {
-    body += `<div class="form-row-stacked"><label>Campaign cleared</label>${enhancedTextarea(s.campaign_cleared||'', "pack.strings.campaign_cleared=this.value", 'congratulations message when player clears a campaign', 3)}</div>`;
-    body += `<div class="form-row-stacked"><label>Campaign conquered</label>${enhancedTextarea(s.campaign_conquered||'', "pack.strings.campaign_conquered=this.value", 'message when player conquers all campaigns, use {name} for campaign name', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Campaign cleared (big title on victory screen)</label>${enhancedTextarea(s.campaign_cleared||'', "pack.strings.campaign_cleared=this.value", 'congratulations message when player clears a campaign', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Campaign conquered (subtitle, {name} = campaign)</label>${enhancedTextarea(s.campaign_conquered||'', "pack.strings.campaign_conquered=this.value", 'message when player conquers all campaigns, use {name} for campaign name', 3)}</div>`;
     body += `<hr class="section-divider">`;
-    body += `<div class="form-row-stacked"><label>First</label>${enhancedTextarea(s.prompt_first||'', "pack.strings.prompt_first=this.value", 'three-line prompt asking player to press enter to start their first game', 3)}</div>`;
-    body += `<div class="form-row-stacked"><label>Next</label>${enhancedTextarea(s.prompt_next||'', "pack.strings.prompt_next=this.value", 'three-line prompt asking player to press enter for the next world', 3)}</div>`;
-    body += `<div class="form-row-stacked"><label>Resume</label>${enhancedTextarea(s.prompt_resume||'', "pack.strings.prompt_resume=this.value", 'three-line prompt asking player to press enter to resume', 3)}</div>`;
-    body += `<div class="form-row-stacked"><label>Restart</label>${enhancedTextarea(s.prompt_restart||'', "pack.strings.prompt_restart=this.value", 'three-line prompt asking player to press enter to play again', 3)}</div>`;
-    body += `<div class="form-row-stacked"><label>After clear</label>${enhancedTextarea(s.prompt_after_clear||'', "pack.strings.prompt_after_clear=this.value", 'three-line prompt shown after clearing all campaigns', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>First play (no save, never played)</label>${enhancedTextarea(s.prompt_first||'', "pack.strings.prompt_first=this.value", 'three-line prompt asking player to press enter to start their first game', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Next campaign (completed one, more to go)</label>${enhancedTextarea(s.prompt_next||'', "pack.strings.prompt_next=this.value", 'three-line prompt asking player to press enter for the next world', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Resume (has a saved game)</label>${enhancedTextarea(s.prompt_resume||'', "pack.strings.prompt_resume=this.value", 'three-line prompt asking player to press enter to resume', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>Restart (all campaigns completed)</label>${enhancedTextarea(s.prompt_restart||'', "pack.strings.prompt_restart=this.value", 'three-line prompt asking player to press enter to play again', 3)}</div>`;
+    body += `<div class="form-row-stacked"><label>After clear (prompt on victory screen)</label>${enhancedTextarea(s.prompt_after_clear||'', "pack.strings.prompt_after_clear=this.value", 'three-line prompt shown after clearing all campaigns', 3)}</div>`;
   }
   else if (packSettingsTab === 'items') {
     if (!pack.item_sprites) pack.item_sprites = {};
@@ -493,24 +527,22 @@ function renderPackSettingsBody(s) {
     ];
     for (const st of spriteTypes) {
       const itemName = names[st.key] || st.defaultName;
-      body += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px;">`;
-      body += `<div class="flex gap-8 items-center" style="margin-bottom:4px;">
-        ${enhancedInput(itemName, "updateItemName('" + st.key + "',this.value)", 'one-line item name for a roguelike game item', 'flex:1;font-weight:600;font-size:12px;')}
-        <button style="font-size:9px;padding:2px 4px;" onclick="resetItemName('${st.key}')" title="Reset to ${st.defaultName}">&#x21ba;</button>
-      </div>`;
       const itemDesc = descs[st.key] || st.prompt;
-      body += `<div style="margin-bottom:4px;">
-        ${enhancedInput(itemDesc, "updateItemDesc('" + st.key + "',this.value)", 'one-line visual description of a game item for pixel art sprite generation — describe its appearance, shape, colors, and style', 'font-size:11px;color:#aaa;')}
+      body += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div class="flex gap-4 items-center mb-8">
+          ${enhancedInput(itemName, "updateItemName('" + st.key + "',this.value)", 'one-line item name for a roguelike game item', 'font-size:12px;font-weight:600;')}
+          <button style="font-size:9px;padding:2px 4px;" onclick="resetItemName('${st.key}')" title="Reset to ${st.defaultName}">&#x21ba;</button>
+        </div>
+        ${enhancedTextarea(itemDesc, "updateItemDesc('" + st.key + "',this.value)", 'short visual description of a game item called '+itemName+' for pixel art sprite generation — describe its appearance, shape, colors, and style', 3)}
+        <div class="flex gap-8 items-center" style="margin-top:6px;">
+          ${sprites[st.key]
+            ? `<img src="data:image/png;base64,${sprites[st.key]}" style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+               <button class="ai-btn" onclick="generateItemTypeSprite('${st.key}')" style="font-size:11px;">&#10024; Regen</button>
+               <button style="font-size:10px;padding:2px 6px;" onclick="clearItemTypeSprite('${st.key}')">Clear</button>`
+            : `<div style="width:48px;height:48px;border-radius:4px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:#555;">🎒</div>
+               <button class="ai-btn" onclick="generateItemTypeSprite('${st.key}')">&#10024; Generate Sprite</button>`}
+        </div>
       </div>`;
-      body += `<div class="flex gap-8 items-center">`;
-      if (sprites[st.key]) {
-        body += `<img src="data:image/png;base64,${sprites[st.key]}" style="width:32px;height:32px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
-          <button class="ai-btn" onclick="generateItemTypeSprite('${st.key}')" style="font-size:10px;">&#10024; Regen</button>
-          <button style="font-size:9px;padding:2px 4px;" onclick="clearItemTypeSprite('${st.key}')">Clear</button>`;
-      } else {
-        body += `<button class="ai-btn" onclick="generateItemTypeSprite('${st.key}')" style="font-size:10px;">&#10024; Sprite</button>`;
-      }
-      body += `</div></div>`;
     }
   }
   return body;
@@ -576,12 +608,854 @@ function renderCampaignEditor(el) {
   let html = '<div class="campaign-layout">';
   html += '<div class="center-panel" id="center-panel">';
   html += '<div class="dag-toolbar" id="dag-toolbar">' + renderDAGToolbar() + '</div>';
-  html += `<div class="dag-container" id="dag-container"></div>`;
+  html += `<div class="dag-container" id="dag-container"><canvas id="ow-canvas"></canvas></div>`;
   html += '</div>';
   html += '<div class="left-panel" id="left-panel">' + renderLeftPanel(c) + '</div>';
   html += '</div>';
   el.innerHTML = html;
-  renderDAG(c);
+  owEventsAttached = false; // reset so events get attached to new canvas
+  renderOverworldCanvas(c);
+}
+
+// ── Overworld Canvas: stitched miniature level maps ──
+let owCanvasState = { zoom: 1, panX: 0, panY: 0, regions: [], dragging: false, dragRegion: null, lastMouse: null, mapData: null, regionOverrides: {} };
+
+function layoutOverworldRegions(c) {
+  const levels = c.overworld.levels || [];
+  const designs = c.designs || [];
+  const connections = c.overworld.connections || [];
+  const HALLWAY_LEN = 20;
+  const MW = 60, MH = 36; // map dimensions
+  const regions = []; // {idx, ox, oy, w, h, hasMap}
+
+  if (levels.length === 0) return { regions: [], hallways: [], totalW: 0, totalH: 0 };
+
+  // Parse connection IDs: "level_N" → N, skip "start"/"end"/"store"
+  function parseLevelIdx(id) {
+    if (typeof id === 'number') return id;
+    const m = String(id).match(/^level_(\d+)$/);
+    return m ? parseInt(m[1]) : null;
+  }
+
+  // Build adjacency for level nodes only
+  const levelConns = []; // [fromLevelIdx, toLevelIdx]
+  for (const [a, b] of connections) {
+    const ai = parseLevelIdx(a), bi = parseLevelIdx(b);
+    if (ai !== null && bi !== null) {
+      levelConns.push([ai, bi]);
+    }
+  }
+
+  // Place first level at origin
+  const placed = new Map(); // levelIdx -> {ox, oy}
+  placed.set(0, { ox: 0, oy: 0 });
+  regions.push({ idx: 0, ox: 0, oy: 0, w: MW, h: MH, hasMap: !!(designs[0]?.prebuilt_map) });
+
+  // BFS through level connections
+  const queue = [0];
+  const visited = new Set([0]);
+  while (queue.length > 0) {
+    const fromIdx = queue.shift();
+    const fromPos = placed.get(fromIdx);
+    const fromLevel = levels[fromIdx];
+    const exitDir = fromLevel?.exit_direction || 'e';
+
+    for (const [a, b] of levelConns) {
+      const toIdx = (a === fromIdx) ? b : (b === fromIdx) ? a : null;
+      if (toIdx === null || visited.has(toIdx) || toIdx >= levels.length) continue;
+      visited.add(toIdx);
+
+      let ox = fromPos.ox, oy = fromPos.oy;
+      if (exitDir === 'e') ox += MW + HALLWAY_LEN;
+      else if (exitDir === 'w') ox -= MW + HALLWAY_LEN;
+      else if (exitDir === 's') oy += MH + HALLWAY_LEN;
+      else if (exitDir === 'n') oy -= MH + HALLWAY_LEN;
+
+      placed.set(toIdx, { ox, oy });
+      regions.push({ idx: toIdx, ox, oy, w: MW, h: MH, hasMap: !!(designs[toIdx]?.prebuilt_map) });
+      queue.push(toIdx);
+    }
+  }
+
+  // Also place any unvisited levels (disconnected) below
+  let nextY = 0;
+  for (const r of regions) nextY = Math.max(nextY, r.oy + MH + HALLWAY_LEN);
+  for (let i = 0; i < levels.length; i++) {
+    if (!visited.has(i)) {
+      placed.set(i, { ox: 0, oy: nextY });
+      regions.push({ idx: i, ox: 0, oy: nextY, w: MW, h: MH, hasMap: !!(designs[i]?.prebuilt_map) });
+      nextY += MH + HALLWAY_LEN;
+    }
+  }
+
+  // Build hallways between connected levels
+  const hallways = [];
+  for (const [a, b] of levelConns) {
+    const pa = placed.get(a), pb = placed.get(b);
+    if (!pa || !pb) continue;
+    hallways.push({ from: a, to: b, fromPos: pa, toPos: pb });
+  }
+
+  // Normalize to start at 0,0
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const r of regions) {
+    minX = Math.min(minX, r.ox);
+    minY = Math.min(minY, r.oy);
+    maxX = Math.max(maxX, r.ox + r.w);
+    maxY = Math.max(maxY, r.oy + r.h);
+  }
+  for (const r of regions) { r.ox -= minX; r.oy -= minY; }
+  for (const h of hallways) {
+    h.fromPos = { ox: h.fromPos.ox - minX, oy: h.fromPos.oy - minY };
+    h.toPos = { ox: h.toPos.ox - minX, oy: h.toPos.oy - minY };
+  }
+
+  return { regions, hallways, totalW: maxX - minX, totalH: maxY - minY };
+}
+
+async function renderOverworldCanvas(c) {
+  const container = document.getElementById('dag-container');
+  const canvas = document.getElementById('ow-canvas');
+  if (!canvas || !container) return;
+
+  // Fetch the real tile grid from the server if not cached
+  if (!owCanvasState.mapData || owCanvasState.mapCampaignId !== c.id) {
+    try {
+      owCanvasState.mapData = await api('GET', `/api/overworld-map?id=${c.id}`);
+      owCanvasState.mapCampaignId = c.id;
+      owCanvasState.regionOverrides = {}; // clear stale drag positions
+    } catch (e) {
+      console.error('Failed to load overworld map:', e);
+      // Fallback: draw empty
+    }
+  }
+
+  // Restore saved region positions
+  if (c.overworld.ow_region_offsets && Object.keys(owCanvasState.regionOverrides).length === 0) {
+    for (const [k, v] of Object.entries(c.overworld.ow_region_offsets)) {
+      owCanvasState.regionOverrides[k] = { ox: v.ox, oy: v.oy };
+    }
+  }
+
+  const rect = container.getBoundingClientRect();
+  canvas.width = rect.width * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+
+  const md = owCanvasState.mapData;
+  const levels = c.overworld.levels || [];
+  owCanvasState.regions = md?.regions || [];
+
+  const TILE = 4;
+  const zoom = owCanvasState.zoom;
+  const tz = TILE * zoom;
+
+  const vpW = rect.width;
+  const vpH = rect.height;
+  const gridW = md ? md.width : 60;
+  const gridH = md ? md.height : 36;
+  const mapW = gridW * tz;
+  const mapH = gridH * tz;
+  const baseOx = (vpW - mapW) / 2 + owCanvasState.panX;
+  const baseOy = (vpH - mapH) / 2 + owCanvasState.panY;
+
+  // Background
+  const bgColor = c.overworld.bg_color || '#0d0d1e';
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, vpW, vpH);
+
+  // Helper: draw a single tile with grid gap
+  const drawTile = (wx, wy, color) => {
+    const gap = Math.max(0.5, tz * 0.08);
+    ctx.fillStyle = color;
+    ctx.fillRect(baseOx + wx * tz + gap/2, baseOy + wy * tz + gap/2, tz - gap, tz - gap);
+  };
+
+  // ── Client-side rendering: all regions + hallways drawn from designs ──
+  const designs = c.designs || [];
+  const gap = Math.max(0.5, tz * 0.08);
+
+  // Helper: get region position (with drag override)
+  const regionPos = (r) => {
+    const o = owCanvasState.regionOverrides[r.node_idx];
+    return o || { ox: r.ox, oy: r.oy };
+  };
+
+  if (md?.regions) {
+    // Draw each region's tiles from design data or grid data
+    for (const r of md.regions) {
+      const { ox: rox, oy: roy } = regionPos(r);
+      const di = r.node_idx - 1; // Start=0 has no design
+      const design = di >= 0 ? designs[di] : null;
+
+      if (design?.prebuilt_map?.tiles) {
+        const tiles = design.prebuilt_map.tiles;
+        const defs = design.tile_defs || [];
+        const pal = levels[di]?.palette || ['#444'];
+        const defMap = {};
+        for (let i = 0; i < defs.length; i++) defMap[defs[i].name] = pal[i % pal.length] || '#444';
+        // Get door positions to carve openings
+        const pe = design.placed_entities || {};
+        const doorTiles = new Set();
+        if (pe.exit_door) {
+          for (let dy = -1; dy <= 1; dy++) doorTiles.add(pe.exit_door[0] + ',' + (pe.exit_door[1] + dy));
+        }
+        if (pe.entry_door) {
+          for (let dy = -1; dy <= 1; dy++) doorTiles.add(pe.entry_door[0] + ',' + (pe.entry_door[1] + dy));
+        }
+        const floorColor = pal[Math.min(1, pal.length - 1)] || '#333';
+        for (let y = 0; y < tiles.length; y++) {
+          for (let x = 0; x < tiles[y].length; x++) {
+            // At door positions, draw floor instead of wall to create opening
+            if (doorTiles.has(x + ',' + y)) {
+              drawTile(rox + x, roy + y, floorColor);
+            } else {
+              drawTile(rox + x, roy + y, defMap[tiles[y][x]] || '#333');
+            }
+          }
+        }
+      } else if (md.tiles) {
+        // Title room, store — draw from grid tile data at original position
+        for (let y = 0; y < r.h; y++) {
+          for (let x = 0; x < r.w; x++) {
+            const gy = r.oy + y, gx = r.ox + x;
+            if (md.tiles[gy]?.[gx]) {
+              const def = md.tile_defs[md.tiles[gy][gx]];
+              if (def && def.color !== '#000000') drawTile(rox + x, roy + y, def.color);
+            }
+          }
+        }
+      }
+    }
+
+    // Draw hallways between all connected levels
+    const connections = c.overworld.connections || [];
+    const storeRegion = md.regions.find(r => r.node_idx > levels.length);
+    owStoreRegion = storeRegion;
+    const resolveNode = (id) => {
+      const s = String(id);
+      if (s === 'start') return 0;
+      if (s === 'store' || s === 'end') return storeRegion?.node_idx ?? null;
+      const m = s.match(/level_(\d+)/);
+      return m ? parseInt(m[1]) + 1 : null;
+    };
+    owResolveNode = resolveNode;
+    for (const [a, b] of connections) {
+      const aniIdx = resolveNode(a), bniIdx = resolveNode(b);
+      if (aniIdx == null || bniIdx == null) { console.log('skip conn', a, b, 'resolved', aniIdx, bniIdx); continue; }
+
+      const ra = md.regions.find(r => r.node_idx === aniIdx);
+      const rb = md.regions.find(r => r.node_idx === bniIdx);
+      if (!ra || !rb) continue;
+
+      const raP = regionPos(ra), rbP = regionPos(rb);
+      const da = aniIdx > 0 ? designs[aniIdx - 1] : null;
+      const db = bniIdx > 0 ? designs[bniIdx - 1] : null;
+
+      // Find edge tiles for door positions
+      const exitDoor = da?.placed_entities?.exit_door;
+      const entryDoor = db?.placed_entities?.entry_door;
+
+      let sx, sy, ex2, ey2;
+      // Exit point: placed door > API exit_pos > skip (no connection without exit door)
+      if (exitDoor) { sx = raP.ox + exitDoor[0]; sy = raP.oy + exitDoor[1]; }
+      else if (ra.exit_pos) { sx = raP.ox + (ra.exit_pos[0] - ra.ox); sy = raP.oy + (ra.exit_pos[1] - ra.oy); }
+      else { console.log('skip hallway: no exit door for', a, '→', b, 'aniIdx', aniIdx, 'ra.exit_pos', ra.exit_pos); continue; }
+      // Entry point: placed door > API entry_pos > store/title auto-edge > skip
+      const isStoreOrTitle = (bniIdx === 0 || bniIdx === storeRegion?.node_idx);
+      if (entryDoor) { ex2 = rbP.ox + entryDoor[0]; ey2 = rbP.oy + entryDoor[1]; }
+      else if (rb.entry_pos) { ex2 = rbP.ox + (rb.entry_pos[0] - rb.ox); ey2 = rbP.oy + (rb.entry_pos[1] - rb.oy); }
+      else if (isStoreOrTitle) {
+        // Store and title room auto-connect on nearest edge
+        const p = findEdgeTileFromDesign(null, rbP.ox, rbP.oy, rb.w, rb.h, sx, sy);
+        ex2 = p.x; ey2 = p.y;
+      }
+      else { console.log('skip hallway: no entry door for', a, '→', b); continue; }
+
+      // Palette blend
+      const palA = levels[aniIdx - 1]?.palette || levels[0]?.palette || ['#444', '#333'];
+      const palB = levels[bniIdx - 1]?.palette || levels[0]?.palette || ['#444', '#333'];
+      const wallA = palA[0] || '#222', wallB = palB[0] || '#222';
+      const floorA = palA[Math.min(1, palA.length-1)] || '#333';
+      const floorB = palB[Math.min(1, palB.length-1)] || '#333';
+
+      // A* pathfind through empty space
+      const occupied = new Set();
+      for (const rr of md.regions) {
+        const p = regionPos(rr);
+        for (let y = 0; y < rr.h; y++)
+          for (let x = 0; x < rr.w; x++)
+            occupied.add((p.ox + x) + ',' + (p.oy + y));
+      }
+      const path = astarHallway(sx, sy, ex2, ey2, occupied);
+      if (path.length === 0) continue;
+
+      // Draw organic corridor
+      const seed = (aniIdx * 31 + bniIdx * 17) | 0;
+      const srand = (i) => { let v = Math.sin(seed + i * 127.1) * 43758.5453; return v - Math.floor(v); };
+      const floorSet = new Set();
+      const wallSet = new Set();
+
+      // Build floor tiles
+      for (let pi = 0; pi < path.length; pi++) {
+        const [px, py] = path[pi];
+        const prev = pi > 0 ? path[pi-1] : path[pi];
+        const next = pi < path.length-1 ? path[pi+1] : path[pi];
+        const isHoriz = Math.abs(next[0]-prev[0]) >= Math.abs(next[1]-prev[1]);
+        const noiseL = srand(pi * 3) * 0.5 + srand(Math.floor(pi/8) * 3 + 100) * 0.5;
+        const noiseR = srand(pi * 3 + 200) * 0.5 + srand(Math.floor(pi/8) * 3 + 300) * 0.5;
+        const extraL = noiseL > 0.7 ? (noiseL > 0.9 ? 2 : 1) : 0;
+        const extraR = noiseR > 0.7 ? (noiseR > 0.9 ? 2 : 1) : 0;
+        for (let w = -extraL; w <= extraR; w++) {
+          const wx = isHoriz ? px : px + w;
+          const wy = isHoriz ? py + w : py;
+          floorSet.add(wx + ',' + wy);
+        }
+        floorSet.add(px + ',' + py);
+      }
+      // Corners: 3x3 floor
+      for (let pi = 1; pi < path.length - 1; pi++) {
+        const [cx, cy] = path[pi], [px, py] = path[pi-1], [nx, ny] = path[pi+1];
+        if (px !== nx && py !== ny) {
+          for (let dy = -1; dy <= 1; dy++)
+            for (let dx = -1; dx <= 1; dx++)
+              floorSet.add((cx+dx) + ',' + (cy+dy));
+        }
+      }
+      // Wall border
+      for (const fk of floorSet) {
+        const [fx, fy] = fk.split(',').map(Number);
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const nk = (fx+dx) + ',' + (fy+dy);
+            if (!floorSet.has(nk)) wallSet.add(nk);
+          }
+      }
+      // Draw walls then floors with palette gradient
+      for (const wk of wallSet) {
+        const [wx, wy] = wk.split(',').map(Number);
+        let best = 0; for (let pi = 0; pi < path.length; pi += 5) {
+          if (Math.abs(path[pi][0]-wx)+Math.abs(path[pi][1]-wy) < Math.abs(path[best][0]-wx)+Math.abs(path[best][1]-wy)) best = pi;
+        }
+        drawTile(wx, wy, lerpColor(wallA, wallB, best / (path.length-1||1)));
+      }
+      for (const fk of floorSet) {
+        const [fx, fy] = fk.split(',').map(Number);
+        let best = 0; for (let pi = 0; pi < path.length; pi += 5) {
+          if (Math.abs(path[pi][0]-fx)+Math.abs(path[pi][1]-fy) < Math.abs(path[best][0]-fx)+Math.abs(path[best][1]-fy)) best = pi;
+        }
+        const t = best / (path.length-1||1);
+        const isEdge = [[-1,0],[1,0],[0,-1],[0,1]].some(([dx,dy]) => wallSet.has((fx+dx)+','+(fy+dy)));
+        drawTile(fx, fy, lerpColor(floorA, floorB, t));
+      }
+    }
+
+    // Draw connection handles on exit/entry doors
+    for (const r of md.regions) {
+      const { ox: rox, oy: roy } = regionPos(r);
+      const di = r.node_idx - 1;
+      const design = di >= 0 ? designs[di] : null;
+      const pe = design?.placed_entities || {};
+
+      // Exit door handle (red circle)
+      if (pe.exit_door || r.exit_pos) {
+        const ed = pe.exit_door || [r.exit_pos[0] - r.ox, r.exit_pos[1] - r.oy];
+        const hx = baseOx + (rox + ed[0]) * tz + tz/2;
+        const hy = baseOy + (roy + ed[1]) * tz + tz/2;
+        const hr = Math.max(3, tz * 0.8);
+        ctx.fillStyle = '#ff4444';
+        ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // Entry door handle (cyan circle)
+      if (pe.entry_door || r.entry_pos) {
+        const ed = pe.entry_door || [r.entry_pos[0] - r.ox, r.entry_pos[1] - r.oy];
+        const hx = baseOx + (rox + ed[0]) * tz + tz/2;
+        const hy = baseOy + (roy + ed[1]) * tz + tz/2;
+        const hr = Math.max(3, tz * 0.8);
+        ctx.fillStyle = '#44ccff';
+        ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Draw in-progress connection line while dragging
+    if (owCanvasState.connectingFrom && owCanvasState.connectMousePos) {
+      ctx.strokeStyle = '#ffcc00';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(owCanvasState.connectingFrom.sx, owCanvasState.connectingFrom.sy);
+      ctx.lineTo(owCanvasState.connectMousePos.x, owCanvasState.connectMousePos.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Draw level labels and selection highlights
+    for (const r of md.regions) {
+      // Skip label for title room (Start node) — its text is rendered inside
+      if (r.node_idx === 0) continue;
+      // node_idx 1 = levels[0], node_idx 2 = levels[1], etc (Start is at 0)
+      const levelsIdx = r.node_idx - 1;
+      const lv = levels[levelsIdx] || { name: levelsIdx >= levels.length ? 'Store' : `Node ${r.node_idx}` };
+      if (!lv) continue;
+      const override = owCanvasState.regionOverrides[r.node_idx];
+      const rox = override ? override.ox : r.ox;
+      const roy = override ? override.oy : r.oy;
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.max(10, 12 * zoom)}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(lv.name || `Level ${r.node_idx + 1}`, baseOx + (rox + r.w / 2) * tz, baseOy + roy * tz - 16 * zoom);
+      if (dagSelectedNode === r.node_idx) {
+        ctx.strokeStyle = '#e94560';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(baseOx + rox * tz - 2, baseOy + roy * tz - 2, r.w * tz + 4, r.h * tz + 4);
+      }
+    }
+  }
+
+  // Title and description rendered inside the title room (Start node)
+  const titleRegion = md?.regions?.find(r => r.node_idx === 0); // Start node is usually index 0
+  if (titleRegion) {
+    const tc = c.overworld.text_color || '#e8e8e8';
+    const trOverride = owCanvasState.regionOverrides[titleRegion.node_idx];
+    const trOx = trOverride ? trOverride.ox : titleRegion.ox;
+    const trOy = trOverride ? trOverride.oy : titleRegion.oy;
+    const trCx = baseOx + (trOx + titleRegion.w / 2) * tz;
+    const trCy = baseOy + (trOy + titleRegion.h / 2) * tz;
+
+    // Title
+    const tfs = Math.max(6, Math.min(20, titleRegion.w * tz * 0.06));
+    ctx.fillStyle = tc;
+    ctx.font = `bold ${tfs}px ${c.overworld.font || 'system-ui'}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(c.overworld.name || '', trCx, trCy - tfs * 0.8);
+
+    // Description (word-wrapped)
+    if (c.overworld.description) {
+      const dfs = Math.max(4, tfs * 0.45);
+      ctx.font = `${dfs}px ${c.overworld.description_font || 'system-ui'}`;
+      ctx.globalAlpha = 0.7;
+      const maxW = titleRegion.w * tz * 0.85;
+      const words = c.overworld.description.split(/\s+/);
+      const lines = []; let cur = '';
+      for (const w of words) {
+        const test = cur ? cur + ' ' + w : w;
+        if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = w; }
+        else cur = test;
+      }
+      if (cur) lines.push(cur);
+      const lineH = dfs * 1.4;
+      let dy = trCy + tfs * 0.3;
+      for (const line of lines) {
+        ctx.fillText(line, trCx, dy);
+        dy += lineH;
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Set up interactions
+  setupOwCanvasEvents(canvas, c);
+}
+
+// A* pathfinding for hallway routing: finds path through non-occupied tiles
+function astarHallway(sx, sy, ex, ey, occupied) {
+  const key = (x, y) => x + ',' + y;
+  const open = [{ x: sx, y: sy, g: 0, f: Math.abs(ex-sx) + Math.abs(ey-sy) }];
+  const closed = new Set();
+  const cameFrom = {};
+  const gScore = {};
+  gScore[key(sx, sy)] = 0;
+
+  // Allow start/end tiles even if "occupied" (they're door tiles inside levels)
+  const isBlocked = (x, y) => {
+    if (x === sx && y === sy) return false;
+    if (x === ex && y === ey) return false;
+    return occupied.has(key(x, y));
+  };
+
+  let iterations = 0;
+  while (open.length > 0 && iterations < 50000) {
+    iterations++;
+    // Find lowest f
+    let bestIdx = 0;
+    for (let i = 1; i < open.length; i++) {
+      if (open[i].f < open[bestIdx].f) bestIdx = i;
+    }
+    const cur = open.splice(bestIdx, 1)[0];
+
+    if (cur.x === ex && cur.y === ey) {
+      // Reconstruct path
+      const path = [];
+      let k = key(cur.x, cur.y);
+      while (k) {
+        const [px, py] = k.split(',').map(Number);
+        path.unshift([px, py]);
+        k = cameFrom[k];
+      }
+      return path;
+    }
+
+    closed.add(key(cur.x, cur.y));
+
+    // 4 neighbors
+    for (const [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+      const nx = cur.x + dx, ny = cur.y + dy;
+      const nk = key(nx, ny);
+      if (closed.has(nk) || isBlocked(nx, ny)) continue;
+      const ng = cur.g + 1;
+      if (gScore[nk] !== undefined && ng >= gScore[nk]) continue;
+      gScore[nk] = ng;
+      cameFrom[nk] = key(cur.x, cur.y);
+      const h = Math.abs(ex - nx) + Math.abs(ey - ny);
+      open.push({ x: nx, y: ny, g: ng, f: ng + h });
+    }
+  }
+  // Fallback: straight line if pathfinding fails
+  const path = [];
+  let cx = sx, cy = sy;
+  while (cx !== ex || cy !== ey) {
+    if (cx !== ex) cx += cx < ex ? 1 : -1;
+    else cy += cy < ey ? 1 : -1;
+    path.push([cx, cy]);
+  }
+  return path;
+}
+
+// Find edge tile on a level nearest to a target, using design tile data or fallback
+function findEdgeTileFromDesign(design, ox, oy, w, h, targetX, targetY) {
+  const tiles = design?.prebuilt_map?.tiles;
+  if (tiles) {
+    const defs = design.tile_defs || [];
+    const wallName = defs[0]?.name || 'wall';
+    const rows = tiles.length, cols = tiles[0]?.length || w;
+    let best = null, bestDist = Infinity;
+    const edgeTiles = [];
+    for (let x = 0; x < cols; x++) { edgeTiles.push([x, 0]); edgeTiles.push([x, rows-1]); }
+    for (let y = 1; y < rows-1; y++) { edgeTiles.push([0, y]); edgeTiles.push([cols-1, y]); }
+    for (const [lx, ly] of edgeTiles) {
+      if (tiles[ly][lx] === wallName) {
+        const hasAdj = [[0,1],[0,-1],[1,0],[-1,0]].some(([dx,dy]) => {
+          const nx = lx+dx, ny = ly+dy;
+          return nx >= 0 && ny >= 0 && nx < cols && ny < rows && tiles[ny][nx] !== wallName;
+        });
+        if (hasAdj) {
+          const wx = ox + lx, wy = oy + ly;
+          const d = Math.abs(wx - targetX) + Math.abs(wy - targetY);
+          if (d < bestDist) { bestDist = d; best = { x: wx, y: wy }; }
+        }
+      }
+    }
+    if (best) return best;
+  }
+  // Fallback: pick closest edge center
+  const edges = [
+    { x: ox + w - 1, y: oy + Math.floor(h/2) },
+    { x: ox, y: oy + Math.floor(h/2) },
+    { x: ox + Math.floor(w/2), y: oy + h - 1 },
+    { x: ox + Math.floor(w/2), y: oy },
+  ];
+  edges.sort((a, b) => (Math.abs(a.x-targetX)+Math.abs(a.y-targetY)) - (Math.abs(b.x-targetX)+Math.abs(b.y-targetY)));
+  return edges[0];
+}
+
+function owZoom1to1() {
+  // 1:1 = 1 tile per CSS pixel
+  owCanvasState.zoom = 1 / 4; // TILE base is 4, so zoom=0.25 gives 1px/tile
+  owCanvasState.panX = 0;
+  owCanvasState.panY = 0;
+  const c = getCampaign(selectedCampaignId);
+  if (c) renderOverworldCanvas(c);
+}
+function owZoomFit() {
+  const md = owCanvasState.mapData;
+  if (!md?.regions) return;
+  const container = document.getElementById('dag-container');
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  // Calculate actual bounds including drag overrides
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const r of md.regions) {
+    const o = owCanvasState.regionOverrides[r.node_idx];
+    const rx = o ? o.ox : r.ox;
+    const ry = o ? o.oy : r.oy;
+    minX = Math.min(minX, rx);
+    minY = Math.min(minY, ry);
+    maxX = Math.max(maxX, rx + r.w);
+    maxY = Math.max(maxY, ry + r.h);
+  }
+  const totalW = (maxX - minX) || 1;
+  const totalH = (maxY - minY) || 1;
+  const zx = rect.width / (totalW * 4);
+  const zy = rect.height / (totalH * 4);
+  owCanvasState.zoom = Math.min(zx, zy) * 0.85;
+  // Center on the content
+  owCanvasState.panX = -(minX * 4 * owCanvasState.zoom);
+  owCanvasState.panY = -(minY * 4 * owCanvasState.zoom);
+  const c = getCampaign(selectedCampaignId);
+  if (c) renderOverworldCanvas(c);
+}
+
+function lerpColor(a, b, t) {
+  const pa = hexToRgb(a), pb = hexToRgb(b);
+  if (!pa || !pb) return a;
+  const r = Math.round(pa.r + (pb.r - pa.r) * t);
+  const g = Math.round(pa.g + (pb.g - pa.g) * t);
+  const bl = Math.round(pa.b + (pb.b - pa.b) * t);
+  return `rgb(${r},${g},${bl})`;
+}
+function hexToRgb(hex) {
+  const m = (hex||'').replace('#','').match(/.{2}/g);
+  if (!m || m.length < 3) return null;
+  return { r: parseInt(m[0],16), g: parseInt(m[1],16), b: parseInt(m[2],16) };
+}
+
+let owEventsAttached = false;
+let owResolveNode = null; // set by renderOverworldCanvas, used by event handlers
+let owStoreRegion = null;
+function setupOwCanvasEvents(canvas, c) {
+  if (owEventsAttached) return;
+  owEventsAttached = true;
+
+  // Double-click to open level
+  canvas.addEventListener('dblclick', (e) => {
+    const nodeIdx = hitTestLevel(e, canvas, c);
+    if (nodeIdx !== null && nodeIdx > 0) { // skip Start node (0)
+      selectLevel(nodeIdx - 1); // convert node_idx to levels array index
+    }
+  });
+
+  // Single click to select
+  canvas.addEventListener('click', (e) => {
+    const r = hitTestLevel(e, canvas, c);
+    dagSelectedNode = r;
+    renderOverworldCanvas(c);
+    if (r !== null) {
+      document.getElementById('left-panel').innerHTML = renderLeftPanel(c);
+    }
+  });
+
+  // Helper: find door handle at mouse position
+  function hitTestHandle(e) {
+    const md = owCanvasState.mapData;
+    if (!md?.regions) return null;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const tz = 4 * owCanvasState.zoom;
+    const mapW = md.width * tz;
+    const mapH = md.height * tz;
+    const baseOx = (rect.width - mapW) / 2 + owCanvasState.panX;
+    const baseOy = (rect.height - mapH) / 2 + owCanvasState.panY;
+    const hitR = Math.max(8, tz * 1.5);
+
+    for (const r of md.regions) {
+      const { ox: rox, oy: roy } = regionPos(r);
+      const di = r.node_idx - 1;
+      const design = di >= 0 ? designs[di] : null;
+      const pe = design?.placed_entities || {};
+
+      // Check exit door handle
+      const exitDoor = pe.exit_door || (r.exit_pos ? [r.exit_pos[0] - r.ox, r.exit_pos[1] - r.oy] : null);
+      if (exitDoor) {
+        const hx = baseOx + (rox + exitDoor[0]) * tz + tz/2;
+        const hy = baseOy + (roy + exitDoor[1]) * tz + tz/2;
+        if (Math.abs(mx - hx) < hitR && Math.abs(my - hy) < hitR) {
+          return { type: 'exit', nodeIdx: r.node_idx, sx: hx, sy: hy };
+        }
+      }
+      // Check entry door handle
+      const entryDoor = pe.entry_door || (r.entry_pos ? [r.entry_pos[0] - r.ox, r.entry_pos[1] - r.oy] : null);
+      if (entryDoor) {
+        const hx = baseOx + (rox + entryDoor[0]) * tz + tz/2;
+        const hy = baseOy + (roy + entryDoor[1]) * tz + tz/2;
+        if (Math.abs(mx - hx) < hitR && Math.abs(my - hy) < hitR) {
+          return { type: 'entry', nodeIdx: r.node_idx, sx: hx, sy: hy };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Pan, drag level, or drag connection handle
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+
+    // Check if clicking a connection handle
+    const handle = hitTestHandle(e);
+    if (handle && handle.type === 'exit') {
+      owCanvasState.connectingFrom = handle;
+      owCanvasState.connectMousePos = { x: handle.sx, y: handle.sy };
+      return;
+    }
+
+    const hit = hitTestLevel(e, canvas, c);
+    if (hit !== null) {
+      owCanvasState.dragRegion = hit;
+    } else {
+      owCanvasState.dragging = true;
+    }
+    owCanvasState.lastMouse = { x: e.clientX, y: e.clientY };
+  });
+  canvas.addEventListener('mousemove', (e) => {
+    // Connection dragging
+    if (owCanvasState.connectingFrom) {
+      const rect = canvas.getBoundingClientRect();
+      owCanvasState.connectMousePos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      renderOverworldCanvas(c);
+      return;
+    }
+
+    if (!owCanvasState.lastMouse) return;
+    const dx = e.clientX - owCanvasState.lastMouse.x;
+    const dy = e.clientY - owCanvasState.lastMouse.y;
+    owCanvasState.lastMouse = { x: e.clientX, y: e.clientY };
+
+    if (owCanvasState.dragRegion !== null) {
+      const tz = 4 * owCanvasState.zoom;
+      const nodeIdx = owCanvasState.dragRegion;
+      const md = owCanvasState.mapData;
+      const r = md?.regions?.find(r => r.node_idx === nodeIdx);
+      if (r) {
+        const cur = owCanvasState.regionOverrides[nodeIdx] || { ox: r.ox, oy: r.oy };
+        cur.ox += Math.round(dx / tz);
+        cur.oy += Math.round(dy / tz);
+        owCanvasState.regionOverrides[nodeIdx] = cur;
+        renderOverworldCanvas(c);
+      }
+    } else if (owCanvasState.dragging) {
+      owCanvasState.panX += dx;
+      owCanvasState.panY += dy;
+      renderOverworldCanvas(c);
+    }
+  });
+  canvas.addEventListener('mouseup', (e) => {
+    // Complete connection drag
+    if (owCanvasState.connectingFrom) {
+      const handle = hitTestHandle(e);
+      if (handle && handle.type === 'entry' && handle.nodeIdx !== owCanvasState.connectingFrom.nodeIdx) {
+        // Create connection from exit node to entry node
+        const fromNodeIdx = owCanvasState.connectingFrom.nodeIdx;
+        const toNodeIdx = handle.nodeIdx;
+        // Convert node indices to connection IDs
+        const toId = (ni) => {
+          if (ni === 0) return 'start';
+          if (ni === owStoreRegion?.node_idx) return 'store';
+          return 'level_' + (ni - 1);
+        };
+        const connA = toId(fromNodeIdx), connB = toId(toNodeIdx);
+        if (!c.overworld.connections) c.overworld.connections = [];
+        // Avoid duplicates
+        const exists = c.overworld.connections.some(([a,b]) =>
+          (a === connA && b === connB) || (a === connB && b === connA));
+        if (!exists) {
+          c.overworld.connections.push([connA, connB]);
+          showToast(`Connected ${connA} → ${connB}`, 'success');
+        }
+      }
+      owCanvasState.connectingFrom = null;
+      owCanvasState.connectMousePos = null;
+      renderOverworldCanvas(c);
+      return;
+    }
+
+    if (owCanvasState.dragRegion !== null) {
+      if (!c.overworld.ow_region_offsets) c.overworld.ow_region_offsets = {};
+      for (const [nodeIdx, pos] of Object.entries(owCanvasState.regionOverrides)) {
+        c.overworld.ow_region_offsets[nodeIdx] = { ox: pos.ox, oy: pos.oy };
+      }
+    }
+    owCanvasState.dragging = false;
+    owCanvasState.dragRegion = null;
+  });
+  canvas.addEventListener('mouseleave', () => {
+    owCanvasState.dragging = false;
+    owCanvasState.dragRegion = null;
+    owCanvasState.connectingFrom = null;
+    owCanvasState.connectMousePos = null;
+  });
+
+  // Right-click on hallway to delete connection
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    // Check if right-clicking near any hallway path
+    // For simplicity: check if clicking near any connection's midpoint
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const md = owCanvasState.mapData;
+    if (!md?.regions) return;
+    const tz = 4 * owCanvasState.zoom;
+    const mapW = md.width * tz;
+    const mapH = md.height * tz;
+    const baseOx = (rect.width - mapW) / 2 + owCanvasState.panX;
+    const baseOy = (rect.height - mapH) / 2 + owCanvasState.panY;
+
+    const conns = c.overworld.connections || [];
+    for (let ci = conns.length - 1; ci >= 0; ci--) {
+      const [a, b] = conns[ci];
+      if (!owResolveNode) continue;
+      const aniIdx = owResolveNode(a), bniIdx = owResolveNode(b);
+      if (aniIdx == null || bniIdx == null) continue;
+      const ra = md.regions.find(r => r.node_idx === aniIdx);
+      const rb = md.regions.find(r => r.node_idx === bniIdx);
+      if (!ra || !rb) continue;
+      const raP = regionPos(ra), rbP = regionPos(rb);
+      // Midpoint of connection
+      const midX = baseOx + ((raP.ox + ra.w/2 + rbP.ox + rb.w/2) / 2) * tz;
+      const midY = baseOy + ((raP.oy + ra.h/2 + rbP.oy + rb.h/2) / 2) * tz;
+      if (Math.abs(mx - midX) < 30 && Math.abs(my - midY) < 30) {
+        conns.splice(ci, 1);
+        showToast(`Removed connection ${a} → ${b}`, 'info');
+        renderOverworldCanvas(c);
+        return;
+      }
+    }
+  });
+
+  // Zoom with scroll
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    owCanvasState.zoom = Math.max(0.3, Math.min(5, owCanvasState.zoom * delta));
+    renderOverworldCanvas(c);
+  }, { passive: false });
+}
+
+function hitTestLevel(e, canvas, c) {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const md = owCanvasState.mapData;
+  if (!md?.regions) return null;
+  const tz = 4 * owCanvasState.zoom;
+  const mapW = md.width * tz;
+  const mapH = md.height * tz;
+  const baseOx = (rect.width - mapW) / 2 + owCanvasState.panX;
+  const baseOy = (rect.height - mapH) / 2 + owCanvasState.panY;
+
+  for (const r of md.regions) {
+    const override = owCanvasState.regionOverrides[r.node_idx];
+    const rox = override ? override.ox : r.ox;
+    const roy = override ? override.oy : r.oy;
+    const rx = baseOx + rox * tz;
+    const ry = baseOy + roy * tz;
+    if (mx >= rx && mx <= rx + r.w * tz && my >= ry && my <= ry + r.h * tz) {
+      return r.node_idx;
+    }
+  }
+  return null;
 }
 
 let campaignTab = 'overview';
@@ -634,9 +1508,16 @@ function renderLeftPanel(c) {
       <button style="flex:1;font-size:11px;${bgMode==='solid'?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBgMode('solid')">Solid</button>
       <button style="flex:1;font-size:11px;${bgMode==='gradient'?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBgMode('gradient')">Gradient</button>
       <button style="flex:1;font-size:11px;${bgMode==='image'?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBgMode('image')">Image</button>
+      <button style="flex:1;font-size:11px;${bgMode==='terrain'?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBgMode('terrain')">Terrain</button>
     </div>`;
 
-    if (bgMode === 'solid') {
+    if (bgMode === 'terrain') {
+      html += `<div class="form-row"><label>Base Color</label>
+        <input type="color" value="${ow.bg_color||'#0a0a0a'}" onchange="updateOW('bg_color',this.value)">
+        <span style="font-size:11px;color:#888">${ow.bg_color||'#0a0a0a'}</span></div>`;
+      html += `<div class="form-row" style="margin-top:6px;">
+        <button onclick="regenTerrain()" style="flex:1;">Regenerate</button></div>`;
+    } else if (bgMode === 'solid') {
       html += `<div class="form-row"><label>Color</label>
         <input type="color" value="${ow.bg_color||'#0a0a0a'}" onchange="updateOW('bg_color',this.value)">
         <span style="font-size:11px;color:#888">${ow.bg_color||'#0a0a0a'}</span></div>`;
@@ -661,7 +1542,7 @@ function renderLeftPanel(c) {
       html += `<div class="form-row-stacked"><label>Image Prompt</label>
         <div class="flex gap-4 items-stretch">
           <div class="enhanced-textarea" style="flex:1">
-            <textarea id="bg-prompt" rows="2" placeholder="dark fantasy landscape, starry sky...">${h(ow._bg_prompt||'')}</textarea>
+            <textarea id="bg-prompt" rows="2" placeholder="dark fantasy landscape, starry sky..." oninput="getCampaign(selectedCampaignId).overworld._bg_prompt=this.value">${h(ow._bg_prompt||'')}</textarea>
             <button class="enhance-btn" onclick="enhanceBgPrompt()" title="Enhance with AI">&#10024;</button>
           </div>
           <button class="primary" style="font-size:11px;padding:4px 12px;" onclick="generateBgImage()">Generate</button>
@@ -745,8 +1626,14 @@ function setBgMode(mode) {
   if (mode === 'solid') { c.overworld.bg_gradient = null; c.overworld.bg_image = null; }
   else if (mode === 'gradient') { c.overworld.bg_image = null; if (!c.overworld.bg_gradient) c.overworld.bg_gradient = 'linear-gradient(135deg, #0a0a2e, #1a0a0a)'; }
   else if (mode === 'image') { c.overworld.bg_gradient = null; }
+  else if (mode === 'terrain') { c.overworld.bg_gradient = null; c.overworld.bg_image = null; if (!c.overworld._terrain_seed) c.overworld._terrain_seed = Math.floor(Math.random() * 999999); }
   renderDAG(c);
   document.getElementById('left-panel').innerHTML = renderLeftPanel(c);
+}
+function regenTerrain() {
+  const c = getCampaign(selectedCampaignId);
+  c.overworld._terrain_seed = Math.floor(Math.random() * 999999);
+  renderDAG(c);
 }
 async function enhanceBgPrompt() {
   const el = document.getElementById('bg-prompt');
@@ -767,12 +1654,380 @@ async function generateBgImage() {
   c.overworld._bg_prompt = prompt;
   showToast('Generating background...', 'info');
   try {
-    const r = await api('POST', '/api/generate-image', { prompt: 'Dark atmospheric game background. ' + prompt + '. Wide landscape, no text, no UI, no characters.', width: 512, height: 256 });
-    c.overworld.bg_image = r.image_base64;
+    const r = await api('POST', '/api/generate-image', { prompt: 'Dark atmospheric game background. ' + prompt + '. Wide landscape, no text, no UI, no characters.', width: 2560, height: 1440 });
+    // Cover-crop to 16:9 in case API returns different aspect ratio
+    c.overworld.bg_image = await cropTo16x9(r.image_base64);
     renderDAG(c);
     document.getElementById('left-panel').innerHTML = renderLeftPanel(c);
     showToast('Background generated!', 'success');
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function cropTo16x9(base64) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      // First, detect and trim letterbox bars (near-black edges)
+      const tmp = document.createElement('canvas');
+      tmp.width = img.width; tmp.height = img.height;
+      const tctx = tmp.getContext('2d');
+      tctx.drawImage(img, 0, 0);
+      const data = tctx.getImageData(0, 0, img.width, img.height).data;
+      const threshold = 15; // near-black
+      const isBarRow = (y) => {
+        for (let x = 0; x < img.width; x += 4) {
+          const i = (y * img.width + x) * 4;
+          if (data[i] > threshold || data[i+1] > threshold || data[i+2] > threshold) return false;
+        }
+        return true;
+      };
+      const isBarCol = (x) => {
+        for (let y = 0; y < img.height; y += 4) {
+          const i = (y * img.width + x) * 4;
+          if (data[i] > threshold || data[i+1] > threshold || data[i+2] > threshold) return false;
+        }
+        return true;
+      };
+      let top = 0, bot = img.height, left = 0, right = img.width;
+      while (top < bot && isBarRow(top)) top++;
+      while (bot > top && isBarRow(bot - 1)) bot--;
+      while (left < right && isBarCol(left)) left++;
+      while (right > left && isBarCol(right - 1)) right--;
+      const cw = right - left, ch = bot - top;
+
+      // Now crop to 16:9 from the trimmed region (retina quality)
+      const W = 2560, H = 1440, cA = W / H;
+      const iA = cw / ch;
+      let sx = left, sy = top, sw = cw, sh = ch;
+      if (iA > cA) { sw = ch * cA; sx = left + (cw - sw) / 2; }
+      else { sh = cw / cA; sy = top + (ch - sh) / 2; }
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
+      resolve(canvas.toDataURL('image/png').split(',')[1]);
+    };
+    img.src = 'data:image/png;base64,' + base64;
+  });
+}
+
+// ── Canvas terrain renderer (for preview) ──
+function drawTerrainCanvas(ctx, sw, sh, ow, pos, levels, conns) {
+  const seed = ow._terrain_seed || 42;
+  const T = Math.max(4, Math.floor(sw / 120));
+  const cols = Math.ceil(sw/T), rows = Math.ceil(sh/T);
+  const mkRng = (s) => { let v=s>>>0; return ()=>{v=(v*1103515245+12345)>>>0;return((v>>16)&0x7FFF)/0x7FFF;}; };
+  const pHex = (hex) => { hex=(hex||'#222').replace('#',''); if(hex.length===3)hex=hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2]; return[parseInt(hex.slice(0,2),16),parseInt(hex.slice(2,4),16),parseInt(hex.slice(4,6),16)]; };
+  const bgCol = pHex(ow.bg_color || '#0a0a0a');
+
+  const grid = Array.from({length:rows},()=>Array(cols).fill(0));
+  const nodeIds=['start',...levels.map((_,i)=>'level_'+i),'store'];
+  const nodeCenters={};
+
+  const nodePal = (id) => {
+    if(id==='start') return [[35,80,35],[45,100,45]];
+    if(id==='store') return [[80,65,35],[100,85,50]];
+    const idx=id.startsWith('level_')?parseInt(id.split('_')[1]):-1;
+    if(idx>=0&&levels[idx]&&levels[idx].palette&&levels[idx].palette.length)
+      return levels[idx].palette.map(c=>{const[r,g,b]=pHex(c);return[Math.floor(r*.45),Math.floor(g*.45),Math.floor(b*.45)];});
+    return [[35,35,60],[50,50,80]];
+  };
+
+  for (const id of nodeIds) {
+    const p=pos[id]; if(!p||id==='title'||id==='desc') continue;
+    const[nw,nh]=id==='start'?[200,88]:id==='store'?[240,88]:[240,100];
+    const gx=Math.floor((p.x+nw/2)/VB_W*cols), gy=Math.floor((p.y+nh/2)/VB_H*rows);
+    nodeCenters[id]={gx,gy};
+    const radius=Math.max(3,Math.floor((id==='start'||id==='store'?7:9)*cols/115));
+    const lr=mkRng(seed+gx*7919+gy*104729);
+    for(let dy=-radius;dy<=radius;dy++) for(let dx=-radius;dx<=radius;dx++){
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist>radius||lr()>1.0-Math.pow(dist/radius,1.5)*0.8) continue;
+      const cx2=gx+dx,cy2=gy+dy;
+      if(cx2>=0&&cx2<cols&&cy2>=0&&cy2<rows) grid[cy2][cx2]=2;
+    }
+  }
+  for (const [fId,tId] of conns) {
+    const fc=nodeCenters[fId],tc=nodeCenters[tId];
+    if(!fc||!tc) continue;
+    const cw=Math.max(1,Math.floor(cols/115));
+    const x0=Math.min(fc.gx,tc.gx),x1=Math.max(fc.gx,tc.gx);
+    for(let x=x0;x<=x1;x++) for(let w=-cw;w<=cw;w++){
+      const gy=fc.gy+w; if(gy>=0&&gy<rows&&x>=0&&x<cols&&grid[gy][x]===0) grid[gy][x]=1;
+    }
+    const y0=Math.min(fc.gy,tc.gy),y1=Math.max(fc.gy,tc.gy);
+    for(let y=y0;y<=y1;y++) for(let w=-cw;w<=cw;w++){
+      const gx=tc.gx+w; if(y>=0&&y<rows&&gx>=0&&gx<cols&&grid[y][gx]===0) grid[y][gx]=1;
+    }
+  }
+
+  // Nearest node + palette
+  const nearest=Array.from({length:rows},()=>Array(cols).fill(-1));
+  const nearDist=Array.from({length:rows},()=>Array(cols).fill(Infinity));
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    for(let ni=0;ni<nodeIds.length;ni++){
+      const nc=nodeCenters[nodeIds[ni]]; if(!nc) continue;
+      const d=Math.sqrt((x-nc.gx)**2+(y-nc.gy)**2);
+      if(d<nearDist[y][x]){nearDist[y][x]=d;nearest[y][x]=ni;}
+    }
+  }
+  const nearest2=Array.from({length:rows},()=>Array(cols).fill(-1));
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    for(let ni=0;ni<nodeIds.length;ni++){
+      if(ni===nearest[y][x]) continue;
+      const nc=nodeCenters[nodeIds[ni]]; if(!nc) continue;
+      const d=Math.sqrt((x-nc.gx)**2+(y-nc.gy)**2);
+      const c2=nearest2[y][x]>=0?nodeCenters[nodeIds[nearest2[y][x]]]:null;
+      const d2=c2?Math.sqrt((x-c2.gx)**2+(y-c2.gy)**2):Infinity;
+      if(d<d2) nearest2[y][x]=ni;
+    }
+  }
+
+  const palCache={}; for(const id of nodeIds) palCache[id]=nodePal(id);
+
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    const ni=nearest[y][x],ni2=nearest2[y][x];
+    const id=(ni>=0&&nodeIds[ni])?nodeIds[ni]:'start',id2=(ni2>=0&&nodeIds[ni2])?nodeIds[ni2]:id;
+    const pal1=palCache[id]||[[30,30,50]],pal2=palCache[id2]||pal1;
+    const tr=mkRng(seed*31+y*cols+x);
+    const d1=nearDist[y][x];
+    const _nc2=(ni2>=0&&nodeIds[ni2])?nodeCenters[nodeIds[ni2]]:null;
+    const d2=_nc2?Math.sqrt((x-_nc2.gx)**2+(y-_nc2.gy)**2):Infinity;
+    const blend=d1+d2>0&&isFinite(d2)?d1/(d1+d2):0;
+    const raw1=pal1[Math.floor(tr()*pal1.length)]||[30,30,50];
+    const raw2=(pal2[Math.floor(tr()*pal2.length)])||raw1;
+    const raw=[Math.floor(raw1[0]*(1-blend)+(raw2[0]||0)*blend),Math.floor(raw1[1]*(1-blend)+(raw2[1]||0)*blend),Math.floor(raw1[2]*(1-blend)+(raw2[2]||0)*blend)];
+    const px=x*T,py=y*T;
+    const cellType=grid[y][x];
+
+    if(cellType===0){
+      const wb=0.12+tr()*0.08;
+      ctx.fillStyle=`rgb(${Math.floor(raw[0]*wb+bgCol[0]*(1-wb))},${Math.floor(raw[1]*wb+bgCol[1]*(1-wb))},${Math.floor(raw[2]*wb+bgCol[2]*(1-wb))})`;
+      ctx.fillRect(px,py,T,T);
+    } else {
+      const bright=cellType===2?0.7+tr()*0.3:0.5+tr()*0.3;
+      ctx.fillStyle=`rgb(${Math.floor(raw[0]*bright)},${Math.floor(raw[1]*bright)},${Math.floor(raw[2]*bright)})`;
+      ctx.fillRect(px,py,T,T);
+      // Directional shadows at wall edges
+      const wallN=(y-1<0||grid[y-1][x]===0),wallW=(x-1<0||grid[y][x-1]===0);
+      if(wallN){ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(px,py,T,2);}
+      if(wallW){ctx.fillStyle='rgba(0,0,0,0.35)';ctx.fillRect(px,py,2,T);}
+    }
+  }
+}
+
+// ── Overworld Preview Modal ──
+let previewAnimFrame = null;
+function previewOverworld() {
+  const c = getCampaign(selectedCampaignId);
+  if (!c) return;
+  const ow = c.overworld, levels = ow.levels||[], pos = dagPositions[c.id]||{}, conns = getConnections(c);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'preview-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:200;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+  overlay.onclick = (e) => { if (e.target === overlay) closePreview(); };
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:relative;width:min(90vw,80vh * 16/9);height:min(80vh,90vw * 9/16);aspect-ratio:16/9;max-width:1200px;border-radius:12px;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,.6);cursor:default;';
+  const cvs = document.createElement('canvas');
+  cvs.style.cssText = 'width:100%;height:100%;display:block;';
+  modal.appendChild(cvs);
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '\u00d7';
+  closeBtn.style.cssText = 'position:absolute;top:12px;right:12px;font-size:24px;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:36px;height:36px;cursor:pointer;z-index:1;';
+  closeBtn.onclick = closePreview;
+  modal.appendChild(closeBtn);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  const escHandler = (e) => { if (e.key === 'Escape') closePreview(); };
+  document.addEventListener('keydown', escHandler);
+  function closePreview() {
+    if (previewAnimFrame) cancelAnimationFrame(previewAnimFrame);
+    previewAnimFrame = null;
+    document.removeEventListener('keydown', escHandler);
+    overlay.remove();
+  }
+
+  if (ow.font) loadGoogleFont(ow.font);
+  if (ow.description_font) loadGoogleFont(ow.description_font);
+  if (ow.label_font) loadGoogleFont(ow.label_font);
+
+  let bgImg = null;
+  if (ow.bg_image) { bgImg = new Image(); bgImg.src = 'data:image/png;base64,' + ow.bg_image; }
+
+  // Positions are in VB_W x VB_H viewBox coords — map to canvas directly
+
+  const mkRng=(seed)=>{let s=seed>>>0;return()=>{s=(s*1103515245+12345)>>>0;return((s>>16)&0x7FFF)/0x7FFF;};};
+  const pHex=(hex)=>{hex=(hex||'#444').replace('#','');if(hex.length===3)hex=hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];return[parseInt(hex.slice(0,2),16),parseInt(hex.slice(2,4),16),parseInt(hex.slice(4,6),16)];};
+
+  const nodeIds=['title','desc','start',...levels.map((_,i)=>'level_'+i),'store'];
+  const bossIdx=ow.boss_level!=null?ow.boss_level:Math.min(levels.length-1,4);
+
+  // Pre-build deterministic blobs (skip title node)
+  const nodeBlobs={};
+  for(let ni=0;ni<nodeIds.length;ni++){
+    const nId=nodeIds[ni];
+    if(nId==='title'||nId==='desc') continue;
+    const gW=8,gH=8;
+    const fl=Array.from({length:gH},()=>Array(gW).fill(false));
+    const rng=mkRng((ni*2654435761)>>>0);
+    if(nId==='start'){const pt=[[0,1,1,1,0],[1,1,1,1,1],[1,1,1,1,1],[1,1,1,1,1],[0,1,1,1,0]];for(let py=0;py<5;py++)for(let px=0;px<5;px++)fl[py+1][px+1]=!!pt[py][px];}
+    else if(nId==='store'){const pt=[[0,0,1,0,0],[0,1,1,1,0],[1,1,1,1,1],[0,1,1,1,0],[0,0,1,0,0]];for(let py=0;py<5;py++)for(let px=0;px<5;px++)fl[py+1][px+1]=!!pt[py][px];}
+    else{for(let y=3;y<5;y++)for(let x=3;x<5;x++)fl[y][x]=true;let g=0;const tgt=14+Math.floor(rng()*5);
+      for(let i=0;i<300&&g<tgt;i++){const ry=Math.floor(rng()*gH),rx=Math.floor(rng()*gW);if(fl[ry][rx])continue;
+        let adj=false,nb=0;for(const[dx,dy]of[[0,1],[0,-1],[1,0],[-1,0]]){const ax=rx+dx,ay=ry+dy;if(ax>=0&&ax<gW&&ay>=0&&ay<gH&&fl[ay][ax]){adj=true;nb++;}}
+        if(!adj||nb<1+Math.floor(rng()*2))continue;fl[ry][rx]=true;g++;}}
+    let bMnX=gW,bMxX=0,bMnY=gH,bMxY=0;
+    for(let gy=0;gy<gH;gy++)for(let gx=0;gx<gW;gx++)if(fl[gy][gx]){bMnX=Math.min(bMnX,gx);bMxX=Math.max(bMxX,gx);bMnY=Math.min(bMnY,gy);bMxY=Math.max(bMxY,gy);}
+    let pal;if(nId==='start')pal=['#2e7d32','#4caf50','#1b5e20'];
+    else if(nId==='store')pal=['#5d4e37','#8d6e4a','#ffd700'];
+    else{const idx=parseInt(nId.split('_')[1]);pal=levels[idx]&&levels[idx].palette&&levels[idx].palette.length?levels[idx].palette:['#444'];}
+    const tc=[];
+    for(let gy=0;gy<gH;gy++)for(let gx=0;gx<gW;gx++){if(!fl[gy][gx]){tc.push(null);continue;}
+      const col=pHex(pal[Math.floor(rng()*pal.length)]),b=0.7+rng()*0.3;
+      tc.push([Math.round(col[0]*b),Math.round(col[1]*b),Math.round(col[2]*b)]);}
+    nodeBlobs[nId]={fl,bMnX,bMxX,bMnY,bMxY,tc,pal,gW,gH};
+  }
+
+  function drawFrame(time){
+    const dpr=window.devicePixelRatio||1,rect=cvs.getBoundingClientRect();
+    const sw=rect.width,sh=rect.height;
+    cvs.width=sw*dpr;cvs.height=sh*dpr;
+    const ctx=cvs.getContext('2d');ctx.scale(dpr,dpr);
+    const bgCol=pHex(ow.bg_color||'#0a0a0a');
+    const t=time/1000;
+
+    // Background
+    if(bgImg&&bgImg.complete){ctx.drawImage(bgImg,0,0,sw,sh);ctx.fillStyle='rgba(0,0,0,0.3)';ctx.fillRect(0,0,sw,sh);}
+    else if(ow.bg_gradient){
+      const gm=(ow.bg_gradient||'').match(/(\d+)deg,\s*(#[0-9a-fA-F]{3,8}),\s*(#[0-9a-fA-F]{3,8})/);
+      if(gm){const a=parseInt(gm[1])*Math.PI/180,cx=sw/2,cy=sh/2,len=Math.max(sw,sh);
+        const gr=ctx.createLinearGradient(cx-Math.cos(a)*len/2,cy-Math.sin(a)*len/2,cx+Math.cos(a)*len/2,cy+Math.sin(a)*len/2);
+        gr.addColorStop(0,gm[2]);gr.addColorStop(1,gm[3]);ctx.fillStyle=gr;}
+      else ctx.fillStyle=`rgb(${bgCol[0]},${bgCol[1]},${bgCol[2]})`;
+      ctx.fillRect(0,0,sw,sh);
+    }else{ctx.fillStyle=`rgb(${bgCol[0]},${bgCol[1]},${bgCol[2]})`;ctx.fillRect(0,0,sw,sh);}
+
+    // Procedural terrain (if terrain mode)
+    const _pvBgMode = ow._bg_mode || (ow.bg_image ? 'image' : (ow.bg_gradient ? 'gradient' : 'solid'));
+    if (_pvBgMode === 'terrain') {
+      drawTerrainCanvas(ctx, sw, sh, ow, pos, levels, getConnections(c));
+    }
+
+    // Parallax particles
+    const eCols=['#e94560','#ff8a65','#42a5f5','#78909c','#66bb6a'];
+    for(let layer=0;layer<2;layer++){
+      const spd=layer===0?0.25:0.12,sc=layer===0?1:0.6,al=layer===0?0.10:0.05;
+      let sd=(0xBEEF+layer*7919)>>>0;
+      const nx=()=>{sd=(sd*1103515245+12345)>>>0;return((sd>>16)&0x7FFF)/0x7FFF;};
+      for(let i=0;i<25;i++){const bx=nx()*sw,by=nx()*sh,ph=nx()*Math.PI*2,sh2=Math.floor(nx()*5),rot=nx()*Math.PI*2;
+        const px=bx+Math.sin(t*spd+ph)*15,py=(by+t*spd*6*sh/5)%sh,r=4*sc;
+        ctx.globalAlpha=al;ctx.fillStyle=eCols[sh2%5];
+        if(sh2<=1||sh2===4){ctx.beginPath();ctx.arc(px,py,r*(sh2===0?1.5:sh2===4?0.8:1),0,Math.PI*2);ctx.fill();}
+        else if(sh2===2){const a=rot+t*0.3;ctx.beginPath();ctx.moveTo(px+Math.cos(a)*r*1.5,py+Math.sin(a)*r*1.5);ctx.lineTo(px+Math.cos(a+2.3)*r,py+Math.sin(a+2.3)*r);ctx.lineTo(px+Math.cos(a-2.3)*r,py+Math.sin(a-2.3)*r);ctx.fill();}
+        else{ctx.beginPath();ctx.arc(px,py,r*1.2,0,Math.PI*2);ctx.fill();ctx.globalAlpha=al*0.5;ctx.fillStyle=`rgb(${bgCol[0]},${bgCol[1]},${bgCol[2]})`;ctx.beginPath();ctx.arc(px,py,r*0.6,0,Math.PI*2);ctx.fill();}
+      }
+    }
+    ctx.globalAlpha=1.0;
+
+    // Layout — 0..1 maps directly to canvas (no margins, matches game)
+    const mL=0,mR=sw,mT=0,mB=sh;
+    const mW=sw,mH=sh;
+    const tCol=ow.text_color||'#e8e8e8';
+
+    // Node screen pos with bobbing (same coord space for all nodes including title)
+    const nScr=(ni,nId)=>{const p=pos[nId];if(!p)return[sw/2,sh/2];
+      const[nw,nh]=nId==='title'?[ow._title_w||600,ow._title_h||80]:nId==='desc'?[ow._desc_w||800,ow._desc_h||60]:nId==='start'?[200,88]:nId==='store'?[240,88]:[240,100];
+      const nx=(p.x+nw/2)/VB_W, ny=(p.y+nh/2)/VB_H;
+      const ph=ni*1.7;
+      const isText=nId==='title'||nId==='desc';
+      return[mL+nx*mW+(isText?0:Math.sin(t*0.5+ph)*8), mT+ny*mH+(isText?0:Math.cos(t*0.7+ph*1.3)*6)];};
+
+    // Title (separate box — no bobbing)
+    {
+      const tNi=nodeIds.indexOf('title');
+      const[tx,ty]=tNi>=0?nScr(tNi,'title'):[sw/2,40];
+      const fs=ow._title_font_size||36;
+      ctx.font=ow.font?`700 ${fs}px '${ow.font}',system-ui`:`700 ${fs}px system-ui`;
+      ctx.fillStyle=tCol;ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(ow.name||'',tx,ty);
+    }
+    // Description (separate box)
+    {
+      const dNi=nodeIds.indexOf('desc');
+      const[dx,dy]=dNi>=0?nScr(dNi,'desc'):[sw/2,90];
+      const fs=ow._desc_font_size||14;
+      ctx.font=ow.description_font?`400 ${fs}px '${ow.description_font}',system-ui`:`400 ${fs}px system-ui`;
+      const dc=pHex(tCol);ctx.fillStyle=`rgba(${Math.round(dc[0]*0.7)},${Math.round(dc[1]*0.7)},${Math.round(dc[2]*0.7)},1)`;
+      const bw=(ow._desc_w||800)/VB_W*sw;
+      const words=(ow.description||'').split(/\s+/),dLns=[];let dCur='';
+      for(const w of words){const test=dCur?dCur+' '+w:w;if(ctx.measureText(test).width>bw&&dCur){dLns.push(dCur);dCur=w;}else dCur=test;}
+      if(dCur)dLns.push(dCur);
+      const lh=fs*1.3;
+      const totalH=dLns.length*lh;
+      ctx.textAlign='center';ctx.textBaseline='top';
+      for(let i=0;i<dLns.length;i++)ctx.fillText(dLns[i],dx,dy-totalH/2+i*lh);
+    }
+
+    // Connection trails
+    const cTile=5;
+    for(const[fId,tId]of conns){
+      const fNi=nodeIds.indexOf(fId),tNi=nodeIds.indexOf(tId);if(fNi<0||tNi<0)continue;
+      const[ax,ay]=nScr(fNi,fId),[bx,by]=nScr(tNi,tId);
+      const dx=bx-ax,dy=by-ay,dist=Math.sqrt(dx*dx+dy*dy);
+      const steps=Math.ceil(dist/(cTile*2));if(steps===0)continue;
+      const pA=nodeBlobs[fId]?nodeBlobs[fId].pal:['#555'],pB=nodeBlobs[tId]?nodeBlobs[tId].pal:['#555'];
+      let sd=((fNi*7919+tNi*104729)*2654435761)>>>0;
+      const cN=()=>{sd=(sd*1103515245+12345)>>>0;return((sd>>16)&0x7FFF)/0x7FFF;};
+      for(let s=0;s<steps;s++){const st=s/steps,px=ax+dx*st,py=ay+dy*st;
+        const ca=pHex(pA[Math.floor(cN()*pA.length)]),cb=pHex(pB[Math.floor(cN()*pB.length)]);
+        const dm=0.6;ctx.fillStyle=`rgb(${Math.round((ca[0]*(1-st)+cb[0]*st)*dm)},${Math.round((ca[1]*(1-st)+cb[1]*st)*dm)},${Math.round((ca[2]*(1-st)+cb[2]*st)*dm)})`;
+        ctx.fillRect(px-cTile/2,py-cTile/2,cTile,cTile);}
+    }
+
+    // Node tile blobs
+    const tPx=15;
+    for(let ni=0;ni<nodeIds.length;ni++){
+      const nId=nodeIds[ni],bl=nodeBlobs[nId];if(!bl||!pos[nId])continue;
+      const[nx,ny]=nScr(ni,nId);
+      const sW=(bl.bMxX-bl.bMnX+1)*tPx,sH=(bl.bMxY-bl.bMnY+1)*tPx;
+      const ox=nx-sW/2-bl.bMnX*tPx,oy=ny-sH/2-bl.bMnY*tPx;
+      for(let gy=0;gy<bl.gH;gy++)for(let gx=0;gx<bl.gW;gx++){
+        const col=bl.tc[gy*bl.gW+gx];if(!col)continue;
+        ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
+        ctx.fillRect(ox+gx*tPx,oy+gy*tPx,tPx,tPx);}
+
+      // Outlines
+      const drawOL=(color)=>{ctx.strokeStyle=color;ctx.lineWidth=2;
+        for(let gy=0;gy<bl.gH;gy++)for(let gx=0;gx<bl.gW;gx++){if(!bl.fl[gy][gx])continue;
+          const tx=ox+gx*tPx,ty=oy+gy*tPx;
+          if(gx===0||!bl.fl[gy][gx-1]){ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(tx,ty+tPx);ctx.stroke();}
+          if(gx===bl.gW-1||!bl.fl[gy][gx+1]){ctx.beginPath();ctx.moveTo(tx+tPx,ty);ctx.lineTo(tx+tPx,ty+tPx);ctx.stroke();}
+          if(gy===0||!bl.fl[gy-1][gx]){ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(tx+tPx,ty);ctx.stroke();}
+          if(gy===bl.gH-1||!bl.fl[gy+1][gx]){ctx.beginPath();ctx.moveTo(tx,ty+tPx);ctx.lineTo(tx+tPx,ty+tPx);ctx.stroke();}
+        }};
+      if(nId==='start')drawOL('#44ff44');
+      else if(nId==='store')drawOL('#ffd700');
+      else if(parseInt(nId.split('_')[1])===bossIdx)drawOL('#e94560');
+
+      // Labels
+      if(nId!=='start'){
+        const lbl=nId==='store'?'STORE':(levels[parseInt(nId.split('_')[1])]||{}).name||'';
+        if(lbl){ctx.font=ow.label_font?`400 14px '${ow.label_font}',system-ui`:'400 14px system-ui';
+          ctx.fillStyle=tCol;ctx.textAlign='center';ctx.textBaseline='top';
+          ctx.fillText(lbl,nx,oy+(bl.bMxY+1)*tPx+4);}
+      }
+    }
+
+    // Current node indicator (start)
+    const[stX,stY]=nScr(0,'start');
+    ctx.beginPath();ctx.arc(stX,stY,tPx*1.2,0,Math.PI*2);
+    ctx.fillStyle='rgba(68,255,68,0.6)';ctx.fill();
+
+    previewAnimFrame=requestAnimationFrame(drawFrame);
+  }
+  previewAnimFrame=requestAnimationFrame(drawFrame);
 }
 
 function updateOWFont(key, val) {
@@ -942,15 +2197,31 @@ function deleteLevel(idx) {
 function renderDAGToolbar() {
   return `
     <button onclick="autoLayout()">Auto Layout</button>
-    <span style="font-size:11px;color:#666;margin-left:8px;">Drag handle → node to connect &bull; Drag handle → empty to create level &bull; Click line to delete</span>`;
+    <button onclick="previewOverworld()" style="margin-left:8px;">Preview</button>
+    <button onclick="owZoom1to1()" style="margin-left:8px;">1:1</button>
+    <button onclick="owZoomFit()">Fit</button>
+    <span style="font-size:11px;color:#666;margin-left:8px;">Double-click level to edit &bull; Scroll to zoom &bull; Drag levels to reposition</span>`;
 }
+
+// Fixed viewBox — all positions stored in this coordinate space
+const VB_W = 1600, VB_H = 900;
 
 function initDagPositions(c) {
   const levels = c.overworld.levels || [];
   const key = c.id;
-  // Load from saved data if we don't have positions in memory
   if (!dagPositions[key] && c.overworld.node_positions) {
-    dagPositions[key] = JSON.parse(JSON.stringify(c.overworld.node_positions));
+    // Load saved 0..1 positions, scale to viewBox coords
+    const saved = c.overworld.node_positions;
+    dagPositions[key] = {};
+    for (const k in saved) {
+      const p = saved[k];
+      // Detect old pixel-coord format (values > 2 are clearly not 0..1)
+      const isNormalized = p.x <= 2 && p.y <= 2;
+      dagPositions[key][k] = {
+        x: isNormalized ? p.x * VB_W : p.x,
+        y: isNormalized ? p.y * VB_H : p.y,
+      };
+    }
   }
   if (!dagPositions[key]) dagPositions[key] = {};
   const pos = dagPositions[key];
@@ -961,13 +2232,44 @@ function initDagPositions(c) {
   if (!pos['start']) needsLayout = true;
   if (!pos['store']) needsLayout = true;
   if (needsLayout) autoLayoutPositions(c, 'horizontal');
+  if (!pos['title']) pos['title'] = { x: VB_W / 2 - 300, y: 20 };
+  if (!pos['desc']) pos['desc'] = { x: VB_W / 2 - 400, y: 110 };
+  // Restore text box sizes/font sizes from saved data (only on first load)
+  if (!c.overworld._title_initialized) {
+    const np = c.overworld.node_positions || {};
+    for (const id of ['title', 'desc']) {
+      const s = np[id];
+      if (!s) continue;
+      if (s.font_size) c.overworld['_'+id+'_font_size'] = s.font_size;
+      if (s.w) c.overworld['_'+id+'_w'] = s.w * VB_W;
+      if (s.h) c.overworld['_'+id+'_h'] = s.h * VB_H;
+    }
+    c.overworld._title_initialized = true;
+  }
 }
 
 function saveDagPositions(c) {
   const key = c.id;
-  if (dagPositions[key]) {
-    c.overworld.node_positions = JSON.parse(JSON.stringify(dagPositions[key]));
+  if (!dagPositions[key]) return;
+  // Save as 0..1 normalized coordinates
+  const out = {};
+  for (const k in dagPositions[key]) {
+    const p = dagPositions[key][k];
+    out[k] = { x: p.x / VB_W, y: p.y / VB_H };
   }
+  // Include text box font sizes and dimensions
+  const ow = c.overworld;
+  for (const id of ['title', 'desc']) {
+    if (out[id]) {
+      const defW = id === 'title' ? 600 : 800;
+      const defH = id === 'title' ? 80 : 60;
+      const defFs = id === 'title' ? 36 : 14;
+      out[id].font_size = ow['_'+id+'_font_size'] || defFs;
+      out[id].w = (ow['_'+id+'_w'] || defW) / VB_W;
+      out[id].h = (ow['_'+id+'_h'] || defH) / VB_H;
+    }
+  }
+  c.overworld.node_positions = out;
 }
 
 let layoutMode = 0;
@@ -979,67 +2281,69 @@ function autoLayoutPositions(c, mode) {
   dagPositions[key] = {};
   const pos = dagPositions[key];
   const bossLvl = c.overworld.boss_level != null ? c.overworld.boss_level : Math.min(levels.length - 1, 4);
-  const gapX = 150, gapY = 90;
-  const mainLevels = []; // indices on main path
+  const pad = 80;
+  const usableW = VB_W - pad * 2;
+  const usableH = VB_H - pad * 2;
+  const mainLevels = [];
   const branchLevels = [];
   for (let i = 0; i < levels.length; i++) {
     if (i <= bossLvl) mainLevels.push(i); else branchLevels.push(i);
   }
-  // All nodes in order: start, main levels, end, branch levels, store
   const allIds = ['start', ...mainLevels.map(i => 'level_'+i)];
   const sideIds = [...branchLevels.map(i => 'level_'+i), 'store'];
+  const gapX = allIds.length > 1 ? usableW / (allIds.length - 1 + (sideIds.length > 0 ? 1 : 0)) : usableW;
+  const gapY = usableH * 0.2;
 
   if (mode === 'horizontal') {
-    const y = 180;
-    allIds.forEach((id, i) => { pos[id] = { x: 60 + i * gapX, y }; });
-    const bx = 60 + (Math.min(2, bossLvl) + 1) * gapX;
+    const y = VB_H * 0.38;
+    allIds.forEach((id, i) => { pos[id] = { x: pad + i * gapX, y }; });
+    const bx = pad + (Math.min(2, bossLvl) + 1) * gapX;
     sideIds.forEach((id, i) => { pos[id] = { x: bx + i * gapX, y: y + gapY }; });
   }
   else if (mode === 'arc') {
-    const cx = 60 + allIds.length * gapX / 2, cy = 280;
+    const cx = VB_W / 2, cy = VB_H * 0.55;
+    const rx = usableW * 0.45, ry = usableH * 0.3;
     allIds.forEach((id, i) => {
       const t = i / Math.max(allIds.length - 1, 1);
       const ang = Math.PI + t * Math.PI;
-      const rx = allIds.length * gapX / 2.2, ry = 120;
       pos[id] = { x: cx + Math.cos(ang) * rx - 60, y: cy + Math.sin(ang) * ry - 25 };
     });
-    sideIds.forEach((id, i) => { pos[id] = { x: cx - 60 + i * gapX, y: cy + 80 }; });
+    sideIds.forEach((id, i) => { pos[id] = { x: cx - 60 + i * gapX, y: cy + ry * 0.7 }; });
   }
   else if (mode === 'zigzag') {
-    allIds.forEach((id, i) => {
-      pos[id] = { x: 60 + i * gapX, y: 150 + (i % 2) * 80 };
-    });
-    const bx = 60 + (Math.min(2, bossLvl) + 1) * gapX;
-    sideIds.forEach((id, i) => { pos[id] = { x: bx + i * gapX, y: 150 + 80 + gapY }; });
+    const baseY = VB_H * 0.28;
+    const zigH = usableH * 0.15;
+    allIds.forEach((id, i) => { pos[id] = { x: pad + i * gapX, y: baseY + (i % 2) * zigH }; });
+    const bx = pad + (Math.min(2, bossLvl) + 1) * gapX;
+    sideIds.forEach((id, i) => { pos[id] = { x: bx + i * gapX, y: baseY + zigH + gapY }; });
   }
   else if (mode === 'compact') {
-    // 2-row grid: main path wraps into two rows, side branch hangs below
     const perRow = Math.ceil(allIds.length / 2);
+    const rowGap = usableH * 0.25;
     allIds.forEach((id, i) => {
       const row = Math.floor(i / perRow);
-      const col = row === 0 ? i : (perRow - 1 - (i - perRow)); // reverse on row 2
-      pos[id] = { x: 60 + col * gapX, y: 120 + row * (gapY + 10) };
+      const col = row === 0 ? i : (perRow - 1 - (i - perRow));
+      pos[id] = { x: pad + col * gapX, y: pad + 80 + row * rowGap };
     });
-    sideIds.forEach((id, i) => { pos[id] = { x: 60 + i * gapX, y: 120 + 2 * (gapY + 10) + 20 }; });
+    sideIds.forEach((id, i) => { pos[id] = { x: pad + i * gapX, y: pad + 80 + 2 * rowGap + 20 }; });
   }
   else if (mode === 'staircase') {
-    // Staircase: main path descends in steps, side branch goes right from mid
-    allIds.forEach((id, i) => {
-      pos[id] = { x: 60 + i * 120, y: 80 + i * 35 };
-    });
+    const stepX = usableW / Math.max(allIds.length, 1);
+    const stepY = usableH * 0.1;
+    allIds.forEach((id, i) => { pos[id] = { x: pad + i * stepX, y: pad + 80 + i * stepY }; });
     const mid = Math.min(2, allIds.length - 1);
-    const bx = 60 + mid * 120 + gapX;
-    const by = 80 + mid * 35;
-    sideIds.forEach((id, i) => { pos[id] = { x: bx + i * gapX, y: by }; });
+    sideIds.forEach((id, i) => { pos[id] = { x: pad + mid * stepX + gapX + i * gapX, y: pad + 80 + mid * stepY }; });
   }
   else if (mode === 'diagonal') {
-    allIds.forEach((id, i) => {
-      pos[id] = { x: 60 + i * 130, y: 60 + i * 45 };
-    });
-    const bx = 60 + (Math.min(2, bossLvl) + 1) * 130;
-    const by = 60 + (Math.min(2, bossLvl) + 1) * 45;
-    sideIds.forEach((id, i) => { pos[id] = { x: bx + 80 + i * 130, y: by + 80 + i * 45 }; });
+    const stepX = usableW / Math.max(allIds.length, 1);
+    const stepY = usableH * 0.12;
+    allIds.forEach((id, i) => { pos[id] = { x: pad + i * stepX, y: pad + 80 + i * stepY }; });
+    const bx = pad + (Math.min(2, bossLvl) + 1) * stepX;
+    const by = pad + 80 + (Math.min(2, bossLvl) + 1) * stepY;
+    sideIds.forEach((id, i) => { pos[id] = { x: bx + 80 + i * stepX, y: by + 80 + i * stepY }; });
   }
+  pos['title'] = { x: VB_W / 2 - 300, y: 20 };
+  pos['desc'] = { x: VB_W / 2 - 400, y: 110 };
 }
 
 function autoLayout() {
@@ -1051,38 +2355,208 @@ function autoLayout() {
   showToast(`Layout: ${LAYOUT_MODES[layoutMode]}`, 'info');
 }
 
+// ── Procedural terrain background (SVG) ──
+function renderTerrainSVG(c, pos, levels) {
+  const conns = getConnections(c);
+  const seed = c.overworld._terrain_seed || 42;
+  const T = 14;
+  const cols = Math.ceil(VB_W/T), rows = Math.ceil(VB_H/T);
+  const mkRng = (s) => { let v=s>>>0; return ()=>{v=(v*1103515245+12345)>>>0;return((v>>16)&0x7FFF)/0x7FFF;}; };
+  const pHex = (hex) => { hex=(hex||'#222').replace('#',''); if(hex.length===3)hex=hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2]; return[parseInt(hex.slice(0,2),16),parseInt(hex.slice(2,4),16),parseInt(hex.slice(4,6),16)]; };
+  const bgCol = pHex(c.overworld.bg_color || '#0a0a0a');
+
+  // Grid: 0=wall, 1=corridor, 2=room
+  const grid = Array.from({length:rows},()=>Array(cols).fill(0));
+  const nodeIds=['start',...levels.map((_,i)=>'level_'+i),'store'];
+  const nodeCenters={};
+
+  const nodeCenter = (id) => {
+    const p=pos[id]; if(!p) return null;
+    if(id==='title'||id==='desc') return null;
+    const[nw,nh]=id==='start'?[200,88]:id==='store'?[240,88]:[240,100];
+    return {gx:Math.floor((p.x+nw/2)/T), gy:Math.floor((p.y+nh/2)/T)};
+  };
+
+  // Palette: room floors are half-brightness of level palette
+  const nodePal = (id) => {
+    if(id==='start') return [[35,80,35],[45,100,45]];
+    if(id==='store') return [[80,65,35],[100,85,50]];
+    const idx=id.startsWith('level_')?parseInt(id.split('_')[1]):-1;
+    if(idx>=0&&levels[idx]&&levels[idx].palette&&levels[idx].palette.length)
+      return levels[idx].palette.map(c=>{const[r,g,b]=pHex(c);return[Math.floor(r*.45),Math.floor(g*.45),Math.floor(b*.45)];});
+    return [[35,35,60],[50,50,80]];
+  };
+
+  // 1. Rooms — organic blobs around nodes
+  for (const id of nodeIds) {
+    const nc=nodeCenter(id); if(!nc) continue;
+    nodeCenters[id]=nc;
+    const radius=id==='start'||id==='store'?7:9;
+    const lr=mkRng(seed+nc.gx*7919+nc.gy*104729);
+    for(let dy=-radius;dy<=radius;dy++) for(let dx=-radius;dx<=radius;dx++){
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist>radius) continue;
+      const prob=1.0-Math.pow(dist/radius,1.5)*0.8;
+      if(lr()>prob) continue;
+      const gx=nc.gx+dx,gy=nc.gy+dy;
+      if(gx>=0&&gx<cols&&gy>=0&&gy<rows) grid[gy][gx]=2;
+    }
+  }
+
+  // 2. Corridors — narrow (3 tiles wide), L-shaped
+  for (const [fId,tId] of conns) {
+    const fc=nodeCenters[fId],tc=nodeCenters[tId];
+    if(!fc||!tc) continue;
+    // Horizontal then vertical
+    const x0=Math.min(fc.gx,tc.gx),x1=Math.max(fc.gx,tc.gx);
+    for(let x=x0;x<=x1;x++) for(let w=-1;w<=1;w++){
+      const gy=fc.gy+w; if(gy>=0&&gy<rows&&x>=0&&x<cols&&grid[gy][x]===0) grid[gy][x]=1;
+    }
+    const y0=Math.min(fc.gy,tc.gy),y1=Math.max(fc.gy,tc.gy);
+    for(let y=y0;y<=y1;y++) for(let w=-1;w<=1;w++){
+      const gx=tc.gx+w; if(y>=0&&y<rows&&gx>=0&&gx<cols&&grid[y][gx]===0) grid[y][gx]=1;
+    }
+  }
+
+  // 3. Nearest-node for palette blending
+  const nearest=Array.from({length:rows},()=>Array(cols).fill(-1));
+  const nearDist=Array.from({length:rows},()=>Array(cols).fill(Infinity));
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    for(let ni=0;ni<nodeIds.length;ni++){
+      const nc=nodeCenters[nodeIds[ni]]; if(!nc) continue;
+      const d=Math.sqrt((x-nc.gx)**2+(y-nc.gy)**2);
+      if(d<nearDist[y][x]){nearDist[y][x]=d;nearest[y][x]=ni;}
+    }
+  }
+
+  // 4. Second-nearest for blending
+  const nearest2=Array.from({length:rows},()=>Array(cols).fill(-1));
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    for(let ni=0;ni<nodeIds.length;ni++){
+      if(ni===nearest[y][x]) continue;
+      const nc=nodeCenters[nodeIds[ni]]; if(!nc) continue;
+      const d=Math.sqrt((x-nc.gx)**2+(y-nc.gy)**2);
+      if(nearest2[y][x]===-1||d<Math.sqrt((x-(nodeCenters[nodeIds[nearest2[y][x]]]||{gx:9999,gy:9999}).gx)**2+(y-(nodeCenters[nodeIds[nearest2[y][x]]]||{gx:9999,gy:9999}).gy)**2))
+        nearest2[y][x]=ni;
+    }
+  }
+
+  // 5. Render
+  let s='';
+  const palCache={}; for(const id of nodeIds) palCache[id]=nodePal(id);
+
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    const ni=nearest[y][x];
+    const ni2=nearest2[y][x];
+    const id=(ni>=0&&nodeIds[ni])?nodeIds[ni]:'start';
+    const id2=(ni2>=0&&nodeIds[ni2])?nodeIds[ni2]:id;
+    const pal1=palCache[id]||[[30,30,50]];
+    const pal2=palCache[id2]||pal1;
+    const tr=mkRng(seed*31+y*cols+x);
+    const px=x*T,py=y*T;
+    const cellType=grid[y][x];
+
+    // Blend factor between nearest palettes
+    const d1=nearDist[y][x];
+    const nc2=(ni2>=0&&nodeIds[ni2])?nodeCenters[nodeIds[ni2]]:null;
+    const d2=nc2?Math.sqrt((x-nc2.gx)**2+(y-nc2.gy)**2):Infinity;
+    const blend=d1+d2>0?d1/(d1+d2):0; // 0=nearest, 1=second nearest
+    const raw1=pal1[Math.floor(tr()*pal1.length)]||[30,30,50];
+    const raw2=(pal2[Math.floor(tr()*pal2.length)])||raw1;
+    const raw=[
+      Math.floor(raw1[0]*(1-blend)+(raw2[0]||0)*blend),
+      Math.floor(raw1[1]*(1-blend)+(raw2[1]||0)*blend),
+      Math.floor(raw1[2]*(1-blend)+(raw2[2]||0)*blend)
+    ];
+
+    if(cellType===0){
+      // Wall — dark, uniform, subtle variation only
+      const wb=0.12+tr()*0.08;
+      const r=Math.floor(raw[0]*wb+bgCol[0]*(1-wb));
+      const g=Math.floor(raw[1]*wb+bgCol[1]*(1-wb));
+      const b=Math.floor(raw[2]*wb+bgCol[2]*(1-wb));
+      s+='<rect x="'+px+'" y="'+py+'" width="'+T+'" height="'+T+'" fill="rgb('+r+','+g+','+b+')"/>';
+    } else {
+      // Floor — brighter with patterns
+      const bright=cellType===2?0.7+tr()*0.3:0.5+tr()*0.3;
+      const r=Math.floor(raw[0]*bright),g=Math.floor(raw[1]*bright),b=Math.floor(raw[2]*bright);
+      const pattern=Math.floor(tr()*5);
+
+      if(pattern<=1){
+        // Stone slab
+        s+='<rect x="'+px+'" y="'+py+'" width="'+T+'" height="'+T+'" fill="rgb('+r+','+g+','+b+')"/>';
+      } else if(pattern===2){
+        // Brick — horizontal mortar line
+        const h1=Math.floor(T*0.45);
+        s+='<rect x="'+px+'" y="'+py+'" width="'+T+'" height="'+h1+'" fill="rgb('+r+','+g+','+b+')"/>';
+        s+='<rect x="'+px+'" y="'+(py+h1+1)+'" width="'+T+'" height="'+(T-h1-1)+'" fill="rgb('+Math.floor(r*.85)+','+Math.floor(g*.85)+','+Math.floor(b*.85)+')"/>';
+      } else if(pattern===3){
+        // Cobble — rounded inset
+        s+='<rect x="'+(px+1)+'" y="'+(py+1)+'" width="'+(T-2)+'" height="'+(T-2)+'" rx="3" fill="rgb('+r+','+g+','+b+')"/>';
+      } else {
+        // Cracked — base + dark crack line
+        s+='<rect x="'+px+'" y="'+py+'" width="'+T+'" height="'+T+'" fill="rgb('+r+','+g+','+b+')"/>';
+        const cx=px+Math.floor(tr()*T*0.6)+1,cy=py+Math.floor(tr()*T*0.6)+1;
+        s+='<line x1="'+cx+'" y1="'+cy+'" x2="'+(cx+Math.floor(tr()*6)+2)+'" y2="'+(cy+Math.floor(tr()*6)+2)+'" stroke="rgba(0,0,0,0.4)" stroke-width="1"/>';
+      }
+
+      // Wall shadow — south and east edges adjacent to wall get a shadow
+      const wallS=(y+1>=rows||grid[y+1][x]===0);
+      const wallE=(x+1>=cols||grid[y][x+1]===0);
+      const wallN=(y-1<0||grid[y-1][x]===0);
+      const wallW=(x-1<0||grid[y][x-1]===0);
+      if(wallN) s+='<rect x="'+px+'" y="'+py+'" width="'+T+'" height="3" fill="rgba(0,0,0,0.4)"/>';
+      if(wallW) s+='<rect x="'+px+'" y="'+py+'" width="3" height="'+T+'" fill="rgba(0,0,0,0.35)"/>';
+      if(wallS) s+='<rect x="'+px+'" y="'+(py+T-2)+'" width="'+T+'" height="2" fill="rgba(255,255,255,0.06)"/>';
+      if(wallE) s+='<rect x="'+(px+T-2)+'" y="'+py+'" width="2" height="'+T+'" fill="rgba(255,255,255,0.05)"/>';
+    }
+  }
+  return s;
+}
 function renderDAG(c) {
+  // Delegate to new overworld canvas renderer
+  if (document.getElementById('ow-canvas')) {
+    renderOverworldCanvas(c);
+    return;
+  }
   const container = document.getElementById('dag-container');
   if (!container) return;
   initDagPositions(c);
   const levels = c.overworld.levels || [];
   const pos = dagPositions[c.id] || {};
-  // Compute bounding box for SVG size
-  let maxX = 0, maxY = 0;
-  for (const k in pos) {
-    if (pos[k].x + 120 > maxX) maxX = pos[k].x + 120;
-    if (pos[k].y + 50 > maxY) maxY = pos[k].y + 50;
-  }
-  const W = maxX + 40;
-  const H = Math.max(300, maxY + 80);
-
-  let svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" id="dag-svg">`;
+  // Fixed viewBox — positions are in VB_W x VB_H space, SVG scales to container
+  let svg = `<svg width="100%" height="100%" viewBox="0 0 ${VB_W} ${VB_H}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" id="dag-svg">`;
   svg += `<defs>
-    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-      <polygon points="0 0, 8 3, 0 6" fill="rgba(255,255,255,.7)"/></marker>
+    <marker id="arrowhead" markerWidth="16" markerHeight="12" refX="14" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+      <polygon points="0 0, 16 6, 0 12" fill="rgba(255,255,255,.7)"/></marker>
     <filter id="shadow" x="-10%" y="-10%" width="130%" height="140%">
-      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.4"/></filter>
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/></filter>
     <filter id="glow-red" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#e94560" flood-opacity="0.5"/></filter>
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#e94560" flood-opacity="0.5"/></filter>
     <filter id="glow-accent" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#e94560" flood-opacity="0.6"/></filter>
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#e94560" flood-opacity="0.6"/></filter>
   </defs>`;
 
-  // Node sizes vary: start/end = 100x44, store = 120x44, levels = 120x50
+  // Background inside SVG so it scales with viewBox
+  const _ow = c.overworld;
+  const _bg = _ow.bg_color || '#0d0d1e';
+  const _bgMode = _ow._bg_mode || (_ow.bg_image ? 'image' : (_ow.bg_gradient ? 'gradient' : 'solid'));
+  if (_bgMode === 'image' && _ow.bg_image) {
+    svg += `<image href="data:image/png;base64,${_ow.bg_image}" x="0" y="0" width="${VB_W}" height="${VB_H}" preserveAspectRatio="xMidYMid slice"/>`;
+  } else if (_bgMode === 'terrain') {
+    svg += `<rect x="0" y="0" width="${VB_W}" height="${VB_H}" fill="${_bg}"/>`;
+    svg += renderTerrainSVG(c, pos, levels);
+  } else if (_ow.bg_gradient) {
+    svg += `<rect x="0" y="0" width="${VB_W}" height="${VB_H}" fill="${_bg}"/>`;
+  } else {
+    svg += `<rect x="0" y="0" width="${VB_W}" height="${VB_H}" fill="${_bg}"/>`;
+  }
+
+  // Node sizes (scaled for 1600x900 viewBox)
   const nodeSize = (id) => {
-    if (id === 'start') return [100, 44];
-    if (id === 'store') return [120, 44];
-    return [120, 50];
+    if (id === 'start') return [200, 88];
+    if (id === 'store') return [240, 88];
+    return [240, 100];
   };
   const nodeHandlesFor = (id, n) => {
     const [nw, nh] = nodeSize(id);
@@ -1137,7 +2611,7 @@ function renderDAG(c) {
     const h = closestHandles(fromId, toId, from, to);
     if (!h) return '';
     const cp = bezierCP(h);
-    return `<path class="conn-visible" d="M${h.fx},${h.fy} C${cp.cx1},${cp.cy1} ${cp.cx2},${cp.cy2} ${h.tx},${h.ty}" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>`;
+    return `<path class="conn-visible" d="M${h.fx},${h.fy} C${cp.cx1},${cp.cy1} ${cp.cx2},${cp.cy2} ${h.tx},${h.ty}" fill="none" stroke="#555" stroke-width="3" marker-end="url(#arrowhead)"/>`;
   };
   const drawConnection = (fromId, toId) => {
     const from = pos[fromId], to = pos[toId];
@@ -1147,9 +2621,9 @@ function renderDAG(c) {
     const cp = bezierCP(h);
     const d = `M${h.fx},${h.fy} C${cp.cx1},${cp.cy1} ${cp.cx2},${cp.cy2} ${h.tx},${h.ty}`;
     return `<g class="conn-group" style="cursor:pointer" onclick="deleteConnection('${fromId}','${toId}')">
-      <path d="${d}" fill="none" stroke="rgba(0,0,0,.5)" stroke-width="4" stroke-linecap="round"/>
-      <path class="conn-visible" d="${d}" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-      <path d="${d}" fill="none" stroke="transparent" stroke-width="14"/>
+      <path d="${d}" fill="none" stroke="rgba(0,0,0,.5)" stroke-width="8" stroke-linecap="round"/>
+      <path class="conn-visible" d="${d}" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="3" marker-end="url(#arrowhead)"/>
+      <path d="${d}" fill="none" stroke="transparent" stroke-width="28"/>
     </g>`;
   };
 
@@ -1161,7 +2635,7 @@ function renderDAG(c) {
 
   // Connection handles: 4 per node (top, right, bottom, left)
   const handles = (nodeId, px, py, nw, nh) => {
-    nw = nw || 120; nh = nh || 50;
+    nw = nw || 240; nh = nh || 100;
     const pts = [
       [px + nw/2, py, nodeId],       // top center
       [px + nw, py + nh/2, nodeId],  // right center
@@ -1169,108 +2643,166 @@ function renderDAG(c) {
       [px, py + nh/2, nodeId],       // left center
     ];
     return pts.map(([cx, cy, id]) =>
-      `<circle cx="${cx}" cy="${cy}" r="4" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.4)" stroke-width="1" class="conn-handle" style="cursor:crosshair" onmousedown="event.stopPropagation();startConnDrag(event,'${id}')"/>`
+      `<circle cx="${cx}" cy="${cy}" r="8" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.4)" stroke-width="2" class="conn-handle" style="cursor:crosshair" onmousedown="event.stopPropagation();startConnDrag(event,'${id}')"/>`
     ).join('');
   };
 
-  // Start node
-  const sp = pos['start'] || { x: 60, y: 180 };
+  // Start node (200x88)
+  const sp = pos['start'] || { x: 80, y: 360 };
   svg += `<g class="dag-node" data-id="start" onmousedown="dagMouseDown(event,'start')" filter="url(#shadow)">
-    <rect x="${sp.x}" y="${sp.y}" width="100" height="44" rx="22" fill="#2e7d32" stroke="rgba(76,175,80,.4)" stroke-width="1.5"/>
-    <text x="${sp.x+50}" y="${sp.y+27}" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" letter-spacing="1">START</text>
-    ${handles('start', sp.x, sp.y, 100, 44)}</g>`;
+    <rect x="${sp.x}" y="${sp.y}" width="200" height="88" rx="44" fill="#2e7d32" stroke="rgba(76,175,80,.4)" stroke-width="3"/>
+    <text x="${sp.x+100}" y="${sp.y+52}" text-anchor="middle" fill="#fff" font-size="24" font-weight="700" letter-spacing="2">START</text>
+    ${handles('start', sp.x, sp.y, 200, 88)}</g>`;
 
-  // Level nodes
+  // Level nodes (240x100)
   for (let i = 0; i < levels.length; i++) {
     const lv = levels[i];
-    const p = pos['level_' + i] || { x: 200 + i * 140, y: 180 };
+    const p = pos['level_' + i] || { x: 350 + i * 280, y: 360 };
     const fill = lv.palette && lv.palette[0] ? lv.palette[0] : (lv.color || '#0f3460');
     const bossIdx = c.overworld.boss_level != null ? c.overworld.boss_level : Math.min(levels.length - 1, 4);
     const isFinalBoss = i === bossIdx;
     const isSelected = dagSelectedNode === i;
     const strokeCol = isFinalBoss ? '#e94560' : 'rgba(255,255,255,.12)';
-    const strokeW = isFinalBoss ? 2.5 : (isSelected ? 2.5 : 1);
+    const strokeW = isFinalBoss ? 4 : (isSelected ? 4 : 2);
     const selStroke = isSelected ? '#e94560' : strokeCol;
     const nodeFilter = isSelected ? 'filter="url(#glow-accent)"' : (isFinalBoss ? 'filter="url(#glow-red)"' : 'filter="url(#shadow)"');
     svg += `<g class="dag-node ${isSelected ? 'selected' : ''}" data-id="level_${i}"
       onmousedown="dagMouseDown(event,'level_${i}')" ${nodeFilter}>
-      <rect x="${p.x}" y="${p.y}" width="120" height="50" rx="12" fill="${h(fill)}" stroke="${selStroke}" stroke-width="${strokeW}"/>
-      <rect x="${p.x}" y="${p.y}" width="120" height="24" rx="12" fill="rgba(255,255,255,.06)"/>
-      <text x="${p.x+60}" y="${p.y+19}" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" letter-spacing="0.3">${h(lv.name||'Level '+(i+1))}</text>
-      <rect x="${p.x+8}" y="${p.y+28}" width="34" height="16" rx="8" fill="rgba(255,255,255,.1)"/>
-      <text x="${p.x+25}" y="${p.y+39}" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="8" font-weight="600">Lvl ${i+1}</text>
-      <rect x="${p.x+78}" y="${p.y+28}" width="34" height="16" rx="8" fill="rgba(255,255,255,.1)"/>
-      <text x="${p.x+95}" y="${p.y+39}" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="8" font-weight="600">${lv.budget||0}$</text>
-      ${handles('level_'+i, p.x, p.y)}</g>`;
+      <rect x="${p.x}" y="${p.y}" width="240" height="100" rx="20" fill="${h(fill)}" stroke="${selStroke}" stroke-width="${strokeW}"/>
+      <rect x="${p.x}" y="${p.y}" width="240" height="48" rx="20" fill="rgba(255,255,255,.06)"/>
+      <text x="${p.x+120}" y="${p.y+36}" text-anchor="middle" fill="#fff" font-size="22" font-weight="700">${h(lv.name||'Level '+(i+1))}</text>
+      <rect x="${p.x+16}" y="${p.y+56}" width="68" height="32" rx="16" fill="rgba(255,255,255,.1)"/>
+      <text x="${p.x+50}" y="${p.y+78}" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="16" font-weight="600">Lvl ${i+1}</text>
+      <rect x="${p.x+156}" y="${p.y+56}" width="68" height="32" rx="16" fill="rgba(255,255,255,.1)"/>
+      <text x="${p.x+190}" y="${p.y+78}" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="16" font-weight="600">${lv.budget||0}$</text>
+      ${handles('level_'+i, p.x, p.y, 240, 100)}</g>`;
   }
 
-  // Store node
-  const stp = pos['store'] || { x: 800, y: 110 };
+  // Store node (240x88)
+  const stp = pos['store'] || { x: 1200, y: 600 };
   svg += `<g class="dag-node" data-id="store" onmousedown="dagMouseDown(event,'store')" filter="url(#shadow)">
-    <rect x="${stp.x}" y="${stp.y}" width="120" height="44" rx="22" fill="#5d4e37" stroke="rgba(255,215,0,.3)" stroke-width="1.5"/>
-    <text x="${stp.x+60}" y="${stp.y+27}" text-anchor="middle" fill="#ffd700" font-size="12" font-weight="700" letter-spacing="1">STORE</text>
-    ${handles('store', stp.x, stp.y, 120, 44)}</g>`;
+    <rect x="${stp.x}" y="${stp.y}" width="240" height="88" rx="44" fill="#5d4e37" stroke="rgba(255,215,0,.3)" stroke-width="3"/>
+    <text x="${stp.x+120}" y="${stp.y+52}" text-anchor="middle" fill="#ffd700" font-size="24" font-weight="700" letter-spacing="2">STORE</text>
+    ${handles('store', stp.x, stp.y, 240, 88)}</g>`;
 
-  // No END node — boss level is the end
+  // Title + Description as two separate draggable/resizable text boxes
+  const ow = c.overworld;
+  const tc = ow.text_color || '#e8e8e8';
+  const tfs = ow._title_font_size || 36;
+  const dfs = ow._desc_font_size || 14;
+  const tFontCSS = ow.font ? `font-family:'${ow.font}',system-ui;` : '';
+  const dFontCSS = ow.description_font ? `font-family:'${ow.description_font}',system-ui;` : '';
 
-  svg += '</svg>';
+  // Helper: wrap text into lines that fit a given width (approximate using char count)
+  const svgWordWrap = (text, fontSize, maxW) => {
+    const charsPerLine = Math.max(1, Math.floor(maxW / (fontSize * 0.55)));
+    const words = (text || '').split(/\s+/);
+    const lines = []; let cur = '';
+    for (const w of words) {
+      const test = cur ? cur + ' ' + w : w;
+      if (test.length > charsPerLine && cur) { lines.push(cur); cur = w; }
+      else cur = test;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  };
 
-  // Node popup for selected level
+  // Helper to render a text box node using SVG text (no foreignObject)
+  const textBox = (id, text, fontSize, fontFamily, fontWeight, opacity, defaultPos, defaultW, defaultH) => {
+    const p = pos[id] || defaultPos;
+    const bw = ow['_'+id+'_w'] || defaultW;
+    const bh = ow['_'+id+'_h'] || defaultH;
+    const sel = dagSelectedNode === id;
+    const st = sel ? 'rgba(233,69,96,.6)' : 'rgba(255,255,255,.12)';
+    const lines = svgWordWrap(text, fontSize, bw - 16);
+    const lineH = fontSize * 1.25;
+    const totalH = lines.length * lineH;
+    const startY = p.y + (bh - totalH) / 2 + fontSize;
+    let tspans = '';
+    for (let i = 0; i < lines.length; i++) {
+      tspans += `<tspan x="${p.x + bw/2}" dy="${i === 0 ? 0 : lineH}">${h(lines[i])}</tspan>`;
+    }
+    let s = `<g class="dag-node" data-id="${id}" onmousedown="dagMouseDown(event,'${id}')">
+      <rect x="${p.x}" y="${p.y}" width="${bw}" height="${bh}" rx="6" fill="rgba(0,0,0,0.01)" stroke="${st}" stroke-width="2" stroke-dasharray="8,6"/>
+      <text x="${p.x + bw/2}" y="${startY}" text-anchor="middle" fill="${tc}" font-size="${fontSize}" font-weight="${fontWeight}" opacity="${opacity}" style="${fontFamily}">${tspans}</text>
+      <rect x="${p.x+bw-18}" y="${p.y+bh-18}" width="18" height="18" fill="rgba(255,255,255,.08)" stroke="rgba(255,255,255,.25)" stroke-width="1.5" rx="3" style="cursor:nwse-resize" onmousedown="event.stopPropagation();startBoxResize(event,'${id}')"/>
+      <line x1="${p.x+bw-14}" y1="${p.y+bh-7}" x2="${p.x+bw-7}" y2="${p.y+bh-14}" stroke="rgba(255,255,255,.3)" stroke-width="1.5"/>
+    </g>`;
+    return s;
+  };
+
+  svg += textBox('title', ow.name, tfs, tFontCSS, 700, 1, {x:VB_W/2-300, y:20}, 600, 80);
+  svg += textBox('desc', ow.description, dfs, dFontCSS, 400, 0.7, {x:VB_W/2-400, y:110}, 800, 60);
+
+  // Popups for text boxes when selected
   let popup = '';
-  if (dagSelectedNode !== null && dagSelectedNode < levels.length) {
+  const scrubPopup = (id, label, fsKey, fsVal, p, bh) => {
+    return `<foreignObject x="${p.x}" y="${p.y+bh+4}" width="200" height="44">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;gap:6px;align-items:center;background:rgba(20,20,40,.92);border:1px solid rgba(233,69,96,.4);border-radius:8px;padding:5px 10px;">
+        <span style="font-size:13px;color:#888;cursor:ew-resize;user-select:none;" onmousedown="startScrub(event,'${fsKey}',${fsVal})">${label}</span>
+        <input type="number" value="${fsVal}" min="6" max="200" style="width:50px;font-size:13px;padding:2px 4px;background:#1a1a2e;color:#eee;border:1px solid #444;border-radius:4px;"
+          onchange="getCampaign(selectedCampaignId).overworld.${fsKey}=+this.value;saveDagPositions(getCampaign(selectedCampaignId));renderDAG(getCampaign(selectedCampaignId))">
+        <span style="font-size:12px;color:#555;">px</span>
+      </div>
+    </foreignObject>`;
+  };
+  if (dagSelectedNode === 'title') {
+    const p = pos['title'] || {x:VB_W/2-300,y:20};
+    popup = scrubPopup('title', 'Size', '_title_font_size', tfs, p, ow._title_h||80);
+  } else if (dagSelectedNode === 'desc') {
+    const p = pos['desc'] || {x:VB_W/2-400,y:110};
+    popup = scrubPopup('desc', 'Size', '_desc_font_size', dfs, p, ow._desc_h||60);
+  } else if (dagSelectedNode !== null && typeof dagSelectedNode === 'number' && dagSelectedNode < levels.length) {
     const lv = levels[dagSelectedNode];
     const nodePos = pos['level_' + dagSelectedNode];
     if (nodePos) {
-      const px = nodePos.x + 60; // center-aligned with node
-      const py = nodePos.y + 50; // flush with node bottom
       const isBoss = (c.overworld.boss_level != null ? c.overworld.boss_level : Math.min(levels.length-1, 4)) === dagSelectedNode;
-      popup = `<div class="dag-popup" style="left:${px}px;top:${py}px;">
-        <div style="display:flex;gap:3px;align-items:center;">
-          <span style="font-size:11px;color:#888;">$</span>
-          <input type="number" value="${lv.budget||0}" min="0" max="999" style="width:44px;font-size:11px;padding:1px 3px;"
+      popup = `<foreignObject x="${nodePos.x}" y="${nodePos.y+104}" width="240" height="44">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;gap:4px;align-items:center;background:rgba(20,20,40,.9);border:1px solid rgba(233,69,96,.4);border-radius:8px;padding:4px 8px;">
+          <span style="font-size:14px;color:#888;">$</span>
+          <input type="number" value="${lv.budget||0}" min="0" max="999" style="width:60px;font-size:14px;padding:2px 4px;background:#1a1a2e;color:#eee;border:1px solid #444;border-radius:4px;"
             onchange="updateLevel(${dagSelectedNode},'budget',+this.value);renderDAG(getCampaign(selectedCampaignId))">
-          <button style="font-size:8px;padding:1px 4px;line-height:1;${isBoss?'background:var(--accent);border-color:var(--accent);':''}" onclick="setBossLevel(${dagSelectedNode})" title="Boss">${isBoss?'&#9733;':'&#9734;'}</button>
-          <button class="danger" style="font-size:8px;padding:1px 4px;line-height:1;" onclick="deleteLevel(${dagSelectedNode})" title="Delete">&#10005;</button>
+          <button style="font-size:12px;padding:2px 6px;background:${isBoss?'var(--accent)':'#333'};color:#fff;border:1px solid ${isBoss?'var(--accent)':'#555'};border-radius:4px;cursor:pointer;" onclick="setBossLevel(${dagSelectedNode})">${isBoss?'&#9733;':'&#9734;'}</button>
+          <button style="font-size:12px;padding:2px 6px;background:#8b0000;color:#fff;border:1px solid #a00;border-radius:4px;cursor:pointer;" onclick="deleteLevel(${dagSelectedNode})">&#10005;</button>
         </div>
-      </div>`;
+      </foreignObject>`;
     }
   }
 
-  // Title header + live bg/text color
-  const ow = c.overworld;
-  const bg = ow.bg_color || '#0d0d1e';
-  const tc = ow.text_color || '#e8e8e8';
-  const titleFont = ow.font ? `font-family:'${ow.font}',system-ui` : '';
-  const descFont = ow.description_font ? `font-family:'${ow.description_font}',system-ui` : '';
+  svg += popup;
+  svg += '</svg>';
+
   if (ow.font) loadGoogleFont(ow.font);
   if (ow.description_font) loadGoogleFont(ow.description_font);
-  if (ow.bg_image) {
-    container.style.background = `url('data:image/png;base64,${ow.bg_image}') center/cover no-repeat`;
-  } else if (ow.bg_gradient) {
-    container.style.background = ow.bg_gradient;
-  } else {
-    container.style.background = bg;
-  }
 
-  const header = `<div class="dag-header">
-    <h2 style="${titleFont};color:${tc};font-size:24px;">${h(ow.name)}</h2>
-    <p style="${descFont};color:${tc}">${h(ow.description)}</p>
-  </div>`;
-
-  container.innerHTML = header + `<div style="position:relative;display:flex;justify-content:center;"><div style="position:relative;">` + svg + popup + `</div></div>`;
+  container.innerHTML = svg;
 
   // Attach drag handlers
   const svgEl = document.getElementById('dag-svg');
   svgEl.addEventListener('mousemove', dagMouseMove);
   svgEl.addEventListener('mouseup', dagMouseUp);
   svgEl.addEventListener('mouseleave', dagMouseUp);
-  // Click blank canvas to deselect
+  // Click blank canvas or background to deselect
   svgEl.addEventListener('click', (e) => {
-    if (e.target === svgEl || e.target.tagName === 'svg') {
+    const tag = e.target.tagName.toLowerCase();
+    const isBackground = tag === 'svg' || (tag === 'rect' && !e.target.closest('.dag-node')) || (tag === 'image' && !e.target.closest('.dag-node'));
+    if (e.target === svgEl || isBackground) {
       dagSelectedNode = null;
       renderDAG(c);
     }
   });
+}
+
+// Convert mouse event to SVG viewBox coordinates (accounts for preserveAspectRatio)
+function svgCoords(e) {
+  const svg = document.getElementById('dag-svg');
+  if (!svg) return { x: e.clientX, y: e.clientY };
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return { x: e.clientX, y: e.clientY };
+  const svgPt = pt.matrixTransform(ctm.inverse());
+  return { x: svgPt.x, y: svgPt.y };
 }
 
 function dagMouseDown(e, nodeId) {
@@ -1313,16 +2845,17 @@ function dagMouseDown(e, nodeId) {
     }, 400);
     const idx = parseInt(nodeId.split('_')[1]);
     dagSelectedNode = idx;
+  } else if (nodeId === 'title' || nodeId === 'desc') {
+    dagSelectedNode = nodeId;
   }
 
   // Re-render DAG to show popup on selected node
   if (!dagDragMoved) renderDAG(c);
 
   // Start drag tracking (won't actually move unless mouse moves)
-  const svg = document.getElementById('dag-svg');
-  const pt = svg.getBoundingClientRect();
   dagDragging = nodeId;
-  dagDragOffset = { x: e.clientX - pt.left - p.x, y: e.clientY - pt.top - p.y };
+  const mc = svgCoords(e);
+  dagDragOffset = { x: mc.x - p.x, y: mc.y - p.y };
   dagDragMoved = false;
 }
 
@@ -1356,11 +2889,8 @@ function connDragMove(e) {
   const pos = dagPositions[c.id] || {};
   const fromPos = pos[connDragSource];
   if (!fromPos) return;
-  const container = document.getElementById('dag-container');
-  const pt = svg.getBoundingClientRect();
-  const scrollX = container ? container.scrollLeft : 0;
-  const scrollY = container ? container.scrollTop : 0;
-  const mx = e.clientX - pt.left + scrollX, my = e.clientY - pt.top + scrollY;
+  const mc = svgCoords(e);
+  const mx = mc.x, my = mc.y;
   const fx = connDragStart ? connDragStart.x : fromPos.x + 60;
   const fy = connDragStart ? connDragStart.y : fromPos.y + 25;
   const dx = Math.abs(mx - fx), dy = Math.abs(my - fy);
@@ -1387,18 +2917,15 @@ function connDragEnd(e) {
     const c = getCampaign(selectedCampaignId);
     const pos = dagPositions[c.id] || {};
     if (svg) {
-      const container = document.getElementById('dag-container');
-      const pt = svg.getBoundingClientRect();
-      const scrollX = container ? container.scrollLeft : 0;
-      const scrollY = container ? container.scrollTop : 0;
-      const mx = e.clientX - pt.left + scrollX, my = e.clientY - pt.top + scrollY;
+      const mc = svgCoords(e);
+      const mx = mc.x, my = mc.y;
       // Check if dropped on an existing node (with generous 20px padding)
       let hitNode = null;
       let bestDist = Infinity;
       for (const nodeId in pos) {
         if (nodeId === connDragSource) continue;
         const p = pos[nodeId];
-        const cx = p.x + 60, cy = p.y + 25;
+        const cx = p.x + 120, cy = p.y + 50;
         const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
         if (dist < 80 && dist < bestDist) {
           bestDist = dist;
@@ -1426,7 +2953,7 @@ function connDragEnd(e) {
           });
         }
         const newId = 'level_' + newIdx;
-        pos[newId] = { x: mx - 60, y: my - 25 };
+        pos[newId] = { x: mx - 120, y: my - 50 };
         // Connect from source to new node
         if (!c.overworld.connections) getConnections(c);
         c.overworld.connections.push([connDragSource, newId]);
@@ -1444,10 +2971,9 @@ function dagMouseMove(e) {
   if (!dagDragging) return;
   dagDragMoved = true;
   const c = getCampaign(selectedCampaignId);
-  const svg = document.getElementById('dag-svg');
-  const pt = svg.getBoundingClientRect();
-  const x = e.clientX - pt.left - dagDragOffset.x;
-  const y = e.clientY - pt.top - dagDragOffset.y;
+  const mc = svgCoords(e);
+  const x = mc.x - dagDragOffset.x;
+  const y = mc.y - dagDragOffset.y;
   dagPositions[c.id][dagDragging] = { x: Math.max(0, x), y: Math.max(0, y) };
   saveDagPositions(c);
   renderDAG(c);
@@ -1456,6 +2982,60 @@ function dagMouseMove(e) {
 function dagMouseUp(e) {
   dagDragging = null;
   dagDragMoved = false;
+  if (titleResizing) {
+    titleResizing = false;
+    const c = getCampaign(selectedCampaignId);
+    saveDagPositions(c);
+    renderDAG(c);
+  }
+}
+
+// Generic text box resize
+function startBoxResize(e, boxId) {
+  e.stopPropagation();
+  e.preventDefault();
+  const mc = svgCoords(e);
+  const c = getCampaign(selectedCampaignId);
+  const defW = boxId === 'title' ? 600 : 800;
+  const defH = boxId === 'title' ? 80 : 60;
+  const startW = c.overworld['_'+boxId+'_w'] || defW;
+  const startH = c.overworld['_'+boxId+'_h'] || defH;
+  const startMx = mc.x, startMy = mc.y;
+  const move = (ev) => {
+    const m = svgCoords(ev);
+    c.overworld['_'+boxId+'_w'] = Math.max(100, startW + m.x - startMx);
+    c.overworld['_'+boxId+'_h'] = Math.max(30, startH + m.y - startMy);
+    renderDAG(c);
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    saveDagPositions(c);
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+// Scrub label: drag left/right to change a numeric value
+function startScrub(e, key, startVal) {
+  e.preventDefault();
+  const startX = e.clientX;
+  const c = getCampaign(selectedCampaignId);
+  document.body.style.cursor = 'ew-resize';
+  const move = (ev) => {
+    const dx = ev.clientX - startX;
+    const newVal = Math.round(Math.max(6, Math.min(200, startVal + dx * 0.3)));
+    c.overworld[key] = newVal;
+    renderDAG(c);
+  };
+  const up = () => {
+    document.body.style.cursor = '';
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    saveDagPositions(c);
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
 }
 
 function selectLevel(idx) {
@@ -1509,17 +3089,8 @@ function renderLevelScreen(el) {
 
   // ── Left: map area (65%) ──
   html += `<div class="level-map-area">`;
-  // Back button is in the title bar now
-  html += `<div class="level-title" style="${fontStyle}">${h(lv.name || 'Untitled Level')}</div>`;
   const pe = design.placed_entities || { monsters: [], items: [], traps: [] };
   const trayCount = generateTray(c, idx, pe).length;
-  const totalEntities = pe.monsters.length + pe.items.length + pe.traps.length;
-  const statusColor = trayCount === 0 ? '#66bb6a' : '#888';
-  const statusText = trayCount === 0
-    ? (totalEntities > 0 ? '&#10003; Placement complete' : 'Budget: ' + (lv.budget||0))
-    : `${trayCount} to place`;
-  html += `<div class="level-subtitle">Level ${idx+1} of ${c.overworld.levels.length} &mdash;
-    <span style="color:${statusColor};">${statusText}</span></div>`;
   // Scrabble tray: generate unplaced entities from budget
   const tray = generateTray(c, idx, pe);
   if (tray.length > 0) {
@@ -1527,28 +3098,30 @@ function renderLevelScreen(el) {
     for (let ti = 0; ti < tray.length; ti++) {
       const t = tray[ti];
       const sprite = t.image ? `<img src="data:image/png;base64,${t.image}" style="width:28px;height:28px;image-rendering:pixelated;">` : t.icon;
-      html += `<div class="tray-item" draggable="true" data-name="${h(t.name)}" ondragstart="trayDragStart(event,${idx},${ti})" ondblclick="trayAutoPlace(${idx},${ti})">
+      const borderColors = { boss: '#e94560', monster: '#ff69b4', weapon: '#ffa726', armor: '#ffa726', gold: '#ffa726', potion: '#ffa726', key: '#4dd0e1', bomb: '#ffa726', speed_potion: '#ffa726', trap: '#ab47bc', exit_door: '#ffcc00', entry_door: '#44ccff' };
+      const bc = borderColors[t.item_type] || borderColors[t.type] || 'var(--border)';
+      html += `<div class="tray-item" draggable="true" data-name="${h(t.name)}" style="border-color:${bc}" ondragstart="trayDragStart(event,${idx},${ti})" ondblclick="trayAutoPlace(${idx},${ti})">
         <span class="tray-icon">${sprite}</span>
       </div>`;
     }
     html += `</div>`;
-  } else if (pe.monsters.length > 0 || pe.items.length > 0 || pe.traps.length > 0) {
-    html += `<div style="text-align:center;padding:6px;font-size:11px;color:#66bb6a;">&#10003; All entities placed! Right-click map to remove.</div>`;
   }
 
-  html += `<canvas id="map-canvas" class="map-canvas" width="900" height="540" onmousedown="mapEntityDragStart(event,${idx})" oncontextmenu="onMapRightClick(event,${idx})" ondragover="trayDragOver(event)" ondragleave="trayDragLeave()" ondrop="trayDrop(event,${idx})" style="cursor:default"></canvas>`;
+  html += `<canvas id="map-canvas" class="map-canvas" width="900" height="540" onmousedown="mapEntityDragStart(event,${idx})" onmousemove="mapHoverTooltip(event,${idx})" oncontextmenu="onMapRightClick(event,${idx})" ondragover="trayDragOver(event)" ondragleave="trayDragLeave()" ondrop="trayDrop(event,${idx})" style="cursor:default"></canvas>`;
   html += `<div class="map-controls">
     <button class="primary" onclick="regenerateMap(${idx})">Regen Map</button>
     <button onclick="autoplaceAll(${idx})">Autoplace All</button>
     <button onclick="displaceAll(${idx});renderLevelScreen(document.getElementById('screen-container'));showCurrentMap()">Clear All</button>
     <span id="map-status" style="font-size:12px;color:#888;"></span>
+    <span style="flex:1;"></span>
     <span style="font-size:11px;color:#555;">
       <span style="color:#66bb6a">&#9632;</span> Player
       <span style="color:#e94560">&#9632;</span> Boss
       <span style="color:#4dd0e1">&#9632;</span> Key
       <span style="color:#ff69b4">&#9632;</span> Monster
       <span style="color:#ffa726">&#9632;</span> Item
-      <span style="color:#ff4444">X</span> Trap
+      <span style="color:#ab47bc">&#9632;</span> Trap
+      <span style="color:#ffcc00">&#9632;</span> Exit
     </span>
   </div>`;
   html += `</div>`;
@@ -2118,6 +3691,30 @@ function mapEntityDragStart(e, levelIdx) {
       return;
     }
   }
+  // Check entry door
+  if (pe.entry_door) {
+    const [ex, ey] = pe.entry_door;
+    if (tx === ex && ty === ey) {
+      mapDragEntity = { levelIdx, type: 'entry_door', origX: ex, origY: ey };
+      canvas.style.cursor = 'grabbing';
+      canvas.addEventListener('mousemove', mapEntityDragMove);
+      canvas.addEventListener('mouseup', mapEntityDragEnd);
+      e.preventDefault();
+      return;
+    }
+  }
+  // Check exit door
+  if (pe.exit_door) {
+    const [ex, ey] = pe.exit_door;
+    if (tx === ex && ty === ey) {
+      mapDragEntity = { levelIdx, type: 'exit_door', origX: ex, origY: ey };
+      canvas.style.cursor = 'grabbing';
+      canvas.addEventListener('mousemove', mapEntityDragMove);
+      canvas.addEventListener('mouseup', mapEntityDragEnd);
+      e.preventDefault();
+      return;
+    }
+  }
   // Check monsters
   for (let i = 0; i < pe.monsters.length; i++) {
     if (pe.monsters[i].x === tx && pe.monsters[i].y === ty) {
@@ -2202,7 +3799,11 @@ function mapEntityDragEnd(e) {
 
   if (tx >= 0 && ty >= 0 && tx < cols && ty < rows && (tx !== mapDragEntity.origX || ty !== mapDragEntity.origY)) {
     const pe = ensurePlacedEntities(mapDragEntity.levelIdx);
-    if (mapDragEntity.type === 'boss') {
+    if (mapDragEntity.type === 'entry_door') {
+      pe.entry_door = [tx, ty];
+    } else if (mapDragEntity.type === 'exit_door') {
+      pe.exit_door = [tx, ty];
+    } else if (mapDragEntity.type === 'boss') {
       pe.boss = [tx, ty];
     } else if (mapDragEntity.type === 'monster') {
       pe.monsters[mapDragEntity.index].x = tx;
@@ -2300,14 +3901,24 @@ function generateTray(c, levelIdx, placed) {
     tray.push({ type: 'item', name: packItemName('key'), icon: '🔑', item_type: 'key', image: packItemSprite('key') });
   }
 
+  // Exit door (always one per level)
+  tray.push({ type: 'exit_door', name: 'Exit Door', icon: '🚪', item_type: 'exit_door' });
+
+  // Entry door (all levels — connects to hallway from previous level or title room)
+  tray.push({ type: 'entry_door', name: 'Entry Door', icon: '🔵', item_type: 'entry_door' });
+
   // Remove already-placed entities from the tray
   const placedMonsters = [...(placed.monsters || [])];
   const placedItems = [...(placed.items || [])];
   const placedTraps = [...(placed.traps || [])];
 
   return tray.filter(t => {
-    if (t.type === 'boss') {
-      if (placed.boss) return false; // boss already placed
+    if (t.type === 'exit_door') {
+      if (placed.exit_door) return false;
+    } else if (t.type === 'entry_door') {
+      if (placed.entry_door) return false;
+    } else if (t.type === 'boss') {
+      if (placed.boss) return false;
     } else if (t.type === 'monster') {
       const idx = placedMonsters.findIndex(pm => pm.name === t.name);
       if (idx >= 0) { placedMonsters.splice(idx, 1); return false; }
@@ -2328,7 +3939,52 @@ let dragHighlightTile = null; // {x, y} of currently highlighted tile during dra
 function displaceAll(levelIdx) {
   const c = getCampaign(selectedCampaignId);
   const d = ensureDesign(levelIdx);
-  d.placed_entities = { monsters: [], items: [], traps: [], boss: null };
+  d.placed_entities = { monsters: [], items: [], traps: [], boss: null, exit_door: null, entry_door: null };
+}
+
+// Find best exit door position: edge wall tile adjacent to walkable, nearest to boss
+function findExitDoorPosition(mapData, wallName, pe) {
+  const rows = mapData.tiles.length;
+  const cols = mapData.tiles[0].length;
+  const bp = pe.boss || mapData.boss_position || [Math.floor(cols/2), Math.floor(rows/2)];
+  let best = null, bestDist = Infinity;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (mapData.tiles[y][x] !== wallName) continue;
+      // Prefer tiles on the map edge (x=0, x=cols-1, y=0, y=rows-1)
+      const onEdge = (x === 0 || x === cols - 1 || y === 0 || y === rows - 1);
+      // Must be adjacent to a walkable tile
+      const adj = [[x-1,y],[x+1,y],[x,y-1],[x,y+1]].some(([ax,ay]) =>
+        ax >= 0 && ay >= 0 && ax < cols && ay < rows && mapData.tiles[ay][ax] !== wallName && mapData.tiles[ay][ax] !== 'locked_door');
+      if (!adj) continue;
+      const d = Math.abs(x - bp[0]) + Math.abs(y - bp[1]);
+      // Edge tiles get strong priority (subtract 1000 from distance)
+      const score = onEdge ? d - 1000 : d;
+      if (score < bestDist) { bestDist = score; best = [x, y]; }
+    }
+  }
+  return best;
+}
+
+// Find best entry door position: edge wall tile adjacent to walkable, nearest to player start
+function findEntryDoorPosition(mapData, wallName, pe) {
+  const rows = mapData.tiles.length;
+  const cols = mapData.tiles[0].length;
+  const ps = mapData.player_start || [Math.floor(cols/2), Math.floor(rows/2)];
+  let best = null, bestDist = Infinity;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (mapData.tiles[y][x] !== wallName) continue;
+      const onEdge = (x === 0 || x === cols - 1 || y === 0 || y === rows - 1);
+      const adj = [[x-1,y],[x+1,y],[x,y-1],[x,y+1]].some(([ax,ay]) =>
+        ax >= 0 && ay >= 0 && ax < cols && ay < rows && mapData.tiles[ay][ax] !== wallName && mapData.tiles[ay][ax] !== 'locked_door');
+      if (!adj) continue;
+      const d = Math.abs(x - ps[0]) + Math.abs(y - ps[1]);
+      const score = onEdge ? d - 1000 : d;
+      if (score < bestDist) { bestDist = score; best = [x, y]; }
+    }
+  }
+  return best;
 }
 
 function autoplaceAll(levelIdx) {
@@ -2394,12 +4050,27 @@ function autoplaceAll(levelIdx) {
   }
 
   let wi = 0;
+  const keyPos = design.prebuilt_map?.key_position;
   for (const t of tray) {
     if (t.type === 'boss') continue; // already placed
+    if (t.type === 'exit_door') {
+      pe.exit_door = findExitDoorPosition(mapPreviewData, wallName, pe);
+      continue;
+    }
+    if (t.type === 'entry_door') {
+      pe.entry_door = findEntryDoorPosition(mapPreviewData, wallName, pe);
+      continue;
+    }
+    // Place key at designated key_position if available
+    if (t.type === 'item' && t.item_type === 'key' && keyPos && !occupied.has(keyPos[0]+','+keyPos[1])) {
+      pe.items.push({ name: t.name, item_type: t.item_type, x: keyPos[0], y: keyPos[1], ...(t.image ? {image: t.image} : {}) });
+      occupied.add(keyPos[0]+','+keyPos[1]);
+      continue;
+    }
     if (wi >= walkable.length) break;
     const [rx, ry] = walkable[wi++];
     if (t.type === 'monster') pe.monsters.push({ name: t.name, x: rx, y: ry });
-    else if (t.type === 'item') pe.items.push({ name: t.name, item_type: t.item_type, x: rx, y: ry });
+    else if (t.type === 'item') pe.items.push({ name: t.name, item_type: t.item_type, x: rx, y: ry, ...(t.image ? {image: t.image} : {}) });
     else if (t.type === 'trap') pe.traps.push({ name: t.name, x: rx, y: ry });
   }
 
@@ -2489,7 +4160,13 @@ function trayAutoPlace(levelIdx, trayIdx) {
       }
     }
   }
-  if (t.type === 'boss') {
+  if (t.type === 'exit_door') {
+    pe.exit_door = findExitDoorPosition(mapPreviewData, wallName, pe);
+    if (!pe.exit_door) { showToast('No edge wall tile for exit door!', 'error'); return; }
+  } else if (t.type === 'entry_door') {
+    pe.entry_door = findEntryDoorPosition(mapPreviewData, wallName, pe);
+    if (!pe.entry_door) { showToast('No edge wall tile for entry door!', 'error'); return; }
+  } else if (t.type === 'boss') {
     // Boss needs 2x2, pick farthest from player
     const [px, py] = mapPreviewData.player_start || [0, 0];
     const spots = [];
@@ -2504,10 +4181,20 @@ function trayAutoPlace(levelIdx, trayIdx) {
     spots.sort((a,b) => b[2] - a[2]);
     pe.boss = [spots[0][0], spots[0][1]];
   } else {
+    // For keys, prefer the recommended key_position from the map
+    if (t.item_type === 'key' && mapPreviewData.key_position) {
+      const [kx, ky] = mapPreviewData.key_position;
+      if (!occupied.has(kx+','+ky)) {
+        pe.items.push({ name: t.name, item_type: t.item_type, x: kx, y: ky, ...(t.image ? {image: t.image} : {}) });
+        renderLevelScreen(document.getElementById('screen-container'));
+        showCurrentMap();
+        return;
+      }
+    }
     if (candidates.length === 0) { showToast('No open tiles!', 'error'); return; }
     const [rx, ry] = candidates[Math.floor(Math.random() * candidates.length)];
     if (t.type === 'monster') pe.monsters.push({ name: t.name, x: rx, y: ry });
-    else if (t.type === 'item') pe.items.push({ name: t.name, item_type: t.item_type, x: rx, y: ry });
+    else if (t.type === 'item') pe.items.push({ name: t.name, item_type: t.item_type, x: rx, y: ry, ...(t.image ? {image: t.image} : {}) });
     else if (t.type === 'trap') pe.traps.push({ name: t.name, x: rx, y: ry });
   }
 
@@ -2543,12 +4230,16 @@ function trayDrop(e, levelIdx) {
   const t = draggedTrayItem.item;
   const pe = ensurePlacedEntities(levelIdx);
 
-  if (t.type === 'boss') {
+  if (t.type === 'exit_door') {
+    pe.exit_door = [tx, ty];
+  } else if (t.type === 'entry_door') {
+    pe.entry_door = [tx, ty];
+  } else if (t.type === 'boss') {
     pe.boss = [tx, ty];
   } else if (t.type === 'monster') {
     pe.monsters.push({ name: t.name, x: tx, y: ty });
   } else if (t.type === 'item') {
-    pe.items.push({ name: t.name, item_type: t.item_type, x: tx, y: ty });
+    pe.items.push({ name: t.name, item_type: t.item_type, x: tx, y: ty, ...(t.image ? {image: t.image} : {}) });
   } else if (t.type === 'trap') {
     pe.traps.push({ name: t.name, x: tx, y: ty });
   }
@@ -2558,6 +4249,34 @@ function trayDrop(e, levelIdx) {
   // Re-render to update tray and map
   renderLevelScreen(document.getElementById('screen-container'));
   showCurrentMap();
+}
+
+function mapHoverTooltip(e, levelIdx) {
+  const canvas = document.getElementById('map-canvas');
+  if (!canvas || !mapPreviewData?.tiles) { canvas.title = ''; return; }
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const rows = mapPreviewData.tiles.length;
+  const cols = mapPreviewData.tiles[0].length;
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+  const tx = Math.floor((e.clientX - rect.left) * scaleX / cellW);
+  const ty = Math.floor((e.clientY - rect.top) * scaleY / cellH);
+  const c = getCampaign(selectedCampaignId);
+  const design = c.designs[levelIdx] || {};
+  const pe = design.placed_entities || { monsters: [], items: [], traps: [] };
+  let name = '';
+  if (pe.boss) {
+    const [bx, by] = pe.boss;
+    if (tx >= bx && tx < bx + 2 && ty >= by && ty < by + 2) name = design.boss?.name || 'Boss';
+  }
+  if (!name) { const m = (pe.monsters||[]).find(m => m.x === tx && m.y === ty); if (m) name = m.name; }
+  if (!name) { const i = (pe.items||[]).find(i => i.x === tx && i.y === ty); if (i) name = i.name; }
+  if (!name) { const t = (pe.traps||[]).find(t => t.x === tx && t.y === ty); if (t) name = t.name; }
+  if (!name && pe.exit_door && pe.exit_door[0] === tx && pe.exit_door[1] === ty) name = 'Exit Door';
+  if (!name && pe.entry_door && pe.entry_door[0] === tx && pe.entry_door[1] === ty) name = 'Entry Door';
+  canvas.title = name;
 }
 
 function onMapRightClick(e, levelIdx) {
@@ -2581,15 +4300,24 @@ function onMapRightClick(e, levelIdx) {
   const hadItem = pe.items.length;
   const hadTrap = pe.traps.length;
   let hadBoss = false;
+  let hadExitDoor = false;
   if (pe.boss) {
     const [bx, by] = pe.boss;
     if (tx >= bx && tx < bx + 2 && ty >= by && ty < by + 2) { pe.boss = null; hadBoss = true; }
+  }
+  if (pe.exit_door) {
+    const [ex, ey] = pe.exit_door;
+    if (tx === ex && ty === ey) { pe.exit_door = null; hadExitDoor = true; }
+  }
+  if (pe.entry_door) {
+    const [ex, ey] = pe.entry_door;
+    if (tx === ex && ty === ey) { pe.entry_door = null; hadExitDoor = true; }
   }
   pe.monsters = pe.monsters.filter(m => m.x !== tx || m.y !== ty);
   pe.items = pe.items.filter(i => i.x !== tx || i.y !== ty);
   pe.traps = pe.traps.filter(t => t.x !== tx || t.y !== ty);
 
-  if (hadBoss || pe.monsters.length < hadMonster || pe.items.length < hadItem || pe.traps.length < hadTrap) {
+  if (hadBoss || hadExitDoor || pe.monsters.length < hadMonster || pe.items.length < hadItem || pe.traps.length < hadTrap) {
     renderLevelScreen(document.getElementById('screen-container'));
     showCurrentMap();
   }
@@ -2671,13 +4399,14 @@ function renderWeapon(idx, design) {
     <div class="form-row"><label>Name</label>${enhancedInput(w.name||'', "updateDesignField("+idx+",'weapon','name',this.value)", 'weapon name for roguelike game')}</div>
     <div class="form-row-stacked"><label>Description</label>
       ${enhancedTextarea(w.description||'', "updateDesignField("+idx+",'weapon','description',this.value)", 'five-line weapon description', 5)}</div>`;
-  s += `<div class="flex gap-8 items-center" style="margin-top:4px;">`;
+  s += `<div class="flex gap-8 items-center" style="margin-top:6px;">`;
   if (w.image) {
-    s += `<img src="data:image/png;base64,${w.image}" style="width:40px;height:40px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
-      <button class="ai-btn" onclick="generateItemSprite(${idx},'weapon')" style="font-size:10px;">&#10024; Regen</button>
-      <button style="font-size:9px;padding:2px 4px;" onclick="clearItemSprite(${idx},'weapon')">Clear</button>`;
+    s += `<img src="data:image/png;base64,${w.image}" style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+      <button class="ai-btn" onclick="generateItemSprite(${idx},'weapon')" style="font-size:11px;">&#10024; Regen</button>
+      <button style="font-size:10px;padding:2px 6px;" onclick="clearItemSprite(${idx},'weapon')">Clear</button>`;
   } else {
-    s += `<button class="ai-btn" onclick="generateItemSprite(${idx},'weapon')">&#10024; Generate Sprite</button>`;
+    s += `<div style="width:48px;height:48px;border-radius:4px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:#555;">⚔️</div>
+      <button class="ai-btn" onclick="generateItemSprite(${idx},'weapon')">&#10024; Generate Sprite</button>`;
   }
   s += `</div>`;
   return s;
@@ -2689,13 +4418,14 @@ function renderArmor(idx, design) {
     <div class="form-row"><label>Name</label>${enhancedInput(a.name||'', "updateDesignField("+idx+",'armor','name',this.value)", 'armor name for roguelike game')}</div>
     <div class="form-row-stacked"><label>Description</label>
       ${enhancedTextarea(a.description||'', "updateDesignField("+idx+",'armor','description',this.value)", 'five-line armor description', 5)}</div>`;
-  s += `<div class="flex gap-8 items-center" style="margin-top:4px;">`;
+  s += `<div class="flex gap-8 items-center" style="margin-top:6px;">`;
   if (a.image) {
-    s += `<img src="data:image/png;base64,${a.image}" style="width:40px;height:40px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
-      <button class="ai-btn" onclick="generateItemSprite(${idx},'armor')" style="font-size:10px;">&#10024; Regen</button>
-      <button style="font-size:9px;padding:2px 4px;" onclick="clearItemSprite(${idx},'armor')">Clear</button>`;
+    s += `<img src="data:image/png;base64,${a.image}" style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+      <button class="ai-btn" onclick="generateItemSprite(${idx},'armor')" style="font-size:11px;">&#10024; Regen</button>
+      <button style="font-size:10px;padding:2px 6px;" onclick="clearItemSprite(${idx},'armor')">Clear</button>`;
   } else {
-    s += `<button class="ai-btn" onclick="generateItemSprite(${idx},'armor')">&#10024; Generate Sprite</button>`;
+    s += `<div style="width:48px;height:48px;border-radius:4px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:#555;">🛡️</div>
+      <button class="ai-btn" onclick="generateItemSprite(${idx},'armor')">&#10024; Generate Sprite</button>`;
   }
   s += `</div>`;
   return s;
@@ -2705,17 +4435,19 @@ function renderTraps(idx, design) {
   const traps = design.traps || [];
   let html = '';
   for (let i = 0; i < traps.length; i++) {
-    html += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:6px;margin-bottom:6px;">
-      <div class="flex gap-4 items-center">
-        ${enhancedInput(traps[i].name||'', "updateTrap("+idx+","+i+",this.value)", 'trap name for roguelike dungeon', 'flex:1;')}
-        <button style="padding:2px 6px;font-size:10px;" onclick="removeTrap(${idx},${i})">x</button>
+    html += `<div style="background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;">
+      <div class="flex gap-4 items-center mb-8">
+        ${enhancedInput(traps[i].name||'', "updateTrap("+idx+","+i+",this.value)", 'trap name for roguelike dungeon', 'font-size:12px;font-weight:600;')}
+        <button class="danger" onclick="removeTrap(${idx},${i})" style="padding:2px 6px;font-size:10px;">x</button>
       </div>
-      <div class="flex gap-8 items-center" style="margin-top:4px;">
+      ${enhancedTextarea(traps[i].description||'', "updateTrapDesc("+idx+","+i+",this.value)", 'short visual description of a trap called '+traps[i].name+' in a roguelike dungeon', 3)}
+      <div class="flex gap-8 items-center" style="margin-top:6px;">
         ${traps[i].image
-          ? `<img src="data:image/png;base64,${traps[i].image}" style="width:32px;height:32px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
-             <button class="ai-btn" onclick="generateTrapSprite(${idx},${i})" style="font-size:10px;">&#10024; Regen</button>
-             <button style="font-size:9px;padding:2px 4px;" onclick="clearTrapSprite(${idx},${i})">Clear</button>`
-          : `<button class="ai-btn" onclick="generateTrapSprite(${idx},${i})" style="font-size:10px;">&#10024; Sprite</button>`}
+          ? `<img src="data:image/png;base64,${traps[i].image}" style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;">
+             <button class="ai-btn" onclick="generateTrapSprite(${idx},${i})" style="font-size:11px;">&#10024; Regen</button>
+             <button style="font-size:10px;padding:2px 6px;" onclick="clearTrapSprite(${idx},${i})">Clear</button>`
+          : `<div style="width:48px;height:48px;border-radius:4px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:#555;">⚠️</div>
+             <button class="ai-btn" onclick="generateTrapSprite(${idx},${i})">&#10024; Generate Sprite</button>`}
       </div>
     </div>`;
   }
@@ -2793,6 +4525,11 @@ function clearTrapSprite(levelIdx, trapIdx) {
 function updateTrap(levelIdx, tIdx, val) {
   const d = ensureDesign(levelIdx);
   d.traps[tIdx].name = val;
+}
+function updateTrapDesc(levelIdx, tIdx, val) {
+  const d = ensureDesign(levelIdx);
+  if (!d.traps[tIdx].description) d.traps[tIdx].description = '';
+  d.traps[tIdx].description = val;
 }
 function addTrap(levelIdx) {
   const d = ensureDesign(levelIdx);
@@ -2902,6 +4639,9 @@ async function renderMapCanvas(data, palette, tileDefs, placedEntities) {
   const canvas = document.getElementById('map-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
+  // Get full design for trap/entity lookups
+  const _c = selectedCampaignId ? getCampaign(selectedCampaignId) : null;
+  const design = (_c && selectedLevelIdx !== null) ? (_c.designs[selectedLevelIdx] || {}) : {};
   const tiles = data.tiles;
   if (!tiles || !tiles.length) return;
   const rows = tiles.length;
@@ -2988,8 +4728,9 @@ async function renderMapCanvas(data, palette, tileDefs, placedEntities) {
       ctx.fillRect(rx * cellW, ry * cellH, cellW, cellH);
     }
   }
-  // Key position (cyan)
-  if (data.key_position) {
+  // Key position hint (cyan) — only show if key is not yet placed
+  const keyPlaced = peCheck?.items?.some(it => it.item_type === 'key');
+  if (data.key_position && !keyPlaced) {
     const [kx, ky] = data.key_position;
     ctx.fillStyle = '#4dd0e1';
     ctx.fillRect(kx * cellW + 2, ky * cellH + 2, cellW - 4, cellH - 4);
@@ -3007,6 +4748,8 @@ async function renderMapCanvas(data, palette, tileDefs, placedEntities) {
       // Try to draw boss sprite
       const c2 = getCampaign(selectedCampaignId);
       const bossImg = c2?.designs?.[selectedLevelIdx]?.boss?.image;
+      ctx.fillStyle = 'rgba(233,69,96,0.6)';
+      ctx.fillRect(bx * cellW, by * cellH, cellW * 2, cellH * 2);
       if (bossImg) {
         const img = new Image();
         img.src = 'data:image/png;base64,' + bossImg;
@@ -3030,6 +4773,8 @@ async function renderMapCanvas(data, palette, tileDefs, placedEntities) {
     const campaignMonsters = c3?.monster_templates || [];
     for (const m of (pe.monsters || [])) {
       const tmpl = campaignMonsters.find(t => t.name === m.name);
+      ctx.fillStyle = 'rgba(255,105,180,0.6)';
+      ctx.fillRect(m.x * cellW, m.y * cellH, cellW, cellH);
       if (tmpl && tmpl.image) {
         const img = new Image();
         img.src = 'data:image/png;base64,' + tmpl.image;
@@ -3045,30 +4790,60 @@ async function renderMapCanvas(data, palette, tileDefs, placedEntities) {
     }
     // Items — use sprite if available (pack-level or design-level), else emoji
     const itemIcons = { potion: '🧪', gold: '💰', weapon: '⚔', armor: '🛡', key: '🔑', speed_potion: '⚡', bomb: '💣' };
+    const itemColors = { key: 'rgba(77,208,225,0.6)' };
+    const defaultItemColor = 'rgba(255,167,38,0.5)';
     for (const it of (pe.items || [])) {
       const sprite = packItemSprite(it.item_type);
       if (sprite) {
+        const bgColor = itemColors[it.item_type] || defaultItemColor;
+        ctx.fillStyle = bgColor;
+        ctx.fillRect(it.x * cellW, it.y * cellH, cellW, cellH);
         const img = new Image();
         img.src = 'data:image/png;base64,' + sprite;
         const ix = it.x, iy = it.y;
         const drawIt = () => ctx.drawImage(img, ix * cellW + 1, iy * cellH + 1, cellW - 2, cellH - 2);
         if (img.complete) drawIt(); else img.onload = drawIt;
       } else {
-        ctx.fillStyle = 'rgba(255,167,38,0.5)';
+        ctx.fillStyle = itemColors[it.item_type] || defaultItemColor;
         ctx.fillRect(it.x * cellW, it.y * cellH, cellW, cellH);
         ctx.fillStyle = '#fff';
         ctx.fillText(itemIcons[it.item_type] || '📦', it.x * cellW + cellW/2, it.y * cellH + cellH/2);
       }
     }
-    // Traps (red X)
+    // Traps — use sprite if available, else orange background with warning emoji
     for (const t of (pe.traps || [])) {
-      ctx.fillStyle = 'rgba(255,68,68,0.5)';
-      ctx.fillRect(t.x * cellW, t.y * cellH, cellW, cellH);
-      ctx.strokeStyle = '#ff4444';
-      ctx.lineWidth = 2;
-      const cx = t.x * cellW, cy = t.y * cellH;
-      ctx.beginPath(); ctx.moveTo(cx+2, cy+2); ctx.lineTo(cx+cellW-2, cy+cellH-2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(cx+cellW-2, cy+2); ctx.lineTo(cx+2, cy+cellH-2); ctx.stroke();
+      const trapDef = (design.traps || []).find(td => td.name === t.name);
+      const trapSprite = trapDef?.image || null;
+      if (trapSprite) {
+        ctx.fillStyle = 'rgba(171,71,188,0.3)';
+        ctx.fillRect(t.x * cellW, t.y * cellH, cellW, cellH);
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + trapSprite;
+        const tx = t.x, ty = t.y;
+        const drawIt = () => ctx.drawImage(img, tx * cellW + 1, ty * cellH + 1, cellW - 2, cellH - 2);
+        if (img.complete) drawIt(); else img.onload = drawIt;
+      } else {
+        ctx.fillStyle = 'rgba(171,71,188,0.5)';
+        ctx.fillRect(t.x * cellW, t.y * cellH, cellW, cellH);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('⚠', t.x * cellW + cellW/2, t.y * cellH + cellH/2);
+      }
+    }
+    // Exit door
+    if (pe.exit_door) {
+      const [ex, ey] = pe.exit_door;
+      ctx.fillStyle = 'rgba(255,204,0,0.7)';
+      ctx.fillRect(ex * cellW, ey * cellH, cellW, cellH);
+      ctx.fillStyle = '#fff';
+      ctx.fillText('🚪', ex * cellW + cellW/2, ey * cellH + cellH/2);
+    }
+    // Entry door
+    if (pe.entry_door) {
+      const [ex, ey] = pe.entry_door;
+      ctx.fillStyle = 'rgba(68,204,255,0.7)';
+      ctx.fillRect(ex * cellW, ey * cellH, cellW, cellH);
+      ctx.fillStyle = '#fff';
+      ctx.fillText('🔵', ex * cellW + cellW/2, ey * cellH + cellH/2);
     }
   }
 }
@@ -3153,6 +4928,7 @@ async function init() {
   await Promise.all([loadPack(), loadFonts()]);
   render();
 }
+window.addEventListener('popstate', () => { readUrlState(); render(); });
 init();
 </script>
 </body>
