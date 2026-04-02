@@ -51,7 +51,6 @@ enum Screen {
     Start,
     SoundTest,
     GenOverworld,
-    Overworld,
     GenLevel,
     Playing,
     Dead,
@@ -836,8 +835,90 @@ async fn main() {
                                         })
                                     })
                                 });
-                                overworld = Some(ow);
-                                screen = Screen::Overworld;
+                                // Check for WYSIWYG unified map
+                                if campaign.prebuilt_overworld_map.is_some() {
+                                    match gen::build_unified_level(campaign) {
+                                        Ok((level, start)) => {
+                                            state.level = level;
+                                            if !resuming {
+                                                state.player.x = start[0];
+                                                state.player.y = start[1];
+                                            }
+                                            state.game_over = false;
+                                            state.victory = false;
+                                            state.vision_radius = 15; // larger for unified overworld
+                                            // Reveal entire map for now (no fog of war on overworld)
+                                            for y in 0..state.level.height {
+                                                for x in 0..state.level.width {
+                                                    state.level.revealed.insert((x, y));
+                                                    state.level.visible.insert((x, y));
+                                                }
+                                            }
+                                            tile_textures.clear();
+                                            for (name, def) in &state.level.tile_defs {
+                                                if let Some(ref b64) = def.image {
+                                                    if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                            let t = Texture2D::from_image(&img);
+                                                            t.set_filter(FilterMode::Nearest);
+                                                            t
+                                                        })
+                                                    ) {
+                                                        tile_textures.insert(name.clone(), tex);
+                                                    }
+                                                }
+                                            }
+                                            // Load monster textures
+                                            monster_textures.clear();
+                                            for mon in &state.level.monsters {
+                                                if !monster_textures.contains_key(&mon.name) {
+                                                    if let Some(ref b64) = mon.image {
+                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                                let t = Texture2D::from_image(&img);
+                                                                t.set_filter(FilterMode::Nearest);
+                                                                t
+                                                            })
+                                                        ) {
+                                                            monster_textures.insert(mon.name.clone(), tex);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Load item textures
+                                            item_textures.clear();
+                                            for item in &state.level.items {
+                                                if !item_textures.contains_key(&item.name) {
+                                                    if let Some(ref b64) = item.image {
+                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                                let t = Texture2D::from_image(&img);
+                                                                t.set_filter(FilterMode::Nearest);
+                                                                t
+                                                            })
+                                                        ) {
+                                                            item_textures.insert(item.name.clone(), tex);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            overworld = Some(ow);
+                                            screen = Screen::Playing;
+                                            eprintln!("Unified map loaded: {}x{} with {} monsters, {} items, player at ({},{})",
+                                                state.level.width, state.level.height,
+                                                state.level.monsters.len(), state.level.items.len(),
+                                                state.player.x, state.player.y);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to build unified map: {}, falling back", e);
+                                            overworld = Some(ow);
+                                            screen = Screen::Playing;
+                                        }
+                                    }
+                                } else {
+                                    overworld = Some(ow);
+                                    screen = Screen::Playing;
+                                }
                             }
                             Err(e) => {
                                 eprintln!("Failed to build overworld: {}", e);
@@ -953,8 +1034,54 @@ async fn main() {
                                         })
                                     })
                                 });
-                                overworld = Some(ow);
-                                screen = Screen::Overworld;
+                                // Check for WYSIWYG unified map
+                                if campaign.prebuilt_overworld_map.is_some() {
+                                    match gen::build_unified_level(campaign) {
+                                        Ok((level, start)) => {
+                                            state.level = level;
+                                            state.player.x = start[0];
+                                            state.player.y = start[1];
+                                            state.game_over = false;
+                                            state.victory = false;
+                                            state.vision_radius = 15;
+                                            // Reveal entire map (no fog on overworld)
+                                            for y in 0..state.level.height {
+                                                for x in 0..state.level.width {
+                                                    state.level.revealed.insert((x, y));
+                                                    state.level.visible.insert((x, y));
+                                                }
+                                            }
+                                            // Load tile textures
+                                            tile_textures.clear();
+                                            for (name, def) in &state.level.tile_defs {
+                                                if let Some(ref b64) = def.image {
+                                                    if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                            let t = Texture2D::from_image(&img);
+                                                            t.set_filter(FilterMode::Nearest);
+                                                            t
+                                                        })
+                                                    ) {
+                                                        tile_textures.insert(name.clone(), tex);
+                                                    }
+                                                }
+                                            }
+                                            overworld = Some(ow);
+                                            screen = Screen::Playing;
+                                            println!("Unified map loaded: {}x{} with {} monsters, {} items",
+                                                state.level.width, state.level.height,
+                                                state.level.monsters.len(), state.level.items.len());
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to build unified map: {}, falling back to overworld", e);
+                                            overworld = Some(ow);
+                                            screen = Screen::Playing;
+                                        }
+                                    }
+                                } else {
+                                    overworld = Some(ow);
+                                    screen = Screen::Playing;
+                                }
                             }
                             Err(e) => {
                                 eprintln!("Failed to build overworld from bundled campaign: {}", e);
@@ -1194,7 +1321,7 @@ async fn main() {
                                     })
                                 });
                                 overworld = Some(ow);
-                                screen = Screen::Overworld;
+                                screen = Screen::Playing;
                             }
                             GenMsg::Error(e) => {
                                 phase_text = format!("Error: {}", e);
@@ -1210,245 +1337,6 @@ async fn main() {
                     phase_text = overworld_loading_phrase();
                     phase_detail.clear();
                     loading_tiles = 0;
-                }
-            }
-
-            Screen::Overworld => {
-                // Receive background level design tokens and completions
-                if let Some(rx) = &bg_gen_rx {
-                    while let Ok(msg) = rx.try_recv() {
-                        match msg {
-                            GenMsg::DesignToken(idx) => {
-                                if idx < design_token_flashes.len() {
-                                    design_token_flashes[idx].push(get_time());
-                                }
-                            }
-                            GenMsg::LevelDesignReady(idx, design) => {
-                                if idx < level_designs.len() {
-                                    level_designs[idx] = Some(design);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                if let Some(ow) = &mut overworld {
-                    draw_overworld(&*ow, &ui_font, &ui_font_bold, overworld_font.as_ref(), desc_font.as_ref(), label_font.as_ref(), &design_token_flashes, overworld_bg_tex.as_ref());
-
-                    // Cheat code: xyzzy
-                    let cheat_keys = [
-                        (KeyCode::X, 'x'), (KeyCode::Y, 'y'), (KeyCode::Z, 'z'),
-                    ];
-                    for &(kc, ch) in &cheat_keys {
-                        if is_key_pressed(kc) { cheat_buf.push(ch); }
-                    }
-                    if cheat_buf.len() > 10 { cheat_buf.drain(..cheat_buf.len() - 10); }
-                    let buf_str: String = cheat_buf.iter().collect();
-                    if buf_str.contains("xyzzy") && !cheat_active {
-                        cheat_buf.clear();
-                        cheat_active = true;
-                        state.player.gold += 1000;
-                        while state.player.level < 10 {
-                            state.player.level += 1;
-                            state.player.max_hp += 5;
-                            state.player.attack += 1;
-                            state.player.defense += 1;
-                            state.player.xp_to_next = (state.player.xp_to_next as f64 * 1.5) as i32;
-                        }
-                        state.player.hp = state.player.max_hp;
-                        for node in &mut ow.nodes {
-                            node.unlocked = true;
-                        }
-                        if let Some(s) = &sfx { s.cheat_fanfare(); }
-                        eprintln!("XYZZY cheat activated!");
-                    }
-
-                    // Navigation with key repeat
-                    let cur = ow.current_node;
-                    let (dx, dy) = get_held_direction();
-                    let now = get_time();
-                    let nav_fire = if dx != 0.0 || dy != 0.0 {
-                        if nav_hold_time == 0.0 {
-                            // Key just pressed
-                            nav_hold_time = now;
-                            nav_last_fire = now;
-                            true
-                        } else if now - nav_hold_time >= NAV_INITIAL_DELAY
-                            && now - nav_last_fire >= NAV_REPEAT_RATE
-                        {
-                            nav_last_fire = now;
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        nav_hold_time = 0.0;
-                        false
-                    };
-                    if nav_fire {
-                        let cur_x = ow.nodes[cur].x;
-                        let cur_y = ow.nodes[cur].y;
-                        let dir_len = (dx * dx + dy * dy).sqrt();
-                        // Collect all candidates in this direction, sorted by cosine
-                        let mut candidates: Vec<(usize, f32)> = Vec::new();
-                        for &(a, b) in &ow.connections {
-                            let neighbor = if a == cur { b } else if b == cur { a } else { continue };
-                            if !ow.nodes[neighbor].unlocked { continue; }
-                            let nx = ow.nodes[neighbor].x - cur_x;
-                            let ny = ow.nodes[neighbor].y - cur_y;
-                            let node_len = (nx * nx + ny * ny).sqrt();
-                            if node_len < 0.001 { continue; }
-                            let cosine = (nx * dx + ny * dy) / (node_len * dir_len);
-                            if cosine > 0.3 {
-                                candidates.push((neighbor, cosine));
-                            }
-                        }
-                        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-                        // If same direction as last press, cycle; otherwise reset
-                        let same_dir = (dx - nav_last_dir.0).abs() < 0.01 && (dy - nav_last_dir.1).abs() < 0.01;
-                        if same_dir && candidates.len() > 1 {
-                            nav_cycle_idx = (nav_cycle_idx + 1) % candidates.len();
-                        } else {
-                            nav_cycle_idx = 0;
-                        }
-                        nav_last_dir = (dx, dy);
-
-                        let best = candidates.get(nav_cycle_idx).map(|c| c.0);
-                        if let Some(next) = best {
-                            ow.current_node = next;
-                            if let Some(s) = &sfx { s.navigate(); }
-                        }
-                    }
-
-                    if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-                        let node = &ow.nodes[ow.current_node];
-                        let can_enter = node.unlocked && (node.node_type == NodeType::Store || !node.completed);
-                        let can_view = ghost_town && node.unlocked && node.node_type == NodeType::Level;
-                        if can_enter && node.node_type == NodeType::Store {
-                            if let Some(s) = &sfx { s.confirm(); }
-                            store_selection = 0;
-                            screen = Screen::Store;
-                        } else if can_view {
-                            // Ghost town: generate level then strip monsters/items
-                            if let Some(s) = &sfx { s.confirm(); }
-                            player_snapshot = Some(state.player.clone());
-                            level_snapshot = None;
-                            start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), true, current_campaign_idx as i32, current_campaign_monsters.clone(), &pack_item_sprites);
-                            screen = Screen::GenLevel;
-                            phase_text = overworld_loading_phrase();
-                            phase_detail.clear();
-                            loading_tiles = 0;
-                        } else if can_enter {
-                            if let Some(s) = &sfx { s.confirm(); }
-                            player_snapshot = Some(state.player.clone());
-                            // Reuse saved level if retrying after death on same node
-                            if let Some((snap_node, _, _)) = &level_snapshot {
-                                if *snap_node != ow.current_node {
-                                    // Different node — clear snapshot and generate fresh
-                                    level_snapshot = None;
-                                }
-                            }
-                            if let Some((_snap_node, lvl, start)) = &level_snapshot {
-                                state.level = lvl.clone();
-                                // Reload tile textures for this level
-                                tile_textures = std::collections::HashMap::new();
-                                for (name, def) in &state.level.tile_defs {
-                                    if let Some(b64) = &def.image {
-                                        if let Some(bytes) = decode_base64(b64) {
-                                            if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                let tex = Texture2D::from_image(&img);
-                                                tex.set_filter(FilterMode::Nearest);
-                                                tile_textures.insert(name.clone(), tex);
-                                            }
-                                        }
-                                    }
-                                }
-                                monster_textures = std::collections::HashMap::new();
-                                for mon in &state.level.monsters {
-                                    if !monster_textures.contains_key(&mon.name) {
-                                        if let Some(b64) = &mon.image {
-                                            if let Some(bytes) = decode_base64(b64) {
-                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                    let tex = Texture2D::from_image(&img);
-                                                    tex.set_filter(FilterMode::Nearest);
-                                                    monster_textures.insert(mon.name.clone(), tex);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                item_textures = std::collections::HashMap::new();
-                                for item in &state.level.items {
-                                    if !item_textures.contains_key(&item.name) {
-                                        if let Some(b64) = &item.image {
-                                            if let Some(bytes) = decode_base64(b64) {
-                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                    let tex = Texture2D::from_image(&img);
-                                                    tex.set_filter(FilterMode::Nearest);
-                                                    item_textures.insert(item.name.clone(), tex);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                for trap in &state.level.traps {
-                                    if !item_textures.contains_key(&trap.name) {
-                                        if let Some(b64) = &trap.image {
-                                            if let Some(bytes) = decode_base64(b64) {
-                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                    let tex = Texture2D::from_image(&img);
-                                                    tex.set_filter(FilterMode::Nearest);
-                                                    item_textures.insert(trap.name.clone(), tex);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                state.player.x = start[0];
-                                state.player.y = start[1];
-                                state.game_over = false;
-                                state.victory = false;
-                                state.log.clear();
-                                // Auto-use scout map if player has one
-                                if state.player.scout_maps > 0 {
-                                    game::use_scout_map(&mut state);
-                                } else {
-                                    reveal_around(
-                                        &mut state.level,
-                                        state.player.x,
-                                        state.player.y,
-                                        state.vision_radius,
-                                    );
-                                }
-                                state.log(&state.level.description.clone(), "#888");
-                                state.log("Your task: find and defeat the boss.", "#666");
-                                if let Some(s) = &sfx {
-                                    s.start_boss_drone(&state.level.scale);
-                                    let openness = game::measure_openness(&state.level, state.player.x, state.player.y);
-                                    s.update_room_acoustics(openness);
-                                }
-                                screen = Screen::Playing;
-                            } else {
-                                start_level_generation(&state, ow, &level_designs, &mut gen_rx, current_campaign_settings.clone(), ghost_town, current_campaign_idx as i32, current_campaign_monsters.clone(), &pack_item_sprites);
-                                screen = Screen::GenLevel;
-                                phase_text = overworld_loading_phrase();
-                                phase_detail.clear();
-                                loading_tiles = 0;
-                            }
-                        }
-                    }
-
-                    // ESC: back to campaign select
-                    if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q) {
-                        overworld = None;
-                        overworld_font = None;
-                        title_font = None;
-                        campaign_select_idx = pick_next_campaign(&bundled_campaigns).unwrap_or(0);
-                        ghost_town = false;
-                        screen = Screen::CampaignSelect;
-                    }
                 }
             }
 
@@ -1570,7 +1458,7 @@ async fn main() {
                                     title_font = None;
                                 }
                                 if let Some(s) = &sfx {
-                                    s.start_boss_drone(&state.level.scale);
+                                    s.start_boss_drone(state.level.scale_at(state.player.x, state.player.y));
                                     let openness = game::measure_openness(&state.level, state.player.x, state.player.y);
                                     s.update_room_acoustics(openness);
                                 }
@@ -1597,7 +1485,7 @@ async fn main() {
             Screen::Playing => {
                 if ghost_town && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q)) {
                     if let Some(s) = &sfx { s.stop_boss_drone(); }
-                    screen = Screen::Overworld;
+                    screen = Screen::Playing;
                 }
                 handle_playing_input(&mut state, &mut screen, &mut confetti, &sfx,
                     &mut game_hold_time, &mut game_last_fire);
@@ -1656,15 +1544,40 @@ async fn main() {
                 draw_death_overlay(&ui_font, &ui_font_bold, &state);
 
                 if is_key_pressed(KeyCode::Enter) {
-                    // Restore player from snapshot, return to overworld
-                    // (level_snapshot is kept so re-entering replays the same map)
+                    let death_x = state.player.x;
+                    let death_y = state.player.y;
+
                     if let Some(snap) = &player_snapshot {
                         state.player = snap.clone();
                     }
                     state.game_over = false;
                     state.victory = false;
                     state.log.clear();
-                    screen = Screen::Overworld;
+
+                    // Unified map: respawn at the entry of the region where player died
+                    if !state.level.region_scales.is_empty() {
+                        // Find which region the player died in
+                        let mut respawn_x = state.player.x;
+                        let mut respawn_y = state.player.y;
+                        for &(ox, oy, w, h, _) in &state.level.region_scales {
+                            if death_x >= ox && death_x < ox + w && death_y >= oy && death_y < oy + h {
+                                // Respawn at region entry (top-left walkable tile)
+                                respawn_x = ox + 2;
+                                respawn_y = oy + 2;
+                                break;
+                            }
+                        }
+                        state.player.x = respawn_x;
+                        state.player.y = respawn_y;
+                        state.player.hp = state.player.max_hp;
+                        // Re-reveal around new position
+                        state.level.visible.clear();
+                        let vis = state.vision_radius;
+                        crate::game::reveal_around(&mut state.level, respawn_x, respawn_y, vis);
+                        screen = Screen::Playing;
+                    } else {
+                        screen = Screen::Playing;
+                    }
                 }
             }
 
@@ -1719,7 +1632,7 @@ async fn main() {
                                     save_campaign_progress(id, &state.player, ow);
                                 }
                             }
-                            screen = Screen::Overworld;
+                            screen = Screen::Playing;
                         }
                     }
                 }
@@ -1771,7 +1684,7 @@ async fn main() {
                     }
                 }
                 if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q) {
-                    screen = Screen::Overworld;
+                    screen = Screen::Playing;
                 }
             }
 
@@ -1822,7 +1735,7 @@ fn handle_playing_input(
     hold_time: &mut f64,
     last_fire: &mut f64,
 ) {
-    let sc = state.level.scale.clone();
+    let sc = state.level.scale_at(state.player.x, state.player.y).to_vec();
     if is_key_pressed(KeyCode::C) {
         use_potion(state);
         if let Some(s) = sfx { s.pickup_potion(&sc); }
@@ -1874,6 +1787,11 @@ fn handle_playing_input(
         let result = try_move(state, dx, dy);
         let moved = result["moved"].as_bool().unwrap_or(false);
         let combat = result["combat"].as_bool().unwrap_or(false);
+        if result["store"].as_bool().unwrap_or(false) {
+            if let Some(s) = sfx { s.confirm(); }
+            *screen = Screen::Store;
+            return;
+        }
         if moved || combat {
             if state.player.speed_turns > 0 {
                 state.player.speed_turns -= 1;
@@ -1904,6 +1822,8 @@ fn handle_playing_input(
                 else if t.contains("hits you") || t.contains("CRITS you") { s.player_hurt(&sc); }
                 else if t.contains("TRAP!") { s.trap(&sc); }
                 else if t.contains("THE BOSS IS SLAIN") { s.boss_kill(&sc); }
+                else if t.contains("exit door has opened") { s.door_unlock(&sc); }
+                else if t.contains("gate is sealed") { s.hit(&sc); }
                 else if t.contains("defeated the") { s.kill(&sc); }
                 else if t.contains("LEVEL UP") { s.level_up(&sc); }
             }
@@ -2738,563 +2658,6 @@ fn draw_loading_screen(font: &Font, phase_text: &str, phase_detail: &str, tile_c
 
 // ── Overworld rendering ──
 
-fn draw_overworld(ow: &Overworld, ui_font: &Font, ui_bold: &Font, ow_font: Option<&Font>, d_font: Option<&Font>, l_font: Option<&Font>, design_flashes: &[Vec<f64>], bg_tex: Option<&Texture2D>) {
-    let raw_sw = screen_width();
-    let raw_sh = screen_height();
-
-    // Letterbox to 16:9
-    let target_aspect = 16.0 / 9.0;
-    let current_aspect = raw_sw / raw_sh;
-    let (sw, sh, vx, vy) = if current_aspect > target_aspect {
-        // Window is wider than 16:9 — pillarbox (bars on sides)
-        let w = raw_sh * target_aspect;
-        (w, raw_sh, (raw_sw - w) / 2.0, 0.0)
-    } else {
-        // Window is taller than 16:9 — letterbox (bars top/bottom)
-        let h = raw_sw / target_aspect;
-        (raw_sw, h, 0.0, (raw_sh - h) / 2.0)
-    };
-
-    // Black bars
-    draw_rectangle(0.0, 0.0, raw_sw, raw_sh, Color::new(0.0, 0.0, 0.0, 1.0));
-
-    let bg = hex_to_color(&ow.bg_color);
-    let text_col = hex_to_color(&ow.text_color);
-    let desc_col = Color::new(text_col.r * 0.7, text_col.g * 0.7, text_col.b * 0.7, 1.0);
-
-    // Background: image > gradient color > solid color
-    if let Some(tex) = bg_tex {
-        draw_texture_ex(tex, vx, vy, WHITE, DrawTextureParams {
-            dest_size: Some(Vec2::new(sw, sh)),
-            ..Default::default()
-        });
-        // Darken overlay so text is readable
-        draw_rectangle(vx, vy, sw, sh, Color::new(0.0, 0.0, 0.0, 0.3));
-    } else {
-        draw_rectangle(vx, vy, sw, sh, bg);
-    }
-
-    // Procedural terrain background — full screen, L-shaped corridors, palette-blended
-    if ow.bg_terrain {
-        let tile = sw / 120.0; // ~13px at 1600w
-        let cols = (sw / tile).ceil() as i32;
-        let rows = (sh / tile).ceil() as i32;
-        let base_seed = ow.terrain_seed;
-        let next_from = |s: &mut u32| -> f32 {
-            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
-            ((*s >> 16) & 0x7FFF) as f32 / 0x7FFF as f32
-        };
-
-        // Build grid: 0=wall, 1=corridor, 2=room
-        let mut grid = vec![vec![0u8; cols as usize]; rows as usize];
-
-        // Node centers in grid coords
-        let node_gc: Vec<(i32, i32)> = ow.nodes.iter().map(|n| {
-            ((n.x * cols as f32) as i32, (n.y * rows as f32) as i32)
-        }).collect();
-
-        // Stamp rooms
-        for (i, &(gx, gy)) in node_gc.iter().enumerate() {
-            let radius: i32 = if ow.nodes[i].node_type == NodeType::Start || ow.nodes[i].node_type == NodeType::Store { 7 } else { 9 };
-            let mut s = base_seed.wrapping_add(gx as u32 * 7919 + gy as u32 * 104729);
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    let dist = ((dx*dx + dy*dy) as f32).sqrt();
-                    if dist > radius as f32 { continue; }
-                    let prob = 1.0 - (dist / radius as f32).powf(1.5) * 0.8;
-                    if next_from(&mut s) > prob { continue; }
-                    let cx = gx + dx; let cy = gy + dy;
-                    if cx >= 0 && cx < cols && cy >= 0 && cy < rows { grid[cy as usize][cx as usize] = 2; }
-                }
-            }
-        }
-
-        // L-shaped corridors (3 tiles wide)
-        for &(a, b) in &ow.connections {
-            if a >= node_gc.len() || b >= node_gc.len() { continue; }
-            let (ax, ay) = node_gc[a]; let (bx, by) = node_gc[b];
-            let x0 = ax.min(bx); let x1 = ax.max(bx);
-            for x in x0..=x1 { for w in -1..=1i32 {
-                let gy = ay + w;
-                if gy >= 0 && gy < rows && x >= 0 && x < cols && grid[gy as usize][x as usize] == 0 { grid[gy as usize][x as usize] = 1; }
-            }}
-            let y0 = ay.min(by); let y1 = ay.max(by);
-            for y in y0..=y1 { for w in -1..=1i32 {
-                let gx = bx + w;
-                if y >= 0 && y < rows && gx >= 0 && gx < cols && grid[y as usize][gx as usize] == 0 { grid[y as usize][gx as usize] = 1; }
-            }}
-        }
-
-        // Nearest node for palette
-        let mut nearest: Vec<Vec<usize>> = vec![vec![0; cols as usize]; rows as usize];
-        for y in 0..rows { for x in 0..cols {
-            let mut best = f32::MAX; let mut bi = 0usize;
-            for (i, &(gx, gy)) in node_gc.iter().enumerate() {
-                let d = ((x-gx)*(x-gx) + (y-gy)*(y-gy)) as f32;
-                if d < best { best = d; bi = i; }
-            }
-            nearest[y as usize][x as usize] = bi;
-        }}
-
-        // Palettes (darkened)
-        let pals: Vec<Vec<Color>> = ow.nodes.iter().map(|n| {
-            n.palette.iter().map(|c| { let c = hex_to_color(c); Color::new(c.r * 0.45, c.g * 0.45, c.b * 0.45, 1.0) }).collect()
-        }).collect();
-
-        // Render all tiles
-        for y in 0..rows { for x in 0..cols {
-            let ni = nearest[y as usize][x as usize];
-            let pal = &pals[ni.min(pals.len()-1)];
-            let mut s = base_seed.wrapping_mul(31).wrapping_add(y as u32 * cols as u32 + x as u32);
-            let ci = next_from(&mut s) as usize % pal.len().max(1);
-            let c = pal[ci];
-            let px = vx + x as f32 * tile;
-            let py = vy + y as f32 * tile;
-            let cell = grid[y as usize][x as usize];
-
-            if cell == 0 {
-                // Wall — very dark
-                let wb = 0.12 + next_from(&mut s) * 0.08;
-                draw_rectangle(px, py, tile, tile, Color::new(
-                    c.r * wb + bg.r * (1.0 - wb),
-                    c.g * wb + bg.g * (1.0 - wb),
-                    c.b * wb + bg.b * (1.0 - wb), 1.0));
-            } else {
-                // Floor
-                let bright = if cell == 2 { 0.7 + next_from(&mut s) * 0.3 } else { 0.5 + next_from(&mut s) * 0.3 };
-                draw_rectangle(px, py, tile, tile, Color::new(c.r * bright, c.g * bright, c.b * bright, 1.0));
-                // Wall edge shadows
-                let wall_n = y == 0 || grid[(y-1) as usize][x as usize] == 0;
-                let wall_w = x == 0 || grid[y as usize][(x-1) as usize] == 0;
-                if wall_n { draw_rectangle(px, py, tile, 2.0, Color::new(0.0, 0.0, 0.0, 0.4)); }
-                if wall_w { draw_rectangle(px, py, 2.0, tile, Color::new(0.0, 0.0, 0.0, 0.35)); }
-            }
-        }}
-    }
-
-    // Parallax floating entity-shaped particles
-    {
-        let time = get_time() as f32;
-        let entity_colors = [
-            hex_to_color(COLOR_BOSS),
-            hex_to_color(COLOR_MONSTER),
-            hex_to_color(COLOR_WEAPON),
-            hex_to_color(COLOR_ARMOR),
-            hex_to_color(COLOR_POTION),
-        ];
-        // 0=boss(circle), 1=monster(circle), 2=weapon(triangle), 3=armor(ring), 4=potion(circle)
-        for layer in 0..2 {
-            let speed = if layer == 0 { 0.25 } else { 0.12 };
-            let scale = if layer == 0 { 1.0 } else { 0.6 };
-            let alpha = if layer == 0 { 0.10 } else { 0.05 };
-            let count = 25;
-            let mut seed: u32 = 0xBEEF + layer as u32 * 7919;
-            let next = |s: &mut u32| -> f32 {
-                *s = s.wrapping_mul(1103515245).wrapping_add(12345);
-                ((*s >> 16) & 0x7FFF) as f32 / 0x7FFF as f32
-            };
-            for _ in 0..count {
-                let base_x = next(&mut seed) * sw;
-                let base_y = next(&mut seed) * sh;
-                let phase = next(&mut seed) * std::f32::consts::TAU;
-                let shape = (next(&mut seed) * entity_colors.len() as f32) as usize;
-                let rot = next(&mut seed) * std::f32::consts::TAU;
-                let px = vx + base_x + (time * speed + phase).sin() * 15.0;
-                let py = vy + (base_y + time * speed * 6.0) % sh;
-                let r = 4.0 * scale;
-                let c = entity_colors[shape % entity_colors.len()];
-                let col = Color::new(c.r, c.g, c.b, alpha);
-                match shape {
-                    0 => { // boss — larger circle
-                        draw_circle(px, py, r * 1.5, col);
-                    }
-                    1 => { // monster — small circle
-                        draw_circle(px, py, r, col);
-                    }
-                    2 => { // weapon — triangle
-                        let a = rot + time * 0.3;
-                        draw_triangle(
-                            Vec2::new(px + a.cos() * r * 1.5, py + a.sin() * r * 1.5),
-                            Vec2::new(px + (a + 2.3).cos() * r, py + (a + 2.3).sin() * r),
-                            Vec2::new(px + (a - 2.3).cos() * r, py + (a - 2.3).sin() * r),
-                            col,
-                        );
-                    }
-                    3 => { // armor — ring
-                        draw_circle(px, py, r * 1.2, col);
-                        draw_circle(px, py, r * 0.6, bg);
-                    }
-                    _ => { // potion — small circle
-                        draw_circle(px, py, r * 0.8, col);
-                    }
-                }
-            }
-        }
-    }
-
-    // Layout — 0..1 maps directly to viewport (no margins, designer has full control)
-    let map_left = vx;
-    let map_right = vx + sw;
-    let map_top = vy;
-    let map_bottom = vy + sh;
-    let map_w = map_right - map_left;
-    let map_h = map_bottom - map_top;
-
-    // Title (positioned by title_x/title_y — no bobbing)
-    let title_cx = map_left + ow.title_x * map_w;
-    let title_cy = map_top + ow.title_y * map_h;
-    let tfont = ow_font.unwrap_or(ui_bold);
-    let ts = ow.title_font_size as u16;
-    let tw = measure_text(&ow.name, Some(tfont), ts, 1.0).width;
-    draw_text_ex(&ow.name, title_cx - tw / 2.0, title_cy, TextParams {
-        font: Some(tfont), font_size: ts, color: text_col, ..Default::default()
-    });
-
-    // Description (positioned by desc_x/desc_y — no bobbing)
-    let desc_cx = map_left + ow.desc_x * map_w;
-    let desc_cy = map_top + ow.desc_y * map_h;
-    let dfont = d_font.unwrap_or(ui_font);
-    let ds = ow.desc_font_size as u16;
-    let max_desc_w = sw * 0.5;
-    let wrap_at = |max_w: f32| -> Vec<String> {
-        let mut lines: Vec<String> = Vec::new();
-        let mut cur = String::new();
-        for word in ow.description.split_whitespace() {
-            let candidate = if cur.is_empty() { word.to_string() } else { format!("{} {}", cur, word) };
-            if measure_text(&candidate, Some(dfont), ds, 1.0).width > max_w && !cur.is_empty() {
-                lines.push(cur);
-                cur = word.to_string();
-            } else {
-                cur = candidate;
-            }
-        }
-        if !cur.is_empty() { lines.push(cur); }
-        lines
-    };
-    let desc_lines = wrap_at(max_desc_w);
-    let line_h = ds as f32 * 1.3;
-    let total_h = desc_lines.len() as f32 * line_h;
-    for (i, line) in desc_lines.iter().enumerate() {
-        let lw = measure_text(line, Some(dfont), ds, 1.0).width;
-        draw_text_ex(line, desc_cx - lw / 2.0, desc_cy - total_h / 2.0 + i as f32 * line_h, TextParams {
-            font: Some(dfont), font_size: ds, color: desc_col, ..Default::default()
-        });
-    }
-
-    // Helper to convert node coords to screen coords with bobbing
-    let time = get_time(); // f64 for smooth precision
-    let node_screen = |i: usize, n: &OverworldNode| -> (f32, f32) {
-        let base_x = map_left + n.x * map_w;
-        let base_y = map_top + n.y * map_h;
-        let phase = i as f64 * 1.7;
-        let bob_x = (time * 0.5 + phase).sin() * 8.0;
-        let bob_y = (time * 0.7 + phase * 1.3).cos() * 6.0;
-        (base_x + bob_x as f32, base_y + bob_y as f32)
-    };
-
-    // Draw connections as tile trails (skip when terrain provides corridors)
-    let conn_tile = 5.0;
-    if !ow.bg_terrain {
-    for &(a, b) in &ow.connections {
-        if a >= ow.nodes.len() || b >= ow.nodes.len() { continue; }
-        let (ax, ay) = node_screen(a, &ow.nodes[a]);
-        let (bx, by) = node_screen(b, &ow.nodes[b]);
-        let dx = bx - ax;
-        let dy = by - ay;
-        let dist = (dx * dx + dy * dy).sqrt();
-        let steps = (dist / (conn_tile * 2.0)).ceil() as usize;
-        if steps == 0 { continue; }
-
-        let a_playable = ow.nodes[a].unlocked;
-        let b_playable = ow.nodes[b].unlocked;
-        let pal_a: Vec<Color> = ow.nodes[a].palette.iter().map(|c| {
-            let c = hex_to_color(c);
-            if a_playable { c } else { desaturate(c, 0.85) }
-        }).collect();
-        let pal_b: Vec<Color> = ow.nodes[b].palette.iter().map(|c| {
-            let c = hex_to_color(c);
-            if b_playable { c } else { desaturate(c, 0.85) }
-        }).collect();
-        let dim = if ow.nodes[a].unlocked && ow.nodes[b].unlocked { 0.6f32 } else { 0.25 };
-
-        let mut seed = (a as u32 * 7919 + b as u32 * 104729).wrapping_mul(2654435761);
-        let next = |s: &mut u32| -> u32 {
-            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
-            (*s >> 16) & 0x7FFF
-        };
-
-        for s in 0..steps {
-            let t = s as f32 / steps as f32;
-            let tx = ax + dx * t;
-            let ty = ay + dy * t;
-
-            let ci = next(&mut seed) as usize % pal_a.len();
-            let bi = next(&mut seed) as usize % pal_b.len();
-            let ca = pal_a[ci];
-            let cb = pal_b[bi];
-            let c = Color::new(
-                (ca.r * (1.0 - t) + cb.r * t) * dim,
-                (ca.g * (1.0 - t) + cb.g * t) * dim,
-                (ca.b * (1.0 - t) + cb.b * t) * dim,
-                1.0,
-            );
-            draw_rectangle(tx - conn_tile / 2.0, ty - conn_tile / 2.0, conn_tile, conn_tile, c);
-        }
-    }
-    } // end if !bg_terrain
-
-    // Draw nodes as organic tile blobs
-    let tile_px = 15.0;
-    let grid_w: i32 = 8;
-    let grid_h: i32 = 8;
-    for (i, node) in ow.nodes.iter().enumerate() {
-        let (nx, ny) = node_screen(i, node);
-        let playable = node.unlocked;
-        let palette: Vec<Color> = node.palette.iter().map(|c| {
-            let c = hex_to_color(c);
-            if playable { c } else { desaturate(c, 0.85) }
-        }).collect();
-
-        // Seeded RNG for deterministic shape
-        let mut seed = (i as u32).wrapping_mul(2654435761);
-        let next = |s: &mut u32| -> u32 {
-            *s = s.wrapping_mul(1103515245).wrapping_add(12345);
-            (*s >> 16) & 0x7FFF
-        };
-
-        let mut filled = [[false; 8]; 8];
-
-        if i == 0 {
-            // Start node: rounded rectangle shape
-            let pattern: [[bool; 5]; 5] = [
-                [false, true,  true,  true,  false],
-                [true,  true,  true,  true,  true],
-                [true,  true,  true,  true,  true],
-                [true,  true,  true,  true,  true],
-                [false, true,  true,  true,  false],
-            ];
-            for py in 0..5 { for px in 0..5 { filled[py + 1][px + 1] = pattern[py][px]; } }
-        } else if node.node_type == NodeType::Store {
-            // Store node: coin/diamond shape
-            let pattern: [[bool; 5]; 5] = [
-                [false, false, true,  false, false],
-                [false, true,  true,  true,  false],
-                [true,  true,  true,  true,  true ],
-                [false, true,  true,  true,  false],
-                [false, false, true,  false, false],
-            ];
-            for py in 0..5 { for px in 0..5 { filled[py + 1][px + 1] = pattern[py][px]; } }
-        } else {
-        // Grow an organic blob: start with a 2x2 core, expand by adding neighbors
-        // Core
-        for cy in 3..5 {
-            for cx in 3..5 {
-                filled[cy][cx] = true;
-            }
-        }
-        // Grow ~16 more tiles by picking random empty neighbors of filled tiles
-        let mut grown = 0;
-        let target = 14 + (next(&mut seed) % 5) as i32; // 14-18 tiles added
-        for _ in 0..300 {
-            if grown >= target { break; }
-            let ry = (next(&mut seed) % grid_h as u32) as i32;
-            let rx = (next(&mut seed) % grid_w as u32) as i32;
-            if filled[ry as usize][rx as usize] { continue; }
-            // Must be adjacent to a filled tile
-            let mut adj = false;
-            for &(dx, dy) in &[(0,1),(0,-1),(1,0),(-1,0)] {
-                let ax = rx + dx;
-                let ay = ry + dy;
-                if ax >= 0 && ax < grid_w && ay >= 0 && ay < grid_h && filled[ay as usize][ax as usize] {
-                    adj = true;
-                    break;
-                }
-            }
-            if !adj { continue; }
-            // Avoid thin arms: count how many filled neighbors this would have
-            let mut nbrs = 0;
-            for &(dx, dy) in &[(0,1),(0,-1),(1,0),(-1,0)] {
-                let ax = rx + dx;
-                let ay = ry + dy;
-                if ax >= 0 && ax < grid_w && ay >= 0 && ay < grid_h && filled[ay as usize][ax as usize] {
-                    nbrs += 1;
-                }
-            }
-            if nbrs < 1 + (next(&mut seed) % 2) as i32 { continue; }
-            filled[ry as usize][rx as usize] = true;
-            grown += 1;
-        }
-        } // end else (non-start node)
-
-        // Find bounding box of filled tiles to center the shape
-        let mut min_x = grid_w; let mut max_x = 0i32;
-        let mut min_y = grid_h; let mut max_y = 0i32;
-        for gy in 0..grid_h {
-            for gx in 0..grid_w {
-                if filled[gy as usize][gx as usize] {
-                    min_x = min_x.min(gx); max_x = max_x.max(gx);
-                    min_y = min_y.min(gy); max_y = max_y.max(gy);
-                }
-            }
-        }
-        let shape_w = (max_x - min_x + 1) as f32 * tile_px;
-        let shape_h = (max_y - min_y + 1) as f32 * tile_px;
-        let ox = nx - shape_w / 2.0 - min_x as f32 * tile_px;
-        let oy = ny - shape_h / 2.0 - min_y as f32 * tile_px;
-
-        // Draw filled tiles
-        for gy in 0..grid_h {
-            for gx in 0..grid_w {
-                if !filled[gy as usize][gx as usize] { continue; }
-                let ci = next(&mut seed) as usize % palette.len();
-                let brightness = 0.7 + (next(&mut seed) % 300) as f32 / 1000.0; // 0.7–1.0
-                let mut c = palette[ci];
-                c.r *= brightness;
-                c.g *= brightness;
-                c.b *= brightness;
-
-                if node.completed {
-                    c = Color::new(c.r * 0.5, c.g * 0.5, c.b * 0.5, 1.0);
-                } else if !node.unlocked {
-                    c = Color::new(c.r * 0.25, c.g * 0.25, c.b * 0.25, 1.0);
-                }
-
-                let tx = ox + gx as f32 * tile_px;
-                let ty = oy + gy as f32 * tile_px;
-                draw_rectangle(tx, ty, tile_px, tile_px, c);
-            }
-        }
-
-        // Flash tiles as LLM tokens stream in for this node's level design
-        // design_flashes index = node_idx - 1 (skip start node)
-        if i > 0 {
-            let flash_idx = i - 1;
-            if let Some(flashes) = design_flashes.get(flash_idx) {
-                if !flashes.is_empty() {
-                    let now = get_time();
-                    let filled_positions: Vec<(i32, i32)> = (0..grid_h)
-                        .flat_map(|gy| (0..grid_w).filter_map(move |gx| {
-                            if filled[gy as usize][gx as usize] { Some((gx, gy)) } else { None }
-                        }))
-                        .collect();
-                    if !filled_positions.is_empty() {
-                        for (ti, &flash_time) in flashes.iter().enumerate() {
-                            let age = (now - flash_time) as f32;
-                            let flash = (1.0 - age / 1.5).max(0.0);
-                            if flash <= 0.0 { continue; }
-                            let pos_idx = ((ti as u32).wrapping_mul(2654435761) >> 16) as usize % filled_positions.len();
-                            let &(gx, gy) = &filled_positions[pos_idx];
-                            let tx = ox + gx as f32 * tile_px;
-                            let ty = oy + gy as f32 * tile_px;
-                            // Flash the tile's own palette color, brightened
-                            let ci = ((ti as u32).wrapping_mul(1103515245) >> 16) as usize % palette.len();
-                            let base = palette[ci];
-                            let bright = Color::new(
-                                (base.r * 1.8).min(1.0),
-                                (base.g * 1.8).min(1.0),
-                                (base.b * 1.8).min(1.0),
-                                flash * 0.8,
-                            );
-                            draw_rectangle(tx, ty, tile_px, tile_px, bright);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Start node: green outline
-        if node.node_type == NodeType::Start {
-            let green = hex_to_color("#44ff44");
-            for gy in 0..grid_h {
-                for gx in 0..grid_w {
-                    if !filled[gy as usize][gx as usize] { continue; }
-                    let tx = ox + gx as f32 * tile_px;
-                    let ty = oy + gy as f32 * tile_px;
-                    if gx == 0 || !filled[gy as usize][(gx - 1) as usize] {
-                        draw_line(tx, ty, tx, ty + tile_px, 2.0, green);
-                    }
-                    if gx == grid_w - 1 || !filled[gy as usize][(gx + 1) as usize] {
-                        draw_line(tx + tile_px, ty, tx + tile_px, ty + tile_px, 2.0, green);
-                    }
-                    if gy == 0 || !filled[(gy - 1) as usize][gx as usize] {
-                        draw_line(tx, ty, tx + tile_px, ty, 2.0, green);
-                    }
-                    if gy == grid_h - 1 || !filled[(gy + 1) as usize][gx as usize] {
-                        draw_line(tx, ty + tile_px, tx + tile_px, ty + tile_px, 2.0, green);
-                    }
-                }
-            }
-        }
-
-        // Store node: gold outline
-        if node.node_type == NodeType::Store {
-            let gold = hex_to_color("#ffd700");
-            for gy in 0..grid_h {
-                for gx in 0..grid_w {
-                    if !filled[gy as usize][gx as usize] { continue; }
-                    let tx = ox + gx as f32 * tile_px;
-                    let ty = oy + gy as f32 * tile_px;
-                    if gx == 0 || !filled[gy as usize][(gx - 1) as usize] {
-                        draw_line(tx, ty, tx, ty + tile_px, 2.0, gold);
-                    }
-                    if gx == grid_w - 1 || !filled[gy as usize][(gx + 1) as usize] {
-                        draw_line(tx + tile_px, ty, tx + tile_px, ty + tile_px, 2.0, gold);
-                    }
-                    if gy == 0 || !filled[(gy - 1) as usize][gx as usize] {
-                        draw_line(tx, ty, tx + tile_px, ty, 2.0, gold);
-                    }
-                    if gy == grid_h - 1 || !filled[(gy + 1) as usize][gx as usize] {
-                        draw_line(tx, ty + tile_px, tx + tile_px, ty + tile_px, 2.0, gold);
-                    }
-                }
-            }
-        }
-
-        // Final level: red outline tracing the blob perimeter
-        if node.is_final {
-            let red = hex_to_color("#e94560");
-            for gy in 0..grid_h {
-                for gx in 0..grid_w {
-                    if !filled[gy as usize][gx as usize] { continue; }
-                    let tx = ox + gx as f32 * tile_px;
-                    let ty = oy + gy as f32 * tile_px;
-                    // Draw edge lines where neighbor is empty
-                    if gx == 0 || !filled[gy as usize][(gx - 1) as usize] {
-                        draw_line(tx, ty, tx, ty + tile_px, 2.0, red);
-                    }
-                    if gx == grid_w - 1 || !filled[gy as usize][(gx + 1) as usize] {
-                        draw_line(tx + tile_px, ty, tx + tile_px, ty + tile_px, 2.0, red);
-                    }
-                    if gy == 0 || !filled[(gy - 1) as usize][gx as usize] {
-                        draw_line(tx, ty, tx + tile_px, ty, 2.0, red);
-                    }
-                    if gy == grid_h - 1 || !filled[(gy + 1) as usize][gx as usize] {
-                        draw_line(tx, ty + tile_px, tx + tile_px, ty + tile_px, 2.0, red);
-                    }
-                }
-            }
-        }
-
-        // Current node: green circle with soft shadow
-        if i == ow.current_node {
-            draw_soft_circle_shadow(nx, ny, tile_px * 1.2);
-            draw_circle(nx, ny, tile_px * 1.2, hex_to_color("#44ff44"));
-        }
-
-        // Level name below node (skip start node)
-        if node.unlocked && i != 0 {
-            let lfont = l_font.unwrap_or(ui_font);
-            let ns = 14u16;
-            let bot_y = oy + (max_y + 1) as f32 * tile_px;
-            let nw = measure_text(&node.name, Some(lfont), ns, 1.0).width;
-            draw_text_ex(&node.name, nx - nw / 2.0, bot_y + 16.0, TextParams {
-                font: Some(lfont), font_size: ns, color: text_col, ..Default::default()
-            });
-        }
-    }
-
-}
-
 fn draw_death_overlay(font: &Font, bold: &Font, state: &GameState) {
     let sw = screen_width();
     let sh = screen_height();
@@ -3538,11 +2901,18 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     let player_screen_y = mid_top + (state.player.y - camera_y) as f32 * tz + tz / 2.0;
     let light_radius = state.vision_radius as f32 * tz;
 
-    // Fill map area with wall color so edges don't show black when zoomed
-    let wall_color = state.level.tile_defs.values()
-        .find(|d| !d.walkable)
-        .map(|d| hex_to_color(&d.color))
-        .unwrap_or(Color::new(0.1, 0.1, 0.1, 1.0));
+    // Fill map area with wall/void color
+    let wall_color = if !state.level.region_scales.is_empty() {
+        // Unified map: use void/black as background
+        state.level.tile_defs.get("void")
+            .map(|d| hex_to_color(&d.color))
+            .unwrap_or(BLACK)
+    } else {
+        state.level.tile_defs.values()
+            .find(|d| !d.walkable)
+            .map(|d| hex_to_color(&d.color))
+            .unwrap_or(Color::new(0.1, 0.1, 0.1, 1.0))
+    };
     draw_rectangle(0.0, top_height, sw, sh - top_height, wall_color);
 
     // Tiles

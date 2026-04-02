@@ -152,6 +152,21 @@ pub struct Level {
     pub visible: HashSet<(i32, i32)>,
     #[serde(skip)]
     pub char_marks: std::collections::HashMap<(i32, i32), f32>, // bomb scorch: pos → intensity 0.0-1.0
+    /// Per-region music scales for unified overworld (ox, oy, w, h, scale_freqs)
+    #[serde(skip)]
+    pub region_scales: Vec<(i32, i32, i32, i32, Vec<f32>)>,
+}
+
+impl Level {
+    /// Get the music scale for a position. Returns the region's scale if inside one, or the default.
+    pub fn scale_at(&self, x: i32, y: i32) -> &[f32] {
+        for (ox, oy, w, h, scale) in &self.region_scales {
+            if x >= *ox && x < ox + w && y >= *oy && y < oy + h {
+                return scale;
+            }
+        }
+        &self.scale // default (C major for overworld)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -282,6 +297,7 @@ impl GameState {
                 scale: vec![], victory_message: String::new(), defeat_message: String::new(),
                 revealed: HashSet::new(), visible: HashSet::new(),
                 char_marks: Default::default(),
+                region_scales: vec![],
             },
             log: vec![],
             game_over: false,
@@ -340,20 +356,47 @@ pub fn player_attack(state: &mut GameState, monster_idx: usize) -> bool {
         maybe_drop_loot(state, monster_idx);
         if is_boss {
             state.log("THE BOSS IS SLAIN!", "#ffd700");
-            // Unlock exit door
+            let boss_x = state.level.monsters.get(monster_idx).map(|m| m.x).unwrap_or(0);
+            let boss_y = state.level.monsters.get(monster_idx).map(|m| m.y).unwrap_or(0);
+
+            // Find which region the boss is in, only unlock that region's exit doors
+            let mut region_bounds: Option<(i32, i32, i32, i32)> = None;
+            for &(ox, oy, w, h, _) in &state.level.region_scales {
+                if boss_x >= ox && boss_x < ox + w && boss_y >= oy && boss_y < oy + h {
+                    region_bounds = Some((ox, oy, w, h));
+                    break;
+                }
+            }
+
             let mut found_exit = false;
-            for row in &mut state.level.tiles {
-                for tile in row.iter_mut() {
-                    if tile == "exit_door_locked" {
-                        *tile = "exit_door".to_string();
-                        found_exit = true;
+            if let Some((rx, ry, rw, rh)) = region_bounds {
+                // Unified map: only unlock doors in this region
+                for y in ry..(ry + rh) {
+                    for x in rx..(rx + rw) {
+                        if y >= 0 && x >= 0 && (y as usize) < state.level.tiles.len() && (x as usize) < state.level.tiles[y as usize].len() {
+                            if state.level.tiles[y as usize][x as usize] == "exit_door_locked" {
+                                state.level.tiles[y as usize][x as usize] = "exit_door".to_string();
+                                found_exit = true;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: single-level mode, unlock all exit doors
+                for row in &mut state.level.tiles {
+                    for tile in row.iter_mut() {
+                        if tile == "exit_door_locked" {
+                            *tile = "exit_door".to_string();
+                            found_exit = true;
+                        }
                     }
                 }
             }
+
             if found_exit {
                 state.log("An exit door has opened!", "#44ccff");
-            } else {
-                // No exit door placed — fall back to immediate victory
+            } else if state.level.region_scales.is_empty() {
+                // No exit door and not unified map — fall back to immediate victory
                 state.victory = true;
             }
         }
@@ -465,8 +508,16 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
             return serde_json::json!({"moved": false});
         }
     }
+    if tile == "store_merchant" {
+        state.log("You approach the shopkeeper.", "#ffd700");
+        return serde_json::json!({"moved": false, "store": true});
+    }
     if let Some(td) = state.level.tile_defs.get(tile) {
         if !td.walkable {
+            if tile == "exit_door_locked" {
+                state.log("The gate is sealed. Defeat the boss to open it.", "#aa6622");
+                return serde_json::json!({"moved": false, "gate_blocked": true});
+            }
             return serde_json::json!({"moved": false});
         }
     }
@@ -493,10 +544,17 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
 
     // Check if player stepped on exit door
     if state.level.tiles[ny as usize][nx as usize] == "exit_door" {
-        state.log("You exit the level!", "#ffd700");
-        state.victory = true;
-        return serde_json::json!({"moved": true, "victory": true});
+        // In unified map (region_scales present), just log and continue — no victory screen
+        if !state.level.region_scales.is_empty() {
+            state.log("You pass through the gate...", "#44ccff");
+            // Make the door walkable-through (already is, since exit_door is walkable)
+        } else {
+            state.log("You exit the level!", "#ffd700");
+            state.victory = true;
+            return serde_json::json!({"moved": true, "victory": true});
+        }
     }
+
 
     let newly = reveal_around(&mut state.level, nx, ny, state.vision_radius);
 

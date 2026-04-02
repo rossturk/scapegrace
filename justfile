@@ -12,8 +12,13 @@ run:
 builder:
     cargo run --bin level_builder
 
-# Run the level builder with dev campaigns
+# Run the level builder with dev campaigns (builds Vite frontend first)
 builder-dev:
+    cd static/level_builder && npm run build
+    cargo run --bin level_builder -- -o campaigns_dev.json
+
+# Run the level builder with legacy monolithic HTML (no Vite build)
+builder-legacy:
     cargo run --bin level_builder -- -o campaigns_dev.json
 
 # Build macOS .app bundle
@@ -56,6 +61,21 @@ appimage:
     fi
     ARCH="$(uname -m)" "$APPIMAGETOOL" "$APP_DIR" "target/Scapegrace-$(uname -m).AppImage"
     echo "Built: target/Scapegrace-$(uname -m).AppImage"
+
+# Run the new Vite-based level builder (frontend dev server + Rust API)
+builder-vite:
+    #!/bin/bash
+    set -euo pipefail
+    cargo run --bin level_builder -- -o campaigns_dev.json &
+    RUST_PID=$!
+    cd static/level_builder && npx vite &
+    VITE_PID=$!
+    trap "kill $RUST_PID $VITE_PID 2>/dev/null" EXIT
+    wait
+
+# Build the Vite frontend for production
+builder-build:
+    cd static/level_builder && npm run build
 
 # Install cargo-bundle if missing
 setup:

@@ -1,0 +1,19 @@
+/* ── DAG ── */
+.dag-toolbar { background: var(--panel); padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-shrink: 0; align-self: stretch; }
+.dag-container { flex: 1; overflow: hidden; position: relative; user-select: none; background: #000; }
+.dag-container svg { display: block; }
+.dag-container canvas { display: block; }
+.dag-header { text-align: center; padding: 20px 20px 8px; }
+.dag-header h2 { margin-bottom: 4px; }
+.dag-header p { opacity: 0.7; font-size: 13px; }
+.dag-node { cursor: grab; }
+.dag-node.selected rect { stroke: var(--accent); stroke-width: 3; }
+.dag-node:hover rect { filter: brightness(1.3); }
+.conn-group path.conn-visible { transition: stroke .15s; }
+.conn-group:hover path.conn-visible { stroke: #e94560 !important; stroke-width: 2.5; }
+.conn-handle { opacity: 0; transition: all .15s; }
+.dag-node:hover .conn-handle { opacity: 1; }
+.conn-handle:hover { fill: #e94560 !important; stroke: #fff !important; opacity: 1; }
+.dag-popup { position: absolute; z-index: 10; pointer-events: auto; }
+.dag-popup-node { background: var(--panel); border: 1px solid var(--accent); border-top: none; border-radius: 0 0 8px 8px; padding: 6px 8px; display: flex; justify-content: center; }
+.dag-popup-conn { background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; transform: translate(-50%, -100%); margin-top: -8px; box-shadow: 0 2px 12px rgba(0,0,0,.5); }

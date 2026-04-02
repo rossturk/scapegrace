@@ -16,7 +16,7 @@ arboard = "3"
 dirs = "5"
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 uuid = { version = "1", features = ["v4"] }
 
 [package.metadata.bundle]

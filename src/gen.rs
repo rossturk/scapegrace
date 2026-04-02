@@ -213,6 +213,21 @@ pub struct OverworldResult {
     /// Explicit DAG edges as [from_node_id, to_node_id] pairs (e.g. ["start","level_0"], ["level_0","level_1"], ["level_2","store"])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connections: Option<Vec<[String; 2]>>,
+    /// Set of one-way connection keys ("from->to") — traversable only in the specified direction
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub one_way_connections: Option<Vec<String>>,
+    /// Fork chambers — small rooms with multiple exits for branching paths
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_chambers: Option<Vec<ForkChamber>>,
+    /// Rooms — small connector rooms with dynamic entry/exit handles
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rooms: Option<Vec<ForkChamber>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hallway_waypoints: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_room_size: Option<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_room_size: Option<[i32; 2]>,
     /// DAG node positions for the level builder (node_id → {x, y})
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_positions: Option<serde_json::Value>,
@@ -234,6 +249,12 @@ pub struct OverworldResult {
     /// Overworld region offsets (designer-dragged level positions)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ow_region_offsets: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ForkChamber {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -278,6 +299,9 @@ pub struct BundledCampaign {
     /// Campaign-level monster templates. If present, used instead of per-level monster_types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monster_templates: Option<Vec<MonsterTemplateRaw>>,
+    /// Pre-built overworld tile grid from the level builder (WYSIWYG)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebuilt_overworld_map: Option<serde_json::Value>,
 }
 
 /// Per-campaign difficulty settings. Controls when mechanics appear within a campaign.
@@ -466,6 +490,7 @@ fn load_bundled_campaigns() -> Vec<BundledCampaign> {
             }
         }
     }
+    search_files.push(std::path::PathBuf::from("campaigns_dev.json"));
     search_files.push(std::path::PathBuf::from("campaigns.json"));
 
     // Try external pack files
@@ -1718,6 +1743,7 @@ fn assemble_level_with_settings(
         revealed: HashSet::new(),
         visible: HashSet::new(),
         char_marks: Default::default(),
+        region_scales: vec![],
     };
 
     Ok((level, player_start, remaining_budget))
@@ -1842,13 +1868,13 @@ pub fn generate_overworld_map(
         .map(|(di, (ni, _))| (ni, di))
         .collect();
 
-    // Store nodes use smaller dimensions
-    let store_w = 15_i32;
-    let store_h = 10_i32;
+    // Store nodes use smaller dimensions (size from builder or default)
+    let store_w = campaign.overworld.store_room_size.map(|s| s[0]).unwrap_or(15);
+    let store_h = campaign.overworld.store_room_size.map(|s| s[1]).unwrap_or(10);
 
-    // Title room: the Start node becomes the title room
-    let title_room_w = 40_i32;
-    let title_room_h = 40_i32;
+    // Title room: the Start node becomes the title room (size from builder or default)
+    let title_room_w = campaign.overworld.start_room_size.map(|s| s[0]).unwrap_or(40);
+    let title_room_h = campaign.overworld.start_room_size.map(|s| s[1]).unwrap_or(40);
     let start_idx = levels.iter().position(|n| n.node_type == crate::game::NodeType::Start);
 
     // Layout: place title room at origin, first level to the right
@@ -2236,4 +2262,189 @@ pub fn generate_overworld_map(
         hallways,
         player_pos,
     })
+}
+
+/// Build a single unified Level from a prebuilt_overworld_map.
+/// The entire campaign becomes one continuous tilemap with all entities placed.
+pub fn build_unified_level(
+    campaign: &BundledCampaign,
+) -> Result<(Level, [i32; 2]), String> {
+    let map_val = campaign.prebuilt_overworld_map.as_ref()
+        .ok_or("No prebuilt_overworld_map in campaign")?;
+
+    // Parse the exported overworld map
+    let width: i32 = map_val.get("width").and_then(|v| v.as_i64()).unwrap_or(100) as i32;
+    let height: i32 = map_val.get("height").and_then(|v| v.as_i64()).unwrap_or(100) as i32;
+    let player_pos: [i32; 2] = if let Some(pp) = map_val.get("player_pos") {
+        let pos = [pp[0].as_f64().unwrap_or(0.0) as i32, pp[1].as_f64().unwrap_or(0.0) as i32];
+        eprintln!("  player_pos from JSON: {:?} (raw: {})", pos, pp);
+        pos
+    } else {
+        eprintln!("  WARNING: no player_pos in prebuilt_overworld_map");
+        [0, 0]
+    };
+
+    // Parse tile grid
+    let mut tiles: Vec<Vec<String>> = Vec::new();
+    if let Some(rows) = map_val.get("tiles").and_then(|v| v.as_array()) {
+        for row in rows {
+            if let Some(cols) = row.as_array() {
+                tiles.push(cols.iter().map(|c| c.as_str().unwrap_or("void").to_string()).collect());
+            }
+        }
+    }
+    if tiles.is_empty() { return Err("Empty tile grid".into()); }
+
+    // Parse tile defs
+    let mut tile_defs: HashMap<String, TileDef> = HashMap::new();
+    if let Some(defs) = map_val.get("tile_defs").and_then(|v| v.as_object()) {
+        for (name, def) in defs {
+            tile_defs.insert(name.clone(), TileDef {
+                name: name.clone(),
+                color: def.get("color").and_then(|v| v.as_str()).unwrap_or("#333").to_string(),
+                walkable: def.get("walkable").and_then(|v| v.as_bool()).unwrap_or(false),
+                char_display: String::new(),
+                damage: 0,
+                image: None,
+            });
+        }
+    }
+    // Ensure void and hallway tiles exist
+    tile_defs.entry("void".into()).or_insert(TileDef {
+        name: "void".into(), color: "#000000".into(), walkable: false,
+        char_display: String::new(), damage: 0, image: None,
+    });
+
+    // Parse regions
+    let regions: Vec<serde_json::Value> = map_val.get("regions")
+        .and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+    // Build entities from each level region's design
+    let mut all_monsters: Vec<Monster> = Vec::new();
+    let mut all_items: Vec<Item> = Vec::new();
+    let mut all_traps: Vec<Trap> = Vec::new();
+    let designs = &campaign.designs;
+    let settings = &campaign.settings;
+    let campaign_monsters = campaign.monster_templates.as_deref();
+
+    for region in &regions {
+        let node_id = region.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
+        let region_ox = region.get("ox").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let region_oy = region.get("oy").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+
+        // Only level nodes have designs with entities
+        if !node_id.starts_with("level_") { continue; }
+        let level_idx: usize = match node_id.strip_prefix("level_").and_then(|s| s.parse().ok()) {
+            Some(i) => i,
+            None => continue,
+        };
+        let design = match designs.get(level_idx) {
+            Some(d) => d,
+            None => continue,
+        };
+        let ow_levels = &campaign.overworld.levels;
+        let ow_level = match ow_levels.get(level_idx) {
+            Some(l) => l,
+            None => continue,
+        };
+
+        // Build the level to get properly scaled entities
+        let config = LevelConfig {
+            title: ow_level.name.clone(),
+            font: ow_level.font.clone().unwrap_or_default(),
+            description: ow_level.description.clone(),
+            theme: ow_level.theme.clone(),
+            palette: ow_level.palette.clone().unwrap_or_default(),
+            budget: ow_level.budget,
+            floor: (level_idx + 1) as i32,
+            campaign_tier: 0,
+        };
+        let item_sprites = &campaign.prebuilt_overworld_map.as_ref()
+            .map(|_| HashMap::new()).unwrap_or_default();
+        if let Ok((level, _start, _rem)) = build_level_from_design_with_settings(
+            &config, design, settings, campaign_monsters, item_sprites,
+        ) {
+            // Copy monsters with region offset
+            for mut m in level.monsters {
+                m.x += region_ox;
+                m.y += region_oy;
+                // Also offset boss body tiles
+                for body in &mut m.boss_body {
+                    body.0 += region_ox;
+                    body.1 += region_oy;
+                }
+                all_monsters.push(m);
+            }
+            // Copy items with region offset
+            for mut item in level.items {
+                item.x += region_ox;
+                item.y += region_oy;
+                all_items.push(item);
+            }
+            // Copy traps with region offset
+            for mut trap in level.traps {
+                trap.x += region_ox;
+                trap.y += region_oy;
+                all_traps.push(trap);
+            }
+            // Copy special tiles (exit doors, locked doors) from built level into unified grid
+            for y in 0..level.height {
+                for x in 0..level.width {
+                    let tile_name = &level.tiles[y as usize][x as usize];
+                    if tile_name == "exit_door_locked" || tile_name == "exit_door" || tile_name == "locked_door" {
+                        let gx = (region_ox + x) as usize;
+                        let gy = (region_oy + y) as usize;
+                        if gy < tiles.len() && gx < tiles[gy].len() {
+                            tiles[gy][gx] = tile_name.clone();
+                        }
+                    }
+                }
+            }
+            // Merge tile defs from this level (overwrite with images, damage, etc.)
+            for (name, def) in level.tile_defs {
+                tile_defs.insert(name, def);
+            }
+        }
+    }
+
+    // Build per-region music scales
+    let mut region_scales: Vec<(i32, i32, i32, i32, Vec<f32>)> = Vec::new();
+    for region in &regions {
+        let node_id = region.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
+        if !node_id.starts_with("level_") { continue; }
+        let level_idx: usize = match node_id.strip_prefix("level_").and_then(|s| s.parse().ok()) {
+            Some(i) => i, None => continue,
+        };
+        let design = match designs.get(level_idx) { Some(d) => d, None => continue };
+        let region_ox = region.get("ox").and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+        let region_oy = region.get("oy").and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+        let region_w = region.get("w").and_then(|v| v.as_f64()).unwrap_or(60.0) as i32;
+        let region_h = region.get("h").and_then(|v| v.as_f64()).unwrap_or(36.0) as i32;
+        let scale = design.mode.as_ref()
+            .map(|m| build_scale(&m.root, &m.scale))
+            .unwrap_or_else(|| build_scale("C", "aeolian"));
+        region_scales.push((region_ox, region_oy, region_w, region_h, scale));
+    }
+
+    let level = Level {
+        width,
+        height,
+        tiles,
+        tile_defs,
+        monsters: all_monsters,
+        items: all_items,
+        traps: all_traps,
+        title: campaign.overworld.name.clone(),
+        description: campaign.overworld.description.clone(),
+        font: campaign.overworld.font.clone().unwrap_or_default(),
+        scale: build_scale("C", "ionian"), // C major default for hallways/rooms
+        victory_message: String::new(),
+        defeat_message: String::new(),
+        revealed: HashSet::new(),
+        visible: HashSet::new(),
+        char_marks: HashMap::new(),
+        region_scales,
+    };
+
+    Ok((level, player_pos))
 }
