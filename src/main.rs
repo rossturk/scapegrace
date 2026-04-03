@@ -542,7 +542,15 @@ async fn main() {
     let mut nav_last_dir: (f32, f32) = (0.0, 0.0);
     let mut nav_cycle_idx: usize = 0;
     let mut game_hold_time: f64 = 0.0;
-    let mut teleport_drag_start: Option<(f32, f32)> = None;
+    let mut teleport_last_mouse: Option<(f32, f32)> = None;
+    let mut teleport_cam_offset: (f32, f32) = (0.0, 0.0);
+    let mut teleport_hover_tile: (i32, i32) = (0, 0);
+    let mut teleport_zoom: f32 = 1.0;
+    let mut teleport_target_zoom: f32 = 0.2;
+    let mut teleport_dest: Option<(i32, i32)> = None; // chosen destination
+    let mut teleport_phase: u8 = 0; // 0=zoom_out, 1=browse, 2=travel, 3=zoom_in
+    let mut teleport_is_cancel: bool = false;
+    let mut teleport_cheat: bool = false; // xyzzy unlocks fog reveal + right-click teleport
     let mut game_last_fire: f64 = 0.0;
 
     loop {
@@ -842,7 +850,14 @@ async fn main() {
                                     match gen::build_unified_level(campaign) {
                                         Ok((level, start)) => {
                                             state.level = level;
-                                            if !resuming {
+                                            let resume_walkable = resuming && {
+                                                let px = state.player.x;
+                                                let py = state.player.y;
+                                                px >= 0 && py >= 0 && py < state.level.height && px < state.level.width
+                                                && state.level.tile_defs.get(&state.level.tiles[py as usize][px as usize])
+                                                    .map(|t| t.walkable).unwrap_or(false)
+                                            };
+                                            if !resume_walkable {
                                                 state.player.x = start[0];
                                                 state.player.y = start[1];
                                             }
@@ -1565,93 +1580,188 @@ async fn main() {
             }
 
             Screen::Teleport => {
-                // Reveal all tiles, zoom way out, click to teleport
-                let teleport_zoom = 0.2_f32;
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, teleport_zoom);
-                draw_text("TELEPORT — Click to teleport, drag to pan, Escape to cancel", 10.0, 30.0, 20.0, WHITE);
-                draw_text(&format!("({}, {})", state.player.x, state.player.y), 10.0, 55.0, 18.0, YELLOW);
+                let dt = get_frame_time();
+                let anim_speed = 3.0;
 
-                let tz = 24.0 * teleport_zoom;
-                let sw = screen_width();
-                let top_height = 80.0_f32;
-                let mid_height = sw * 9.0 / 16.0 - top_height;
-                let mid_top = top_height;
-                let map_width = sw * 0.75;
-                let cam_fx = state.player.x as f32 + 0.5 - (map_width / tz) / 2.0;
-                let cam_fy = state.player.y as f32 + 0.5 - (mid_height / tz) / 2.0;
-
-                // Click to teleport (only on short click, not drag)
-                let (mouse_x, mouse_y) = mouse_position();
-                if is_mouse_button_pressed(MouseButton::Left) {
-                    teleport_drag_start = Some((mouse_x, mouse_y));
-                }
-                if is_mouse_button_released(MouseButton::Left) {
-                    if let Some((sx, sy)) = teleport_drag_start {
-                        let dist = ((mouse_x - sx).powi(2) + (mouse_y - sy).powi(2)).sqrt();
-                        if dist < 5.0 {
-                            // Short click — teleport
-                            let tile_x = (cam_fx + mouse_x / tz) as i32;
-                            let tile_y = (cam_fy + (mouse_y - mid_top) / tz) as i32;
-                            if tile_x >= 0 && tile_y >= 0 && tile_x < state.level.width && tile_y < state.level.height {
-                                state.player.x = tile_x;
-                                state.player.y = tile_y;
+                // Phase 0: Zoom out from gameplay view
+                // Phase 1: Browse — pan/zoom, pick destination
+                // Phase 2: Pan to destination (while zoomed out)
+                // Phase 3: Zoom in at destination (or back to origin on cancel)
+                match teleport_phase {
+                    0 => {
+                        teleport_zoom += (teleport_target_zoom - teleport_zoom) * (anim_speed * dt).min(1.0);
+                        if (teleport_zoom - teleport_target_zoom).abs() < 0.01 {
+                            teleport_zoom = teleport_target_zoom;
+                            teleport_phase = 1;
+                        }
+                    }
+                    2 => {
+                        // Move player to dest immediately, adjust offset so view doesn't jump
+                        if let Some((dx, dy)) = teleport_dest.take() {
+                            let old_px = state.player.x as f32;
+                            let old_py = state.player.y as f32;
+                            state.player.x = dx;
+                            state.player.y = dy;
+                            // Camera = player + 0.5 - offset, keep camera unchanged:
+                            // old_player - old_offset = new_player - new_offset
+                            // new_offset = old_offset + (new_player - old_player)
+                            teleport_cam_offset.0 += dx as f32 - old_px;
+                            teleport_cam_offset.1 += dy as f32 - old_py;
+                            teleport_phase = 4; // animate offset to 0
+                        }
+                    }
+                    4 => {
+                        // Animate offset back to (0,0) — centers on destination
+                        let pan_speed = 5.0 * dt;
+                        teleport_cam_offset.0 += (0.0 - teleport_cam_offset.0) * pan_speed.min(1.0);
+                        teleport_cam_offset.1 += (0.0 - teleport_cam_offset.1) * pan_speed.min(1.0);
+                        if teleport_cam_offset.0.abs() < 0.5 && teleport_cam_offset.1.abs() < 0.5 {
+                            teleport_cam_offset = (0.0, 0.0);
+                            teleport_phase = 3; // zoom in
+                        }
+                    }
+                    3 => {
+                        // Zoom in at current position (destination or original)
+                        teleport_zoom += (1.0 - teleport_zoom) * (anim_speed * dt).min(1.0);
+                        if (teleport_zoom - 1.0).abs() < 0.02 {
+                            teleport_zoom = 1.0;
+                            teleport_cam_offset = (0.0, 0.0);
+                            if !teleport_is_cancel {
+                                let (px, py) = (state.player.x, state.player.y);
                                 state.level.visible.clear();
-                                crate::game::reveal_around(&mut state.level, tile_x, tile_y, state.vision_radius);
-                                state.log(&format!("Teleported to ({}, {})", tile_x, tile_y), "#ffcc00");
-                                state.vision_radius = 12;
+                                crate::game::reveal_around(&mut state.level, px, py, state.vision_radius);
+                                state.log(&format!("Teleported to ({}, {})", px, py), "#ffcc00");
                                 if let Some(s) = &sfx { s.confirm(); }
-                                screen = Screen::Playing;
+                            }
+                            state.vision_radius = 12;
+                            teleport_dest = None;
+                            screen = Screen::Playing;
+                        }
+                    }
+                    _ => {} // phase 1 handled below
+                }
+
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, teleport_zoom, teleport_cam_offset);
+
+                // Camera math for overlay (must match render_game)
+                let tz = TILE * teleport_zoom;
+                let sw = screen_width();
+                let sh = screen_height();
+                let top_height = 70.0_f32;
+                let bottom_height = 28.0_f32;
+                let log_width = 320.0_f32;
+                let mid_top = top_height;
+                let mid_height = sh - top_height - bottom_height;
+                let map_width = sw - log_width;
+                let cam_fx = state.player.x as f32 + 0.5 - teleport_cam_offset.0 - (map_width / tz) / 2.0;
+                let cam_fy = state.player.y as f32 + 0.5 - teleport_cam_offset.1 - (mid_height / tz) / 2.0;
+                let camera_x = cam_fx.floor() as i32 - 1;
+                let camera_y = cam_fy.floor() as i32 - 1;
+                let sub_x = -(cam_fx - camera_x as f32) * tz;
+                let sub_y = -(cam_fy - camera_y as f32) * tz;
+                let map_left = sub_x;
+                let mid_top_adj = mid_top + sub_y;
+                let (mouse_x, mouse_y) = mouse_position();
+
+                if teleport_phase == 1 {
+                    // xyzzy cheat: unlock fog reveal + right-click teleport
+                    let cheat_keys_tp = [
+                        (KeyCode::X, 'x'), (KeyCode::Y, 'y'), (KeyCode::Z, 'z'),
+                    ];
+                    for &(kc, ch) in &cheat_keys_tp {
+                        if is_key_pressed(kc) { cheat_buf.push(ch); }
+                    }
+                    if cheat_buf.len() > 10 { cheat_buf.drain(..cheat_buf.len() - 10); }
+                    {
+                        let buf_str: String = cheat_buf.iter().collect();
+                        if buf_str.contains("xyzzy") {
+                            cheat_buf.clear();
+                            teleport_cheat = true;
+                            if let Some(s) = &sfx { s.cheat_fanfare(); }
+                            state.vision_radius = 50;
+                            for y in 0..state.level.height {
+                                for x in 0..state.level.width {
+                                    state.level.revealed.insert((x, y));
+                                }
                             }
                         }
                     }
-                    teleport_drag_start = None;
-                }
-                // Drag to pan (move player to shift camera)
-                if is_mouse_button_down(MouseButton::Left) {
-                    if let Some((ref mut sx, ref mut sy)) = teleport_drag_start {
-                        let dx = mouse_x - *sx;
-                        let dy = mouse_y - *sy;
-                        if dx.abs() > 2.0 || dy.abs() > 2.0 {
-                            state.player.x -= (dx / tz) as i32;
-                            state.player.y -= (dy / tz) as i32;
-                            state.player.x = state.player.x.max(0).min(state.level.width - 1);
-                            state.player.y = state.player.y.max(0).min(state.level.height - 1);
-                            *sx = mouse_x;
-                            *sy = mouse_y;
+
+                    // Hover highlight
+                    let hover_tx = camera_x + ((mouse_x - map_left) / tz) as i32;
+                    let hover_ty = camera_y + ((mouse_y - mid_top_adj) / tz) as i32;
+                    if hover_tx >= 0 && hover_ty >= 0 && hover_tx < state.level.width && hover_ty < state.level.height {
+                        teleport_hover_tile = (hover_tx, hover_ty);
+                        if teleport_cheat {
+                            let hx = map_left + (hover_tx - camera_x) as f32 * tz;
+                            let hy = mid_top_adj + (hover_ty - camera_y) as f32 * tz;
+                            draw_rectangle(hx, hy, tz, tz, Color::new(0.4, 1.0, 0.4, 0.3));
+                            draw_rectangle_lines(hx, hy, tz, tz, 2.0, Color::new(0.4, 1.0, 0.4, 0.8));
                         }
                     }
-                }
+                    let status = if teleport_cheat {
+                        format!("XYZZY  ({}, {})  zoom:{:.0}%  Drag=pan  RClick=teleport  Scroll=zoom  Shift+Tab=exit",
+                            hover_tx, hover_ty, teleport_zoom * 100.0)
+                    } else {
+                        format!("MAP  zoom:{:.0}%  Drag=pan  Scroll=zoom  Shift+Tab=exit",
+                            teleport_zoom * 100.0)
+                    };
+                    draw_text(&status, 10.0, sh - 8.0, 16.0, YELLOW);
 
-                if is_key_pressed(KeyCode::Escape) {
-                    state.vision_radius = 12;
-                    screen = Screen::Playing;
+                    // Scroll wheel zoom
+                    let (_sx, scroll_y) = mouse_wheel();
+                    if scroll_y != 0.0 {
+                        let zoom_factor = if scroll_y > 0.0 { 1.15 } else { 1.0 / 1.15 };
+                        teleport_zoom = (teleport_zoom * zoom_factor).clamp(0.05, 1.5);
+                    }
+
+                    // Left-click drag to pan
+                    if is_mouse_button_pressed(MouseButton::Left) {
+                        teleport_last_mouse = Some((mouse_x, mouse_y));
+                    }
+                    if is_mouse_button_down(MouseButton::Left) {
+                        if let Some((ref mut lx, ref mut ly)) = teleport_last_mouse {
+                            let dx = mouse_x - *lx;
+                            let dy = mouse_y - *ly;
+                            teleport_cam_offset.0 += dx / tz;
+                            teleport_cam_offset.1 += dy / tz;
+                            *lx = mouse_x;
+                            *ly = mouse_y;
+                        }
+                    }
+                    if is_mouse_button_released(MouseButton::Left) {
+                        teleport_last_mouse = None;
+                    }
+
+                    // Right-click teleport (cheat only)
+                    if teleport_cheat && is_mouse_button_pressed(MouseButton::Right) {
+                        let (tx, ty) = teleport_hover_tile;
+                        if tx >= 0 && ty >= 0 && tx < state.level.width && ty < state.level.height {
+                            teleport_dest = Some((tx, ty));
+                            teleport_is_cancel = false;
+                            teleport_phase = 2;
+                        }
+                    }
+
+                    // Shift+Tab: exit map view
+                    if is_key_pressed(KeyCode::Tab) && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift)) {
+                        teleport_dest = Some((state.player.x, state.player.y));
+                        teleport_is_cancel = true;
+                        teleport_phase = 2;
+                    }
                 }
             }
 
             Screen::Playing => {
-                // Cheat code detection: xyzzy during gameplay → teleport mode
-                let cheat_keys_play = [
-                    (KeyCode::X, 'x'), (KeyCode::Y, 'y'), (KeyCode::Z, 'z'),
-                ];
-                for &(kc, ch) in &cheat_keys_play {
-                    if is_key_pressed(kc) { cheat_buf.push(ch); }
-                }
-                if cheat_buf.len() > 10 { cheat_buf.drain(..cheat_buf.len() - 10); }
-                {
-                    let buf_str: String = cheat_buf.iter().collect();
-                    if buf_str.contains("xyzzy") {
-                        cheat_buf.clear();
-                        if let Some(s) = &sfx { s.cheat_fanfare(); }
-                        state.vision_radius = 50;
-                        // Reveal entire map
-                        for y in 0..state.level.height {
-                            for x in 0..state.level.width {
-                                state.level.revealed.insert((x, y));
-                            }
-                        }
-                        screen = Screen::Teleport;
-                        eprintln!("XYZZY: Teleport mode activated at ({}, {})", state.player.x, state.player.y);
-                    }
+                // Shift+Tab: map view (cinematic zoom-out, only revealed tiles)
+                if is_key_pressed(KeyCode::Tab) && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift)) {
+                    teleport_zoom = 1.0;
+                    teleport_target_zoom = 0.2;
+                    teleport_cam_offset = (0.0, 0.0);
+                    teleport_dest = None;
+                    teleport_cheat = false;
+                    teleport_phase = 0;
+                    screen = Screen::Teleport;
                 }
 
                 if ghost_town && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q)) {
@@ -1707,11 +1817,11 @@ async fn main() {
                         }
                     }
                 }
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom, (0.0, 0.0));
             }
 
             Screen::Dead => {
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom, (0.0, 0.0));
                 draw_death_overlay(&ui_font, &ui_font_bold, &state);
 
                 if is_key_pressed(KeyCode::Enter) {
@@ -1753,7 +1863,7 @@ async fn main() {
             }
 
             Screen::Victory => {
-                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom);
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom, (0.0, 0.0));
                 update_confetti(&mut confetti);
                 draw_confetti(&confetti);
                 draw_victory_overlay(&ui_font, &ui_font_bold, &state);
@@ -3018,7 +3128,7 @@ fn draw_confetti(confetti: &[Confetti]) {
 
 // ── Game rendering ──
 
-fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, tile_textures: &std::collections::HashMap<String, Texture2D>, monster_textures: &std::collections::HashMap<String, Texture2D>, item_textures: &std::collections::HashMap<String, Texture2D>, zoom: f32) {
+fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, tile_textures: &std::collections::HashMap<String, Texture2D>, monster_textures: &std::collections::HashMap<String, Texture2D>, item_textures: &std::collections::HashMap<String, Texture2D>, zoom: f32, cam_offset: (f32, f32)) {
     if state.level.tiles.is_empty() {
         return;
     }
@@ -3054,9 +3164,9 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     let tz = TILE * zoom;
     let tiles_x = (map_width / tz) as i32 + 4;
     let tiles_y = (mid_height / tz) as i32 + 4;
-    // Float camera: player is exactly at center of map area
-    let cam_fx = state.player.x as f32 + 0.5 - (map_width / tz) / 2.0;
-    let cam_fy = state.player.y as f32 + 0.5 - (mid_height / tz) / 2.0;
+    // Float camera: player is exactly at center of map area, offset by cam_offset
+    let cam_fx = state.player.x as f32 + 0.5 - cam_offset.0 - (map_width / tz) / 2.0;
+    let cam_fy = state.player.y as f32 + 0.5 - cam_offset.1 - (mid_height / tz) / 2.0;
     let camera_x = cam_fx.floor() as i32 - 1;
     let camera_y = cam_fy.floor() as i32 - 1;
     // Sub-tile pixel offset for smooth centering
@@ -3083,6 +3193,11 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     };
     draw_rectangle(0.0, top_height, sw, sh - top_height, wall_color);
 
+    // Pre-compute tile colors to avoid hex_to_color per tile per frame
+    let tile_colors: std::collections::HashMap<&str, Color> = state.level.tile_defs.iter()
+        .map(|(name, def)| (name.as_str(), hex_to_color(&def.color)))
+        .collect();
+
     // Tiles
     for sy in 0..=tiles_y {
         for sx in 0..=tiles_x {
@@ -3091,14 +3206,12 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             let out_of_bounds = tx < 0 || ty < 0 || tx >= state.level.width || ty >= state.level.height;
             let unrevealed = !out_of_bounds && !state.level.revealed.contains(&(tx, ty));
             if out_of_bounds || unrevealed {
-                // Draw wall-colored tile so radial light falloff doesn't reveal black gaps
-                let screen_x = map_left + sx as f32 * tz;
-                let screen_y = mid_top + sy as f32 * tz;
-                draw_rectangle(screen_x, screen_y, tz, tz, wall_color);
-                continue;
+                continue; // background fill already covers these
             }
 
             let tile_name = &state.level.tiles[ty as usize][tx as usize];
+            // Skip void tiles — background already the right color
+            if tile_name == "void" { continue; }
             let def = match state.level.tile_defs.get(tile_name) {
                 Some(d) => d,
                 None => continue,
@@ -3114,7 +3227,8 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
                 continue;
             }
 
-            let in_vision = state.level.visible.contains(&(tx, ty));
+            // At low zoom, skip expensive effects but still draw textures
+            let low_zoom = tz < 8.0;
 
             if let Some(tex) = tile_textures.get(tile_name) {
                 draw_texture_ex(tex, screen_x, screen_y, WHITE, DrawTextureParams {
@@ -3122,8 +3236,16 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
                     ..Default::default()
                 });
             } else {
-                draw_rectangle(screen_x, screen_y, tz, tz, hex_to_color(&def.color));
+                if let Some(&c) = tile_colors.get(tile_name.as_str()) {
+                    draw_rectangle(screen_x, screen_y, tz, tz, c);
+                } else {
+                    draw_rectangle(screen_x, screen_y, tz, tz, hex_to_color(&def.color));
+                }
             }
+
+            if low_zoom { continue; } // skip effects below at low zoom
+
+            let in_vision = state.level.visible.contains(&(tx, ty));
 
             // Bomb scorch overlay
             if let Some(&intensity) = state.level.char_marks.get(&(tx, ty)) {
@@ -3152,6 +3274,8 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     }
 
     // ── Map ambient occlusion: darken walkable tiles near walls ──
+    // Skip at low zoom (tiles too small to see the effect, and very expensive)
+    if tz >= 8.0 {
     for sy in 0..=tiles_y {
         for sx in 0..=tiles_x {
             let tx = camera_x + sx;
@@ -3186,6 +3310,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             }
         }
     }
+    } // end AO skip at low zoom
 
     // Items
     for item in &state.level.items {
@@ -3496,6 +3621,8 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
     }
 
     // ── Smooth radial light falloff (sub-tile grid, not aligned to tiles) ──
+    // Skip at low zoom — vision radius covers the whole screen anyway
+    if tz >= 8.0 {
     let cell = 6.0_f32; // sub-tile cell size for smooth gradient
     let light_max_alpha = 0.5; // match fog-of-war darkness at edges
     let light_area_top = top_height;
@@ -3518,6 +3645,7 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             }
         }
     }
+    } // end radial light skip at low zoom
 
     // ── Redraw header/footer on top of map to clip any tile bleeding ──
     draw_rectangle(0.0, 0.0, sw, top_height, Color::new(0.05, 0.05, 0.05, 1.0));

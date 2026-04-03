@@ -2303,7 +2303,7 @@ pub fn build_unified_level(
                 walkable: def.get("walkable").and_then(|v| v.as_bool()).unwrap_or(false),
                 char_display: String::new(),
                 damage: 0,
-                image: None,
+                image: def.get("image").and_then(|v| v.as_str()).map(|s| s.to_string()),
             });
         }
     }

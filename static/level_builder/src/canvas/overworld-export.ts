@@ -11,7 +11,7 @@ export interface ExportedOverworldMap {
   width: number;
   height: number;
   tiles: string[][];
-  tile_defs: Record<string, { name: string; color: string; walkable: boolean }>;
+  tile_defs: Record<string, { name: string; color: string; walkable: boolean; image?: string }>;
   regions: {
     node_id: string;
     ox: number; oy: number;
@@ -84,14 +84,24 @@ export function exportOverworldMap(
     room_floor: { name: 'room_floor', color: '#3d2a6e', walkable: true },
   };
 
-  // Helper: resolve tile names from a tile_source (level_N id)
+  // Helper: resolve tile names from a tile_source (level_N id) and register their defs
   const resolveTileSource = (tileSource?: string): { wall: string; floor: string } => {
     if (!tileSource) return { wall: 'room_wall', floor: 'room_floor' };
     const m2 = tileSource.match(/^level_(\d+)$/);
     if (m2) {
       const idx = parseInt(m2[1]);
       const design = designs[idx];
+      const pal = levels[idx]?.palette || ['#444'];
       if (design?.tile_defs && design.tile_defs.length >= 2) {
+        // Register tile defs with images from the source level
+        for (let i = 0; i < design.tile_defs.length; i++) {
+          const d = design.tile_defs[i];
+          if (!tileDefs[d.name]) {
+            const entry: ExportedOverworldMap['tile_defs'][string] = { name: d.name, color: pal[i % pal.length] || '#333', walkable: i > 0 };
+            if (d.image) entry.image = d.image;
+            tileDefs[d.name] = entry;
+          }
+        }
         return { wall: design.tile_defs[0].name, floor: design.tile_defs[1].name };
       }
     }
@@ -109,11 +119,13 @@ export function exportOverworldMap(
       const defs = design.tile_defs || [];
       const pal = levels[di]?.palette || ['#444'];
 
-      // Register tile defs for this level
+      // Register tile defs for this level (including tile images)
       for (let i = 0; i < defs.length; i++) {
         const name = defs[i].name;
         if (!tileDefs[name]) {
-          tileDefs[name] = { name, color: pal[i % pal.length] || '#333', walkable: i > 0 };
+          const entry: ExportedOverworldMap['tile_defs'][string] = { name, color: pal[i % pal.length] || '#333', walkable: i > 0 };
+          if (defs[i].image) entry.image = defs[i].image;
+          tileDefs[name] = entry;
         }
       }
 
@@ -328,22 +340,24 @@ export function exportOverworldMap(
   }
 
   // Post-pass: carve doorways wherever a non-walkable non-level tile is adjacent to a walkable hallway tile
-  // Build set of tiles that are "level interior" (from prebuilt_map) — these should NOT be carved
-  const levelWalls = new Set<string>();
+  // Build set of positions that are inside level regions — these should NOT be carved
+  const levelInterior = new Set<string>();
   for (const br of builderRegions) {
-    if (br.type === 'level' && br.level_idx != null && designs[br.level_idx]?.tile_defs?.[0]) {
-      levelWalls.add(designs[br.level_idx].tile_defs[0].name);
+    if (br.type === 'level') {
+      for (let y = 0; y < br.h; y++)
+        for (let x = 0; x < br.w; x++)
+          levelInterior.add(`${br.ox - minX + x},${br.oy - minY + y}`);
     }
   }
 
-  // Generic wall→floor mapping: find a walkable neighbor's tile type for replacement
+  // Carve doorways: find non-walkable tiles adjacent to walkable hallway/floor tiles
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       const cur = tiles[y][x];
       const curDef = tileDefs[cur];
-      if (!curDef || curDef.walkable) continue; // skip walkable tiles
+      if (!curDef || curDef.walkable) continue;
       if (cur === 'void' || cur === 'exit_door_locked' || cur === 'store_merchant') continue;
-      if (levelWalls.has(cur)) continue; // don't carve level walls (they have exit doors)
+      if (levelInterior.has(`${x},${y}`)) continue; // don't carve inside levels
 
       const neighbors: [number,number][] = [[x-1,y],[x+1,y],[x,y-1],[x,y+1]];
       let adjacentFloor: string | null = null;

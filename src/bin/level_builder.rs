@@ -497,7 +497,7 @@ async fn main() {
         .route("/api/generate-image", post(generate_image))
         .route("/api/overworld-map", get(get_overworld_map))
         .fallback(get(index_handler))
-        .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB
+        .layer(axum::extract::DefaultBodyLimit::max(200 * 1024 * 1024)) // 200MB
         .layer(CorsLayer::permissive())
         .with_state(state);
 
