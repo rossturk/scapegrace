@@ -133,19 +133,23 @@ export function exportOverworldMap(
     } else {
       // Room/store/start: draw as wall/floor grid with optional tile_source
       const ts = resolveTileSource(br.tile_source);
-      // Default wall/floor for store/start if no tile_source
       let wallName = ts.wall, floorName = ts.floor;
       if (!br.tile_source) {
         if (br.type === 'store') {
           wallName = 'store_wall'; floorName = 'store_floor';
           if (!tileDefs['store_wall']) tileDefs['store_wall'] = { name: 'store_wall', color: '#5d4e37', walkable: false };
           if (!tileDefs['store_floor']) tileDefs['store_floor'] = { name: 'store_floor', color: '#6d5e47', walkable: true };
-          if (!tileDefs['store_merchant']) tileDefs['store_merchant'] = { name: 'store_merchant', color: '#ffd700', walkable: false };
         } else if (br.type === 'start') {
           wallName = 'title_wall'; floorName = 'title_floor';
           if (!tileDefs['title_wall']) tileDefs['title_wall'] = { name: 'title_wall', color: '#3a2a1a', walkable: false };
           if (!tileDefs['title_floor']) tileDefs['title_floor'] = { name: 'title_floor', color: '#4a3a2a', walkable: true };
+        } else {
+          wallName = 'room_wall'; floorName = 'room_floor';
         }
+      }
+      // Always ensure store_merchant tile def exists
+      if (br.type === 'store') {
+        if (!tileDefs['store_merchant']) tileDefs['store_merchant'] = { name: 'store_merchant', color: '#ffd700', walkable: false };
       }
       for (let y = 0; y < br.h; y++) {
         for (let x = 0; x < br.w; x++) {

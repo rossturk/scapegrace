@@ -57,6 +57,7 @@ enum Screen {
     Victory,
     GameWon,
     Store,
+    Teleport,
 }
 
 enum GenMsg {
@@ -541,6 +542,7 @@ async fn main() {
     let mut nav_last_dir: (f32, f32) = (0.0, 0.0);
     let mut nav_cycle_idx: usize = 0;
     let mut game_hold_time: f64 = 0.0;
+    let mut teleport_drag_start: Option<(f32, f32)> = None;
     let mut game_last_fire: f64 = 0.0;
 
     loop {
@@ -1562,7 +1564,96 @@ async fn main() {
                 }
             }
 
+            Screen::Teleport => {
+                // Reveal all tiles, zoom way out, click to teleport
+                let teleport_zoom = 0.2_f32;
+                render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, teleport_zoom);
+                draw_text("TELEPORT — Click to teleport, drag to pan, Escape to cancel", 10.0, 30.0, 20.0, WHITE);
+                draw_text(&format!("({}, {})", state.player.x, state.player.y), 10.0, 55.0, 18.0, YELLOW);
+
+                let tz = 24.0 * teleport_zoom;
+                let sw = screen_width();
+                let top_height = 80.0_f32;
+                let mid_height = sw * 9.0 / 16.0 - top_height;
+                let mid_top = top_height;
+                let map_width = sw * 0.75;
+                let cam_fx = state.player.x as f32 + 0.5 - (map_width / tz) / 2.0;
+                let cam_fy = state.player.y as f32 + 0.5 - (mid_height / tz) / 2.0;
+
+                // Click to teleport (only on short click, not drag)
+                let (mouse_x, mouse_y) = mouse_position();
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    teleport_drag_start = Some((mouse_x, mouse_y));
+                }
+                if is_mouse_button_released(MouseButton::Left) {
+                    if let Some((sx, sy)) = teleport_drag_start {
+                        let dist = ((mouse_x - sx).powi(2) + (mouse_y - sy).powi(2)).sqrt();
+                        if dist < 5.0 {
+                            // Short click — teleport
+                            let tile_x = (cam_fx + mouse_x / tz) as i32;
+                            let tile_y = (cam_fy + (mouse_y - mid_top) / tz) as i32;
+                            if tile_x >= 0 && tile_y >= 0 && tile_x < state.level.width && tile_y < state.level.height {
+                                state.player.x = tile_x;
+                                state.player.y = tile_y;
+                                state.level.visible.clear();
+                                crate::game::reveal_around(&mut state.level, tile_x, tile_y, state.vision_radius);
+                                state.log(&format!("Teleported to ({}, {})", tile_x, tile_y), "#ffcc00");
+                                state.vision_radius = 12;
+                                if let Some(s) = &sfx { s.confirm(); }
+                                screen = Screen::Playing;
+                            }
+                        }
+                    }
+                    teleport_drag_start = None;
+                }
+                // Drag to pan (move player to shift camera)
+                if is_mouse_button_down(MouseButton::Left) {
+                    if let Some((ref mut sx, ref mut sy)) = teleport_drag_start {
+                        let dx = mouse_x - *sx;
+                        let dy = mouse_y - *sy;
+                        if dx.abs() > 2.0 || dy.abs() > 2.0 {
+                            state.player.x -= (dx / tz) as i32;
+                            state.player.y -= (dy / tz) as i32;
+                            state.player.x = state.player.x.max(0).min(state.level.width - 1);
+                            state.player.y = state.player.y.max(0).min(state.level.height - 1);
+                            *sx = mouse_x;
+                            *sy = mouse_y;
+                        }
+                    }
+                }
+
+                if is_key_pressed(KeyCode::Escape) {
+                    state.vision_radius = 12;
+                    screen = Screen::Playing;
+                }
+            }
+
             Screen::Playing => {
+                // Cheat code detection: xyzzy during gameplay → teleport mode
+                let cheat_keys_play = [
+                    (KeyCode::X, 'x'), (KeyCode::Y, 'y'), (KeyCode::Z, 'z'),
+                ];
+                for &(kc, ch) in &cheat_keys_play {
+                    if is_key_pressed(kc) { cheat_buf.push(ch); }
+                }
+                if cheat_buf.len() > 10 { cheat_buf.drain(..cheat_buf.len() - 10); }
+                {
+                    let buf_str: String = cheat_buf.iter().collect();
+                    if buf_str.contains("xyzzy") {
+                        cheat_buf.clear();
+                        if let Some(s) = &sfx { s.cheat_fanfare(); }
+                        state.vision_radius = 50;
+                        // Reveal entire map
+                        for y in 0..state.level.height {
+                            for x in 0..state.level.width {
+                                state.level.revealed.insert((x, y));
+                            }
+                        }
+                        screen = Screen::Teleport;
+                        eprintln!("XYZZY: Teleport mode activated at ({}, {})", state.player.x, state.player.y);
+                    }
+                }
+
                 if ghost_town && (is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Q)) {
                     if let Some(s) = &sfx { s.stop_boss_drone(); }
                     screen = Screen::Playing;

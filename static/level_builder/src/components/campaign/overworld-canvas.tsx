@@ -11,9 +11,10 @@ export const owState = createOwCanvasState();
 export const selectedNode = signal<number | string | null>(null);
 const mapDataVersion = signal(0);
 
-// Module-level redraw function, set by the component
+// Module-level redraw function and campaign ref, set by the component
 let _moduleRedraw: (() => void) | null = null;
 export function triggerRedraw() { _moduleRedraw?.(); }
+export const campaignRef: { current: BundledCampaign | null } = { current: null };
 
 interface Props {
   campaign: BundledCampaign;
@@ -24,10 +25,9 @@ export function OverworldCanvas({ campaign }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const interactionRef = useRef<OverworldInteraction | null>(null);
   const redrawRef = useRef<(() => void) | null>(null);
-  const campaignRef = useRef(campaign);
   const [popup, setPopup] = useState<PopupInfo | null>(null);
 
-  // Always keep ref current
+  // Always keep module-level ref current
   campaignRef.current = campaign;
 
   // Initialize builder_regions if not present (migrate or create default)

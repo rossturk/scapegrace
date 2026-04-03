@@ -31,12 +31,23 @@ export async function savePack() {
   // Debug: check if builder_regions exists before save
   const c0 = pack.value.campaigns?.[0];
   console.log('savePack: builder_regions in pack.value:', c0?.overworld?.builder_regions ? c0.overworld.builder_regions.length : 'NONE');
-  // Export WYSIWYG overworld maps before saving
+  // Sync live builder_regions from canvas before exporting
+  const { owState, campaignRef } = await import('../components/campaign/overworld-canvas');
   const { exportOverworldMap } = await import('../canvas/overworld-export');
-  const { owState } = await import('../components/campaign/overworld-canvas');
+  if (campaignRef?.current?.overworld?.builder_regions) {
+    const liveId = selectedCampaignId.value;
+    const packCampaign = pack.value.campaigns.find(c => c.id === liveId);
+    if (packCampaign) {
+      packCampaign.overworld.builder_regions = campaignRef.current.overworld.builder_regions.map((r: any) => ({ ...r }));
+    }
+  }
+  // Export WYSIWYG overworld maps
   for (const campaign of pack.value.campaigns) {
     if (campaign.overworld.builder_regions && campaign.overworld.builder_regions.length > 0) {
-      owState.hallwayCacheKey = null; // force rebuild with current positions
+      // Force hallway cache rebuild by triggering a redraw before export
+      owState.hallwayCacheKey = null;
+      const { triggerRedraw } = await import('../components/campaign/overworld-canvas');
+      triggerRedraw(); // rebuilds hallway cache during draw
       const exported = exportOverworldMap(campaign, owState);
       if (exported) campaign.prebuilt_overworld_map = exported;
     }
