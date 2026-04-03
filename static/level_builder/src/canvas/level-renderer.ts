@@ -3,15 +3,24 @@
 import type { Phase2Result, PlacedEntities, TileDefSlim, BundledCampaign } from '../types/pack';
 
 const imageCache = new Map<string, HTMLImageElement>();
+const imageCacheB64 = new Map<string, string>();
+let _onImageLoaded: (() => void) | null = null;
+
+/** Set a callback that fires when any cached image finishes loading */
+export function setImageLoadCallback(cb: (() => void) | null) { _onImageLoaded = cb; }
 
 function loadImage(key: string, base64: string): HTMLImageElement | null {
+  if (imageCacheB64.get(key) !== base64) {
+    imageCache.delete(key);
+    imageCacheB64.set(key, base64);
+  }
   const cached = imageCache.get(key);
   if (cached?.complete && cached.naturalWidth > 0) return cached;
   if (!cached) {
     const img = new Image();
+    img.onload = () => { if (_onImageLoaded) _onImageLoaded(); };
     img.src = `data:image/png;base64,${base64}`;
     imageCache.set(key, img);
-    // Return null — caller will get it on next redraw
   }
   return imageCache.get(key)?.complete ? imageCache.get(key)! : null;
 }

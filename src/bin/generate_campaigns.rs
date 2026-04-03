@@ -717,7 +717,7 @@ fn main() {
                                 bg_mode: None,
                                 terrain_seed: None,
                                 bg_prompt: None,
-                                ow_region_offsets: None,
+                                ow_region_offsets: None, builder_regions: None,
                                 one_way_connections: None,
                                 fork_chambers: None,
                                 rooms: None,

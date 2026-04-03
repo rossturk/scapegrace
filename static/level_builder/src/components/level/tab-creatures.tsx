@@ -54,12 +54,14 @@ async function genBossSprite(design: Phase2Result) {
   const b = design.boss;
   if (!b) return;
   showToast('Generating boss sprite...', 'info');
-  const b64 = await generateImage({
+  const raw = await generateImage({
     prompt: `2D pixel art sprite of a roguelike game boss monster called "${b.name}". ${b.description || ''}. Top-down view, 64x64 pixel art, single large creature centered on pure solid BLACK background. No text.`,
     width: 128,
     height: 128,
   });
-  if (b64) {
+  if (raw) {
+    const { processSprite } = await import('../../canvas/sprite-processing');
+    const b64 = await processSprite(raw);
     updateDesign(d => { d.boss.image = b64; });
     showToast('Boss sprite generated!', 'success');
   }

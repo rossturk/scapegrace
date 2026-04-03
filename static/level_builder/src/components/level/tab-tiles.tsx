@@ -24,7 +24,18 @@ export function TabTiles({ design, palette }: Props) {
               <div class="color-swatch" style={`background:${col};flex-shrink:0;`} />
               <EnhancedInput
                 value={td.name || ''}
-                onChange={(v) => updateDesign(d => { d.tile_defs[i].name = v; })}
+                onChange={(v) => updateDesign(d => {
+                  const oldName = d.tile_defs[i].name;
+                  d.tile_defs[i].name = v;
+                  // Rename all references in prebuilt_map tiles
+                  if (d.prebuilt_map?.tiles && oldName !== v) {
+                    for (const row of d.prebuilt_map.tiles) {
+                      for (let x = 0; x < row.length; x++) {
+                        if (row[x] === oldName) row[x] = v;
+                      }
+                    }
+                  }
+                })}
                 context="tile type name for roguelike dungeon"
                 style="flex:1;font-weight:600;"
               />
@@ -48,7 +59,19 @@ export function TabTiles({ design, palette }: Props) {
                   });
                 }}
               />
-              <button style="padding:2px 6px;font-size:10px;" onClick={() => updateDesign(d => { d.tile_defs.splice(i, 1); })}>x</button>
+              <button style="padding:2px 6px;font-size:10px;" onClick={() => updateDesign(d => {
+                const removedName = d.tile_defs[i].name;
+                d.tile_defs.splice(i, 1);
+                // Replace removed tile's references in prebuilt_map with first remaining floor tile
+                if (d.prebuilt_map?.tiles) {
+                  const fallback = d.tile_defs.length > 1 ? d.tile_defs[1].name : (d.tile_defs[0]?.name || 'wall');
+                  for (const row of d.prebuilt_map.tiles) {
+                    for (let x = 0; x < row.length; x++) {
+                      if (row[x] === removedName) row[x] = fallback;
+                    }
+                  }
+                }
+              })}>x</button>
             </div>
             <div class="flex gap-8 items-center">
               {td.image ? (
@@ -80,13 +103,21 @@ export function TabTiles({ design, palette }: Props) {
 }
 
 async function genTileImage(tileIdx: number, name: string, color: string) {
+  const isWall = tileIdx === 0;
   showToast('Generating tile image...', 'info');
-  const b64 = await generateImage({
-    prompt: `16x16 pixel art tilemap tile: ${name}. Color scheme: ${color}. Top-down dungeon tile, clean pixel art.`,
+  const raw = await generateImage({
+    prompt: `Generate a single square tile texture for a top-down 2D roguelike game. ` +
+      `The tile is: "${name}". ${isWall ? 'It is a solid wall or obstacle — should look dense and impassable.' : 'It is a walkable floor tile — should look open and traversable.'} ` +
+      `STYLE REQUIREMENTS: Simple flat pixel art. Use color ${color} as the dominant color. ` +
+      `Bright and saturated, NOT dark or muddy. Minimal detail — just enough to suggest the material. ` +
+      `Perfectly seamless and tileable in all directions. Uniform texture with NO focal point, NO objects, NO borders, NO text. ` +
+      `Think classic SNES/GBA RPG tile. Fill the ENTIRE image with the texture edge to edge.`,
     width: 64,
     height: 64,
   });
-  if (b64) {
+  if (raw) {
+    const { blendWithColor } = await import('../../canvas/sprite-processing');
+    const b64 = await blendWithColor(raw, color, 0.3);
     updateDesign(d => { d.tile_defs[tileIdx].image = b64; });
     showToast('Tile image generated!', 'success');
   }

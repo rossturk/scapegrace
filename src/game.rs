@@ -101,8 +101,6 @@ pub struct Player {
     pub antidotes: i32,        // consumable: negates damage tile damage for 20 steps
     #[serde(default)]
     pub antidote_steps: i32,   // remaining immune steps (active effect)
-    #[serde(default)]
-    pub scout_maps: i32,       // consumable: reveals entire map on level entry
 }
 
 fn default_potion_cap() -> i32 { 10 }
@@ -120,7 +118,7 @@ impl Default for Player {
             potions: 1, keys: 0, floor: 1, facing: -std::f32::consts::FRAC_PI_2,
             bombs: 0, speed_potions: 0, speed_turns: 0,
             potion_cap: 10,
-            antidotes: 0, antidote_steps: 0, scout_maps: 0,
+            antidotes: 0, antidote_steps: 0,
         }
     }
 }
@@ -778,19 +776,6 @@ pub fn use_antidote(state: &mut GameState) -> bool {
     state.player.antidotes -= 1;
     state.player.antidote_steps = i32::MAX / 2; // lasts the whole level
     state.log(&format!("You drink an antidote! Immune to hazards this level. ({} left)", state.player.antidotes), "#44ddaa");
-    true
-}
-
-/// Consume a scout map: reveal the entire level.
-pub fn use_scout_map(state: &mut GameState) -> bool {
-    if state.player.scout_maps <= 0 { return false; }
-    state.player.scout_maps -= 1;
-    for y in 0..state.level.height {
-        for x in 0..state.level.width {
-            state.level.revealed.insert((x, y));
-        }
-    }
-    state.log(&format!("Scout map reveals the entire level! ({} left)", state.player.scout_maps), "#ffd700");
     true
 }
 

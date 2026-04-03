@@ -40,7 +40,8 @@ export const selectedDesign = computed<Phase2Result | null>(() => {
   const c = selectedCampaign.value;
   const idx = selectedLevelIdx.value;
   if (!c || idx === null) return null;
-  return c.designs[idx] ?? null;
+  const d = c.designs[idx];
+  return d ? { ...d } : null; // new ref so signal notifies consumers
 });
 
 // ── Constants ────────────────────────────────────────────────

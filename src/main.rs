@@ -846,13 +846,17 @@ async fn main() {
                                             }
                                             state.game_over = false;
                                             state.victory = false;
-                                            state.vision_radius = 15; // larger for unified overworld
-                                            // Reveal entire map for now (no fog of war on overworld)
-                                            for y in 0..state.level.height {
-                                                for x in 0..state.level.width {
-                                                    state.level.revealed.insert((x, y));
-                                                    state.level.visible.insert((x, y));
-                                                }
+                                            state.log.clear();
+                                            state.vision_radius = 12;
+                                            if !ghost_town {
+                                                let (px, py, vis) = (state.player.x, state.player.y, state.vision_radius);
+                                                crate::game::reveal_around(&mut state.level, px, py, vis);
+                                            }
+                                            state.log(&state.level.description.clone(), "#888");
+                                            if ghost_town {
+                                                state.log("Nothing stirs. The halls are empty.", "#666");
+                                            } else {
+                                                state.log("Your task: find and defeat the boss.", "#666");
                                             }
                                             tile_textures.clear();
                                             for (name, def) in &state.level.tile_defs {
@@ -901,6 +905,27 @@ async fn main() {
                                                         }
                                                     }
                                                 }
+                                            }
+                                            // Load trap textures
+                                            for trap in &state.level.traps {
+                                                if !item_textures.contains_key(&trap.name) {
+                                                    if let Some(ref b64) = &trap.image {
+                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                                let t = Texture2D::from_image(&img);
+                                                                t.set_filter(FilterMode::Nearest);
+                                                                t
+                                                            })
+                                                        ) {
+                                                            item_textures.insert(trap.name.clone(), tex);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if let Some(s) = &sfx {
+                                                s.start_boss_drone(state.level.scale_at(state.player.x, state.player.y));
+                                                let openness = game::measure_openness(&state.level, state.player.x, state.player.y);
+                                                s.update_room_acoustics(openness);
                                             }
                                             overworld = Some(ow);
                                             screen = Screen::Playing;
@@ -1043,13 +1068,17 @@ async fn main() {
                                             state.player.y = start[1];
                                             state.game_over = false;
                                             state.victory = false;
-                                            state.vision_radius = 15;
-                                            // Reveal entire map (no fog on overworld)
-                                            for y in 0..state.level.height {
-                                                for x in 0..state.level.width {
-                                                    state.level.revealed.insert((x, y));
-                                                    state.level.visible.insert((x, y));
-                                                }
+                                            state.log.clear();
+                                            state.vision_radius = 12;
+                                            if !ghost_town {
+                                                let (px, py, vis) = (state.player.x, state.player.y, state.vision_radius);
+                                                crate::game::reveal_around(&mut state.level, px, py, vis);
+                                            }
+                                            state.log(&state.level.description.clone(), "#888");
+                                            if ghost_town {
+                                                state.log("Nothing stirs. The halls are empty.", "#666");
+                                            } else {
+                                                state.log("Your task: find and defeat the boss.", "#666");
                                             }
                                             // Load tile textures
                                             tile_textures.clear();
@@ -1065,6 +1094,61 @@ async fn main() {
                                                         tile_textures.insert(name.clone(), tex);
                                                     }
                                                 }
+                                            }
+                                            // Load monster textures
+                                            monster_textures.clear();
+                                            for mon in &state.level.monsters {
+                                                if !monster_textures.contains_key(&mon.name) {
+                                                    if let Some(ref b64) = mon.image {
+                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                                let t = Texture2D::from_image(&img);
+                                                                t.set_filter(FilterMode::Nearest);
+                                                                t
+                                                            })
+                                                        ) {
+                                                            monster_textures.insert(mon.name.clone(), tex);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Load item textures
+                                            item_textures.clear();
+                                            for item in &state.level.items {
+                                                if !item_textures.contains_key(&item.name) {
+                                                    if let Some(ref b64) = item.image {
+                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                                let t = Texture2D::from_image(&img);
+                                                                t.set_filter(FilterMode::Nearest);
+                                                                t
+                                                            })
+                                                        ) {
+                                                            item_textures.insert(item.name.clone(), tex);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Load trap textures
+                                            for trap in &state.level.traps {
+                                                if !item_textures.contains_key(&trap.name) {
+                                                    if let Some(ref b64) = &trap.image {
+                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
+                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+                                                                let t = Texture2D::from_image(&img);
+                                                                t.set_filter(FilterMode::Nearest);
+                                                                t
+                                                            })
+                                                        ) {
+                                                            item_textures.insert(trap.name.clone(), tex);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if let Some(s) = &sfx {
+                                                s.start_boss_drone(state.level.scale_at(state.player.x, state.player.y));
+                                                let openness = game::measure_openness(&state.level, state.player.x, state.player.y);
+                                                s.update_room_acoustics(openness);
                                             }
                                             overworld = Some(ow);
                                             screen = Screen::Playing;
@@ -1432,16 +1516,12 @@ async fn main() {
                                 state.victory = false;
                                 state.log.clear();
                                 if !ghost_town {
-                                    if state.player.scout_maps > 0 {
-                                        game::use_scout_map(&mut state);
-                                    } else {
-                                        reveal_around(
-                                            &mut state.level,
-                                            state.player.x,
-                                            state.player.y,
-                                            state.vision_radius,
-                                        );
-                                    }
+                                    reveal_around(
+                                        &mut state.level,
+                                        state.player.x,
+                                        state.player.y,
+                                        state.vision_radius,
+                                    );
                                 }
                                 state.log(&state.level.description.clone(), "#888");
                                 if ghost_town {
@@ -1669,9 +1749,6 @@ async fn main() {
                                     "potion_cap" => {
                                         let v = item.value;
                                         state.player.potion_cap = (state.player.potion_cap + v).min(30);
-                                    }
-                                    "scout_map" => {
-                                        state.player.scout_maps += 1;
                                     }
                                     "antidote" => {
                                         state.player.antidotes = (state.player.antidotes + 1).min(3);

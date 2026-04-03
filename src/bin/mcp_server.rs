@@ -604,7 +604,6 @@ struct PlayerSnapshot {
     xp_to_next: i32,
     potion_cap: i32,
     antidotes: i32,
-    scout_maps: i32,
 }
 
 impl From<&Player> for PlayerSnapshot {
@@ -613,7 +612,7 @@ impl From<&Player> for PlayerSnapshot {
             level: p.level, max_hp: p.max_hp, attack: p.attack, defense: p.defense,
             gold: p.gold, potions: p.potions, bombs: p.bombs, speed_potions: p.speed_potions,
             xp: p.xp, xp_to_next: p.xp_to_next, potion_cap: p.potion_cap,
-            antidotes: p.antidotes, scout_maps: p.scout_maps,
+            antidotes: p.antidotes,
         }
     }
 }
@@ -632,7 +631,6 @@ fn apply_snapshot(player: &mut Player, snap: &PlayerSnapshot) {
     player.xp_to_next = snap.xp_to_next;
     player.potion_cap = snap.potion_cap;
     player.antidotes = snap.antidotes;
-    player.scout_maps = snap.scout_maps;
 }
 
 /// Store buy instructions: list of (item_type, quantity) to purchase.
@@ -705,9 +703,6 @@ fn simulate_campaign_with_store(
                         "potion_cap" => {
                             state.player.potion_cap = (state.player.potion_cap + val).min(30);
                         }
-                        "scout_map" => {
-                            state.player.scout_maps += 1;
-                        }
                         "antidote" => {
                             state.player.antidotes = (state.player.antidotes + 1).min(3);
                         }
@@ -765,12 +760,7 @@ fn simulate_campaign_with_store(
         state.game_over = false;
         state.victory = false;
         state.log.clear();
-        // Auto-use scout map on level entry
-        if state.player.scout_maps > 0 {
-            game::use_scout_map(&mut state);
-        } else {
-            game::reveal_around(&mut state.level, state.player.x, state.player.y, state.vision_radius);
-        }
+        game::reveal_around(&mut state.level, state.player.x, state.player.y, state.vision_radius);
         // Auto-use antidote if level has damage tiles
         if state.player.antidotes > 0 {
             let has_damage = state.level.tile_defs.values().any(|t| t.damage > 0);
@@ -885,7 +875,6 @@ fn campaign_result_to_json(r: &CampaignResult) -> Value {
             "speed_potions": r.player_at_end.speed_potions,
             "potion_cap": r.player_at_end.potion_cap,
             "antidotes": r.player_at_end.antidotes,
-            "scout_maps": r.player_at_end.scout_maps,
         },
         "store_available": r.store_available.iter().map(|(n, p, s)| json!({"name": n, "price": p, "stock": s})).collect::<Vec<_>>(),
         "store_purchases": r.store_purchases,
@@ -964,10 +953,8 @@ fn tool_definitions() -> Value {
                     "buy_potion_cap": { "type": "boolean", "description": "Buy a Potion Pouch (+5 potion capacity, 150g scaled by tier)" },
                     "buy_max_hp": { "type": "boolean", "description": "Buy a Vitality Charm (+15 max HP, 100g scaled by tier)" },
                     "buy_antidotes": { "type": "integer", "description": "Number of antidotes to buy (max 3, 50g each scaled by tier)" },
-                    "buy_scout_maps": { "type": "integer", "description": "Number of scout maps to buy (max 2, 75g each scaled by tier)" },
                     "player_potion_cap": { "type": "integer", "description": "Current potion capacity (default 10)" },
-                    "player_antidotes": { "type": "integer", "description": "Current antidotes (default 0)" },
-                    "player_scout_maps": { "type": "integer", "description": "Current scout maps (default 0)" }
+                    "player_antidotes": { "type": "integer", "description": "Current antidotes (default 0)" }
                 },
                 "required": ["campaign_index"]
             }
@@ -1080,14 +1067,12 @@ fn handle_tool(session: &Session, name: &str, args: &Value) -> Result<Value, Str
 
             let potion_cap = args["player_potion_cap"].as_i64().unwrap_or(10) as i32;
             let antidotes = args["player_antidotes"].as_i64().unwrap_or(0) as i32;
-            let scout_maps = args["player_scout_maps"].as_i64().unwrap_or(0) as i32;
 
             let mut snap = make_player_snapshot(level, gold, potions);
             snap.bombs = bombs;
             snap.speed_potions = speed_potions;
             snap.potion_cap = potion_cap;
             snap.antidotes = antidotes;
-            snap.scout_maps = scout_maps;
 
             let mut buy_plan: StoreBuyPlan = vec![];
             let bp = args["buy_potions"].as_i64().unwrap_or(0) as i32;
@@ -1096,14 +1081,12 @@ fn handle_tool(session: &Session, name: &str, args: &Value) -> Result<Value, Str
             let bpc = args["buy_potion_cap"].as_bool().unwrap_or(false);
             let bmh = args["buy_max_hp"].as_bool().unwrap_or(false);
             let ba = args["buy_antidotes"].as_i64().unwrap_or(0) as i32;
-            let bsm = args["buy_scout_maps"].as_i64().unwrap_or(0) as i32;
             if bp > 0 { buy_plan.push(("potion".into(), bp)); }
             if bb > 0 { buy_plan.push(("bomb".into(), bb)); }
             if bs > 0 { buy_plan.push(("speed_potion".into(), bs)); }
             if bpc { buy_plan.push(("potion_cap".into(), 1)); }
             if bmh { buy_plan.push(("max_hp".into(), 1)); }
             if ba > 0 { buy_plan.push(("antidote".into(), ba)); }
-            if bsm > 0 { buy_plan.push(("scout_map".into(), bsm)); }
 
             let result = simulate_campaign_with_store(&session.campaigns[idx], idx, &snap, strategy, &buy_plan);
             Ok(campaign_result_to_json(&result))

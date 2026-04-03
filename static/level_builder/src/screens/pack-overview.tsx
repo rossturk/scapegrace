@@ -161,12 +161,14 @@ function ItemSpritesTab() {
   async function genSprite(key: string) {
     const desc = descs[key] || SPRITE_TYPES.find(s => s.key === key)?.prompt || key;
     showToast('Generating sprite...', 'info');
-    const b64 = await generateImage({
-      prompt: `16x16 pixel art sprite: ${desc}. Transparent background, centered, clean pixel art style.`,
+    const raw = await generateImage({
+      prompt: `16x16 pixel art sprite: ${desc}. Single item on solid BLACK background, centered, clean pixel art style.`,
       width: 64,
       height: 64,
     });
-    if (b64) {
+    if (raw) {
+      const { processSprite } = await import('../canvas/sprite-processing');
+      const b64 = await processSprite(raw);
       updatePack(p => {
         if (!p.item_sprites) p.item_sprites = {};
         p.item_sprites[key] = b64;

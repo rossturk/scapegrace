@@ -26,32 +26,23 @@ export function exportOverworldMap(
   campaign: BundledCampaign,
   state: OwCanvasState,
 ): ExportedOverworldMap | null {
-  const md = state.mapData;
-  if (!md?.regions) return null;
+  const builderRegions = campaign.overworld.builder_regions || [];
+  const md = state.mapData; // only used as fallback for legacy data
+  if (builderRegions.length === 0 && !md?.regions) return null;
 
   const levels = campaign.overworld.levels || [];
   const designs = campaign.designs || [];
   const connections = campaign.overworld.connections || [];
   const rooms = campaign.overworld.rooms || campaign.overworld.fork_chambers || [];
 
-  // Compute bounds: all regions + rooms + hallway paths
+  // Use builder_regions as source of truth for positions/sizes
+  const regionPos = (r: any) => ({ ox: r.ox, oy: r.oy });
+
+  // Compute bounds from builder_regions
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-
-  const regionPos = (r: any) => {
-    const o = state.regionOverrides[r.node_idx];
-    return o || { ox: r.ox, oy: r.oy };
-  };
-
-  for (const r of md.regions) {
-    const p = regionPos(r);
-    minX = Math.min(minX, p.ox); minY = Math.min(minY, p.oy);
-    maxX = Math.max(maxX, p.ox + r.w); maxY = Math.max(maxY, p.oy + r.h);
-  }
-  for (const room of rooms) {
-    const p = state.regionOverrides[room.id as any] || { ox: 0, oy: 0 };
-    const rw = room.w || ROOM_W, rh = room.h || ROOM_H;
-    minX = Math.min(minX, p.ox); minY = Math.min(minY, p.oy);
-    maxX = Math.max(maxX, p.ox + rw); maxY = Math.max(maxY, p.oy + rh);
+  for (const br of builderRegions) {
+    minX = Math.min(minX, br.ox); minY = Math.min(minY, br.oy);
+    maxX = Math.max(maxX, br.ox + br.w); maxY = Math.max(maxY, br.oy + br.h);
   }
   // Include hallway paths
   if (state.hallwayCache) {
@@ -107,13 +98,13 @@ export function exportOverworldMap(
     return { wall: 'room_wall', floor: 'room_floor' };
   };
 
-  // Write level region tiles
-  for (const r of md.regions) {
-    const p = regionPos(r);
-    const di = r.node_idx - 1;
+  // Write region tiles from builder_regions
+  for (const br of builderRegions) {
+    const p = { ox: br.ox, oy: br.oy };
+    const di = br.level_idx ?? -1;
     const design = di >= 0 ? designs[di] : null;
 
-    if (design?.prebuilt_map?.tiles) {
+    if (br.type === 'level' && design?.prebuilt_map?.tiles) {
       const mapTiles = design.prebuilt_map.tiles;
       const defs = design.tile_defs || [];
       const pal = levels[di]?.palette || ['#444'];
@@ -139,53 +130,41 @@ export function exportOverworldMap(
           setTile(p.ox + x, p.oy + y, tileName);
         }
       }
-    } else if (md.tiles) {
-      // Start room / store — copy from backend grid, optionally remap tiles
-      const isStartRegion = r.node_idx === 0;
-      const storeRegion = md.regions.find((rr: any) => rr.node_idx > levels.length);
-      const isStoreRegion = r.node_idx === storeRegion?.node_idx;
-      const tileSource = isStartRegion ? campaign.overworld.start_tile_source
-        : isStoreRegion ? campaign.overworld.store_tile_source
-        : undefined;
-      const remapTiles = tileSource ? resolveTileSource(tileSource) : null;
-
-      for (let y = 0; y < r.h; y++) {
-        for (let x = 0; x < r.w; x++) {
-          const gy = r.oy + y, gx = r.ox + x;
-          if (md.tiles[gy]?.[gx]) {
-            let tileName = md.tiles[gy][gx];
-            const def = md.tile_defs[tileName];
-            if (def && !tileDefs[tileName]) {
-              tileDefs[tileName] = { name: def.name, color: def.color, walkable: def.walkable };
-            }
-            // Remap to tile_source if configured
-            if (remapTiles) {
-              if (def && !def.walkable && tileName !== 'store_merchant') tileName = remapTiles.wall;
-              else if (def && def.walkable && tileName !== 'store_merchant') tileName = remapTiles.floor;
-            }
-            setTile(p.ox + x, p.oy + y, tileName);
+    } else {
+      // Room/store/start: draw as wall/floor grid with optional tile_source
+      const ts = resolveTileSource(br.tile_source);
+      // Default wall/floor for store/start if no tile_source
+      let wallName = ts.wall, floorName = ts.floor;
+      if (!br.tile_source) {
+        if (br.type === 'store') {
+          wallName = 'store_wall'; floorName = 'store_floor';
+          if (!tileDefs['store_wall']) tileDefs['store_wall'] = { name: 'store_wall', color: '#5d4e37', walkable: false };
+          if (!tileDefs['store_floor']) tileDefs['store_floor'] = { name: 'store_floor', color: '#6d5e47', walkable: true };
+          if (!tileDefs['store_merchant']) tileDefs['store_merchant'] = { name: 'store_merchant', color: '#ffd700', walkable: false };
+        } else if (br.type === 'start') {
+          wallName = 'title_wall'; floorName = 'title_floor';
+          if (!tileDefs['title_wall']) tileDefs['title_wall'] = { name: 'title_wall', color: '#3a2a1a', walkable: false };
+          if (!tileDefs['title_floor']) tileDefs['title_floor'] = { name: 'title_floor', color: '#4a3a2a', walkable: true };
+        }
+      }
+      for (let y = 0; y < br.h; y++) {
+        for (let x = 0; x < br.w; x++) {
+          const isWall = x === 0 || x === br.w - 1 || y === 0 || y === br.h - 1;
+          // Place merchant in center of store
+          if (br.type === 'store' && x === Math.floor(br.w / 2) && y === Math.floor(br.h / 2)) {
+            setTile(p.ox + x, p.oy + y, 'store_merchant');
+          } else {
+            setTile(p.ox + x, p.oy + y, isWall ? wallName : floorName);
           }
         }
       }
     }
   }
 
-  // Write room tiles (wall border + floor interior, with doorways at handle positions)
+  // Resolve center positions for room handle computation
   const resolveCenter = (id: string): { ox: number; oy: number } | null => {
-    // Check rooms
-    const room = rooms.find(r => r.id === id);
-    if (room) {
-      const rp = state.regionOverrides[id as any] || { ox: 0, oy: 0 };
-      return { ox: rp.ox + (room.w || ROOM_W) / 2, oy: rp.oy + (room.h || ROOM_H) / 2 };
-    }
-    // Check regions
-    for (const r of md.regions) {
-      const nodeId = r.node_idx === 0 ? 'start' : r.node_idx > levels.length ? 'store' : `level_${r.node_idx - 1}`;
-      if (nodeId === id) {
-        const p = regionPos(r);
-        return { ox: p.ox + r.w / 2, oy: p.oy + r.h / 2 };
-      }
-    }
+    const br2 = builderRegions.find(r => r.id === id);
+    if (br2) return { ox: br2.ox + br2.w / 2, oy: br2.oy + br2.h / 2 };
     return null;
   };
 
@@ -305,14 +284,19 @@ export function exportOverworldMap(
         return bestIdx / (path.length - 1 || 1);
       };
 
-      // Pick a tile name from level A or B based on blend factor t
+      // Short blend zone: A for first 40%, B for last 40%, mix in middle 20%
+      const pickSide = (t: number, hash: number): boolean => {
+        if (t < 0.4) return false;
+        if (t > 0.6) return true;
+        return pickRand(hash) < (t - 0.4) / 0.2;
+      };
       const pickWall = (t: number, hash: number): string => {
-        const useB = pickRand(hash) < t;
+        const useB = pickSide(t, hash);
         const pool = useB ? tilesB.walls : tilesA.walls;
         return pool[Math.floor(pickRand(hash + 999) * pool.length)] || 'hallway_wall';
       };
       const pickFloor = (t: number, hash: number): string => {
-        const useB = pickRand(hash) < t;
+        const useB = pickSide(t, hash);
         const pool = useB ? tilesB.floors : tilesA.floors;
         return pool[Math.floor(pickRand(hash + 777) * pool.length)] || 'hallway_floor';
       };
@@ -342,10 +326,9 @@ export function exportOverworldMap(
   // Post-pass: carve doorways wherever a non-walkable non-level tile is adjacent to a walkable hallway tile
   // Build set of tiles that are "level interior" (from prebuilt_map) — these should NOT be carved
   const levelWalls = new Set<string>();
-  for (const r of md.regions) {
-    const di = r.node_idx - 1;
-    if (di >= 0 && designs[di]?.tile_defs?.[0]) {
-      levelWalls.add(designs[di].tile_defs[0].name); // each level's wall tile
+  for (const br of builderRegions) {
+    if (br.type === 'level' && br.level_idx != null && designs[br.level_idx]?.tile_defs?.[0]) {
+      levelWalls.add(designs[br.level_idx].tile_defs[0].name);
     }
   }
 
@@ -383,36 +366,22 @@ export function exportOverworldMap(
     }
   }
 
-  // Build region metadata
+  // Build region metadata from builder_regions
   const exportRegions: ExportedOverworldMap['regions'] = [];
-  for (const r of md.regions) {
-    const p = regionPos(r);
-    const nodeId = r.node_idx === 0 ? 'start'
-      : r.node_idx > levels.length ? 'store'
-      : `level_${r.node_idx - 1}`;
+  for (const br of builderRegions) {
     exportRegions.push({
-      node_id: nodeId,
-      ox: p.ox - minX, oy: p.oy - minY,
-      w: r.w, h: r.h,
-      entry_pos: r.entry_pos ? [r.entry_pos[0] - minX, r.entry_pos[1] - minY] : undefined,
-      exit_pos: r.exit_pos ? [r.exit_pos[0] - minX, r.exit_pos[1] - minY] : undefined,
-    });
-  }
-  for (const room of rooms) {
-    const p = state.regionOverrides[room.id as any] || { ox: 0, oy: 0 };
-    exportRegions.push({
-      node_id: room.id,
-      ox: p.ox - minX, oy: p.oy - minY,
-      w: room.w || ROOM_W, h: room.h || ROOM_H,
+      node_id: br.id,
+      ox: br.ox - minX, oy: br.oy - minY,
+      w: br.w, h: br.h,
     });
   }
 
   // Player start position
-  const startRegion = md.regions.find(r => r.node_idx === 0);
-  const sp = startRegion ? regionPos(startRegion) : { ox: 0, oy: 0 };
+  const startBr = builderRegions.find(r => r.type === 'start');
+  const sp = startBr || { ox: 0, oy: 0, w: 20, h: 15 };
   const playerPos: [number, number] = [
-    Math.floor(sp.ox + (startRegion?.w || 40) / 2 - minX),
-    Math.floor(sp.oy + (startRegion?.h || 40) / 2 - minY),
+    Math.floor(sp.ox + sp.w / 2 - minX),
+    Math.floor(sp.oy + sp.h / 2 - minY),
   ];
 
   return { width, height, tiles, tile_defs: tileDefs, regions: exportRegions, player_pos: playerPos };

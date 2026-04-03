@@ -257,12 +257,14 @@ async function genMonsterSprite(campaign: BundledCampaign, idx: number) {
   const monster = campaign.monster_templates?.[idx];
   if (!monster) return;
   showToast('Generating sprite...', 'info');
-  const b64 = await generateImage({
-    prompt: `16x16 pixel art sprite: ${monster.description || monster.name}. Transparent background, centered, clean pixel art style.`,
+  const raw = await generateImage({
+    prompt: `16x16 pixel art sprite: ${monster.description || monster.name}. Single creature on solid BLACK background, centered, clean pixel art style.`,
     width: 64,
     height: 64,
   });
-  if (b64) {
+  if (raw) {
+    const { processSprite } = await import('../../canvas/sprite-processing');
+    const b64 = await processSprite(raw);
     updateCampaign(c => {
       if (c.monster_templates?.[idx]) c.monster_templates[idx].image = b64;
     });

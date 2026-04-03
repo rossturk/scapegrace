@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import type { Phase2Result, PlacedEntities } from '../../types/pack';
 import type { BundledCampaign } from '../../types/pack';
-import { drawLevelMap } from '../../canvas/level-renderer';
+import { drawLevelMap, setImageLoadCallback } from '../../canvas/level-renderer';
 import { updateDesign } from '../../store/actions';
 import { pack } from '../../store/state';
 import type { TrayItem } from './entity-tray';
@@ -31,10 +31,16 @@ export function MapCanvas({ campaign, levelIdx, design, palette }: Props) {
   const highlightRef = useRef<{ tx: number; ty: number } | null>(null);
 
   useEffect(() => {
+    // Redraw when sprite images finish loading asynchronously
+    setImageLoadCallback(() => redraw());
     redraw();
-    redrawTimerRef.current = window.setTimeout(redraw, 150);
+    // Schedule follow-up redraws to catch async image loads
+    const t1 = window.setTimeout(redraw, 100);
+    const t2 = window.setTimeout(redraw, 500);
     return () => {
-      if (redrawTimerRef.current) clearTimeout(redrawTimerRef.current);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      setImageLoadCallback(null);
     };
   }, [design, palette, campaign]);
 

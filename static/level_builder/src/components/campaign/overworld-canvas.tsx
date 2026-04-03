@@ -30,7 +30,34 @@ export function OverworldCanvas({ campaign }: Props) {
   // Always keep ref current
   campaignRef.current = campaign;
 
-  useEffect(() => { loadMapData(campaign); }, [campaign.id]);
+  // Initialize builder_regions if not present (migrate or create default)
+  useEffect(() => {
+    if (!campaign.overworld.builder_regions) {
+      import('../../canvas/region-migration').then(async ({ migrateToBuilderRegions, createDefaultRegions }) => {
+        let regions;
+        try {
+          const { api } = await import('../../api/client');
+          const data = await api(`/api/overworld-map?id=${campaign.id}`);
+          regions = data ? migrateToBuilderRegions(campaign, data) : createDefaultRegions();
+        } catch {
+          regions = createDefaultRegions();
+        }
+        // Persist to pack via updateOverworld so it saves
+        console.log('Migration: persisting builder_regions, count:', regions.length);
+        updateOverworld(ow => {
+          console.log('updateOverworld callback fired, setting builder_regions');
+          ow.builder_regions = regions;
+        });
+        // Also set on campaignRef for immediate rendering
+        campaignRef.current.overworld.builder_regions = regions;
+        owState.hallwayCacheKey = null;
+        mapDataVersion.value++;
+      });
+    } else {
+      owState.hallwayCacheKey = null;
+      mapDataVersion.value++;
+    }
+  }, [campaign.id]);
 
   const _mdv = mapDataVersion.value;
   useEffect(() => {
@@ -76,6 +103,16 @@ export function OverworldCanvas({ campaign }: Props) {
         onOpenLevel: (levelIdx) => navigate(campaign.id, levelIdx),
         onNodeResized: (nodeId, w, h) => {
           const ow = campaignRef.current.overworld;
+          // Convert nodeId to builder_region ID
+          const levels = ow.levels || [];
+          let brId: string;
+          if (typeof nodeId === 'string') brId = nodeId;
+          else if (nodeId === 0) brId = 'start';
+          else brId = nodeId > levels.length ? 'store' : `level_${nodeId - 1}`;
+          // Update builder_region directly
+          const br = ow.builder_regions?.find(r => r.id === brId);
+          if (br) { br.w = w; br.h = h; }
+          // Also update legacy fields
           if (typeof nodeId === 'string') {
             const rooms = ow.rooms || ow.fork_chambers || [];
             const room = rooms.find(r => r.id === nodeId);
@@ -116,11 +153,10 @@ export function OverworldCanvas({ campaign }: Props) {
         },
         onShowPopup: (p) => { setPopup(p); },
         onRegionMoved: () => {
+          // Sync builder_regions positions to the pack for persistence
           updateOverworld(ow => {
-            if (!ow.ow_region_offsets) ow.ow_region_offsets = {};
-            for (const [key, pos] of Object.entries(owState.regionOverrides)) {
-              (ow.ow_region_offsets as any)[key] = { ox: pos.ox, oy: pos.oy };
-            }
+            const liveBr = campaignRef.current.overworld.builder_regions;
+            if (liveBr) ow.builder_regions = liveBr.map(r => ({ ...r }));
           });
         },
         onToast: showToast,
@@ -315,23 +351,31 @@ export function OverworldCanvas({ campaign }: Props) {
               <>
                 <span style="font-size:11px;color:#888;">Tiles</span>
                 <select style="font-size:11px;padding:2px;max-width:100px;"
-                  value={
-                    room ? (room.tile_source || '') :
-                    isStart ? (campaign.overworld.start_tile_source || '') :
-                    isStore ? (campaign.overworld.store_tile_source || '') : ''
-                  }
+                  value={(() => {
+                    const brId2 = isRoom ? String(ni) : isStart ? 'start' : 'store';
+                    const brReg2 = campaign.overworld.builder_regions?.find(r => r.id === brId2);
+                    return brReg2?.tile_source || '';
+                  })()}
                   onChange={(e) => {
                     const val = (e.target as HTMLSelectElement).value || undefined;
-                    if (room) {
-                      updateOverworld(ow => {
+                    const brId = isRoom ? String(ni) : isStart ? 'start' : 'store';
+                    updateOverworld(ow => {
+                      // Update builder_region
+                      const br2 = ow.builder_regions?.find(r => r.id === brId);
+                      if (br2) br2.tile_source = val;
+                      // Also update legacy fields
+                      if (isRoom) {
                         const r = (ow.rooms || ow.fork_chambers || []).find(r => r.id === ni);
                         if (r) r.tile_source = val;
-                      });
-                    } else if (isStart) {
-                      updateOverworld(ow => { ow.start_tile_source = val; });
-                    } else if (isStore) {
-                      updateOverworld(ow => { ow.store_tile_source = val; });
-                    }
+                      } else if (isStart) {
+                        ow.start_tile_source = val;
+                      } else if (isStore) {
+                        ow.store_tile_source = val;
+                      }
+                    });
+                    // Also update the live campaignRef copy for immediate rendering
+                    const brReg = campaignRef.current.overworld.builder_regions?.find(r => r.id === brId);
+                    if (brReg) brReg.tile_source = val;
                     owState.hallwayCacheKey = null;
                     redrawRef.current?.();
                   }}

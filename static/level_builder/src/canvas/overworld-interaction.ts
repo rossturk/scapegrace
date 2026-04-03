@@ -53,6 +53,8 @@ export class OverworldInteraction {
     this.handlers.push({ event, handler, options });
   }
 
+  private getMd() { return (this.state as any)._renderedMd || this.state.mapData; }
+
   private getMousePos(e: MouseEvent): { mx: number; my: number } {
     const rect = this.canvas.getBoundingClientRect();
     return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
@@ -66,7 +68,7 @@ export class OverworldInteraction {
   private resolveNodeId(nodeIdx: number | string): string {
     if (typeof nodeIdx === 'string') return nodeIdx;
     const levels = this.campaign.overworld.levels || [];
-    const md = this.state.mapData;
+    const md = this.getMd();
     const storeRegion = md?.regions?.find((r: any) => r.node_idx > levels.length);
     if (nodeIdx === 0) return 'start';
     if (nodeIdx === storeRegion?.node_idx) return 'store';
@@ -77,7 +79,7 @@ export class OverworldInteraction {
     const str = String(id);
     if (str === 'start') return 0;
     const levels = this.campaign.overworld.levels || [];
-    const md = this.state.mapData;
+    const md = this.getMd();
     const storeRegion = md?.regions?.find((r: any) => r.node_idx > levels.length);
     if (str === 'store' || str === 'end') return storeRegion?.node_idx ?? null;
     const m = str.match(/level_(\d+)/);
@@ -87,7 +89,7 @@ export class OverworldInteraction {
   // Convert screen position to tile coordinate
   private screenToTile(mx: number, my: number): { tx: number; ty: number } | null {
     const s = this.state;
-    const md = s.mapData;
+    const md = this.getMd();
     if (!md) return null;
     const { vpW, vpH } = this.getVpSize();
     const tz = 4 * s.zoom;
@@ -136,7 +138,7 @@ export class OverworldInteraction {
       } else if (nodeIdx === null) {
         const { vpW, vpH } = this.getVpSize();
         const newZoom = Math.min(5, s.zoom * 1.5);
-        const md = s.mapData;
+        const md = this.getMd();
         const gridW = md ? md.width : 60;
         const gridH = md ? md.height : 36;
         const oldTz = 4 * s.zoom, newTz = 4 * newZoom;
@@ -194,6 +196,7 @@ export class OverworldInteraction {
     // Mouse move
     this.on('mousemove', (e: MouseEvent) => {
       if (this.resizing) {
+        cb.onShowPopup(null as any);
         const { mx, my } = this.getMousePos(e);
         const tile = this.screenToTile(mx, my);
         if (tile) {
@@ -239,22 +242,41 @@ export class OverworldInteraction {
       s.lastMouse = { x: e.clientX, y: e.clientY };
 
       if (s.dragRegion !== null) {
+        dragMoved = true;
+        cb.onShowPopup(null as any); // dismiss popup while dragging
         const tz = 4 * s.zoom;
-        const md = s.mapData;
-        const r = md?.regions?.find((r: any) => r.node_idx === s.dragRegion);
-        if (r) {
-          const cur = s.regionOverrides[s.dragRegion] || { ox: r.ox, oy: r.oy };
-          cur.ox += Math.round(dx / tz);
-          cur.oy += Math.round(dy / tz);
-          s.regionOverrides[s.dragRegion] = cur;
-          cb.onRedraw();
-        } else if (typeof s.dragRegion === 'string') {
-          const cur = s.regionOverrides[s.dragRegion as any] || { ox: 0, oy: -20 };
-          cur.ox += Math.round(dx / tz);
-          cur.oy += Math.round(dy / tz);
-          s.regionOverrides[s.dragRegion as any] = cur;
-          cb.onRedraw();
+        // Update builder_region position
+        const br = this.campaign.overworld.builder_regions;
+        if (br) {
+          // Convert node_idx to builder_region ID
+          const dragVal = s.dragRegion;
+          let dragId: string;
+          if (typeof dragVal === 'string') {
+            dragId = dragVal; // room ID
+          } else if (dragVal === 0) {
+            dragId = 'start';
+          } else {
+            const levels = this.campaign.overworld.levels || [];
+            dragId = dragVal > levels.length ? 'store' : `level_${dragVal - 1}`;
+          }
+          const region = br.find(r => r.id === dragId);
+          if (region) {
+            region.ox += dx / tz;
+            region.oy += dy / tz;
+            // Snap to integer tiles for rendering
+            region.ox = Math.round(region.ox);
+            region.oy = Math.round(region.oy);
+          }
         }
+        // Also update md shim region
+        const md = this.getMd();
+        const r = md?.regions?.find((r: any) => String(r.node_idx) === String(s.dragRegion));
+        if (r) {
+          r.ox += Math.round(dx / tz);
+          r.oy += Math.round(dy / tz);
+        }
+        s.hallwayCacheKey = null;
+        cb.onRedraw();
       } else if (s.dragging) {
         s.panX += dx;
         s.panY += dy;
@@ -362,7 +384,7 @@ export class OverworldInteraction {
       cb.onShowPopup(null as any); // dismiss popup on zoom
 
       // Zoom toward cursor: find the world point under the cursor before and after zoom
-      const md = s.mapData;
+      const md = this.getMd();
       const gridW = md ? md.width : 60;
       const gridH = md ? md.height : 36;
       const oldTz = 4 * s.zoom;
@@ -387,7 +409,7 @@ export class OverworldInteraction {
     const c = this.campaign;
     const rooms = c.overworld.rooms || c.overworld.fork_chambers || [];
     const tz = 4 * s.zoom;
-    const md = s.mapData;
+    const md = this.getMd();
     const gridW = md ? md.width : 60;
     const gridH = md ? md.height : 36;
     const baseOx = (vpW - gridW * tz) / 2 + s.panX;
@@ -440,22 +462,44 @@ export class OverworldInteraction {
 
   private getNodeBottomCenter(nodeIdx: number | string, vpW: number, vpH: number): { x: number; y: number; w: number } {
     const s = this.state;
-    const md = s.mapData;
     const tz = 4 * s.zoom;
-    const gridW = md ? md.width : 60;
-    const gridH = md ? md.height : 36;
+    const br = this.campaign.overworld.builder_regions || [];
+    const levels = this.campaign.overworld.levels || [];
+
+    // Compute grid bounds from builder_regions
+    const gridW = br.length > 0 ? Math.max(...br.map(r => r.ox + r.w)) + 20 : 60;
+    const gridH = br.length > 0 ? Math.max(...br.map(r => r.oy + r.h)) + 20 : 36;
     const baseOx = (vpW - gridW * tz) / 2 + s.panX;
     const baseOy = (vpH - gridH * tz) / 2 + s.panY;
 
+    // Look up directly from builder_regions
+    let dragId: string;
     if (typeof nodeIdx === 'string') {
-      // Room
+      dragId = nodeIdx;
+    } else if (nodeIdx === 0) {
+      dragId = 'start';
+    } else {
+      dragId = nodeIdx > levels.length ? 'store' : `level_${nodeIdx - 1}`;
+    }
+    const region = br.find(r => r.id === dragId);
+    if (region) {
+      return {
+        x: baseOx + (region.ox + region.w / 2) * tz,
+        y: baseOy + (region.oy + region.h) * tz,
+        w: region.w * tz,
+      };
+    }
+
+    // Legacy fallback
+    if (typeof nodeIdx === 'string') {
       const rooms = this.campaign.overworld.rooms || this.campaign.overworld.fork_chambers || [];
       const room = rooms.find(r => r.id === nodeIdx);
       const rw = room?.w || 10, rh = room?.h || 8;
       const pos = s.regionOverrides[nodeIdx as any] || { ox: 0, oy: -20 };
       return { x: baseOx + (pos.ox + rw / 2) * tz, y: baseOy + (pos.oy + rh) * tz, w: rw * tz };
     }
-    // Regular region
+    // Regular region (legacy)
+    const md = this.getMd();
     const r = md?.regions?.find((r: any) => r.node_idx === nodeIdx);
     if (r) {
       const p = s.regionOverrides[r.node_idx] || { ox: r.ox, oy: r.oy };

@@ -13,7 +13,16 @@ function getDoorPos(
   type: 'entry' | 'exit',
   designs: any[],
 ): [number, number] | null {
-  const di = r.node_idx - 1;
+  // Get design index — handle both numeric node_idx and string IDs
+  let di = -1;
+  if (r._builderRegion?.level_idx != null) {
+    di = r._builderRegion.level_idx;
+  } else if (typeof r.node_idx === 'number') {
+    di = r.node_idx - 1;
+  } else if (typeof r.node_idx === 'string') {
+    const m = r.node_idx.match(/^level_(\d+)$/);
+    if (m) di = parseInt(m[1]);
+  }
   const design = di >= 0 ? designs[di] : null;
   const pe = design?.placed_entities;
 
@@ -68,6 +77,45 @@ export function createOwCanvasState(): OwCanvasState {
   };
 }
 
+// Build renderer-compatible region data from builder_regions
+function buildRendererRegions(campaign: BundledCampaign, state: OwCanvasState): {
+  regions: any[];
+  width: number;
+  height: number;
+} {
+  const br = campaign.overworld.builder_regions;
+  if (!br || br.length === 0) {
+    // Fallback to old mapData if no builder_regions yet
+    const md = state.mapData;
+    if (md?.regions) {
+      return { regions: md.regions, width: md.width, height: md.height };
+    }
+    return { regions: [], width: 60, height: 36 };
+  }
+
+  // Convert builder_regions to the format the renderer expects
+  const regions = br.map(r => ({
+    node_idx: r.id, // string ID now (was number before)
+    ox: r.ox,
+    oy: r.oy,
+    w: r.w,
+    h: r.h,
+    _builderRegion: r,
+    // Fake entry/exit pos for backward compat
+    entry_pos: null,
+    exit_pos: null,
+  }));
+
+  // Compute bounds
+  let maxX = 0, maxY = 0;
+  for (const r of br) {
+    maxX = Math.max(maxX, r.ox + r.w + 20);
+    maxY = Math.max(maxY, r.oy + r.h + 20);
+  }
+
+  return { regions, width: maxX, height: maxY };
+}
+
 export function drawOverworld(
   ctx: CanvasRenderingContext2D,
   vpW: number,
@@ -76,16 +124,36 @@ export function drawOverworld(
   state: OwCanvasState,
   selectedNode: number | string | null,
 ) {
-  const md = state.mapData;
+  const rendererData = buildRendererRegions(campaign, state);
   const levels = campaign.overworld.levels || [];
   const designs = campaign.designs || [];
+  const builderRegions = campaign.overworld.builder_regions || [];
+
+  // Build md-compatible shim from builder_regions so legacy code works
+  const md = builderRegions.length > 0 ? {
+    width: rendererData.width,
+    height: rendererData.height,
+    regions: builderRegions.map(br => ({
+      node_idx: br.type === 'start' ? 0
+        : br.type === 'store' ? levels.length + 1
+        : br.type === 'level' ? (br.level_idx ?? 0) + 1
+        : br.id, // rooms keep string id
+      ox: br.ox, oy: br.oy, w: br.w, h: br.h,
+      entry_pos: null, exit_pos: null,
+      _builderRegion: br,
+    })),
+    tiles: [] as any,
+    tile_defs: {} as any,
+  } : state.mapData || { width: 60, height: 36, regions: [], tiles: [], tile_defs: {} };
+  // Store on state so hit test functions can use it
+  (state as any)._renderedMd = md;
 
   const TILE = 4;
   const zoom = state.zoom;
   const tz = TILE * zoom;
 
-  const gridW = md ? md.width : 60;
-  const gridH = md ? md.height : 36;
+  const gridW = rendererData.width;
+  const gridH = rendererData.height;
   const mapW = gridW * tz;
   const mapH = gridH * tz;
   const baseOx = (vpW - mapW) / 2 + state.panX;
@@ -96,207 +164,122 @@ export function drawOverworld(
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, vpW, vpH);
 
-  const drawTile = (wx: number, wy: number, color: string) => {
+  const drawTile = (wx: number, wy: number, color: string, image?: string) => {
     const gap = Math.max(0.5, tz * 0.08);
+    const px = baseOx + wx * tz + gap / 2;
+    const py = baseOy + wy * tz + gap / 2;
+    const sz = tz - gap;
+    if (image && sz >= 3) {
+      const img = owTileImageCache.get(image);
+      if (img?.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, px, py, sz, sz);
+        return;
+      }
+      if (!img) {
+        const newImg = new Image();
+        newImg.src = `data:image/png;base64,${image}`;
+        owTileImageCache.set(image, newImg);
+      }
+    }
     ctx.fillStyle = color;
-    ctx.fillRect(baseOx + wx * tz + gap / 2, baseOy + wy * tz + gap / 2, tz - gap, tz - gap);
+    ctx.fillRect(px, py, sz, sz);
   };
 
   const regionPos = (r: any) => {
-    const o = state.regionOverrides[r.node_idx];
-    return o || { ox: r.ox, oy: r.oy };
+    // Always use the region's own position (builder_regions is source of truth)
+    return { ox: r.ox, oy: r.oy };
   };
 
-  if (!md?.regions) return;
+  if (builderRegions.length === 0 && !md?.regions) return;
 
   // Draw each region's tiles
-  for (const r of md.regions) {
-    const { ox: rox, oy: roy } = regionPos(r);
-    const di = r.node_idx - 1;
-    const design = di >= 0 ? designs[di] : null;
+  for (const br of builderRegions) {
+    const rox = br.ox, roy = br.oy, rw = br.w, rh = br.h;
+    const levelIdx = br.level_idx ?? -1;
+    const design = levelIdx >= 0 ? designs[levelIdx] : null;
 
-    if (design?.prebuilt_map?.tiles) {
+    if (br.type === 'level' && design?.prebuilt_map?.tiles) {
+      // Level: draw from prebuilt_map tiles
       const tiles = design.prebuilt_map.tiles;
       const defs = design.tile_defs || [];
-      const pal = levels[di]?.palette || ['#444'];
+      const pal = levels[levelIdx]?.palette || ['#444'];
       const defMap: Record<string, string> = {};
-      for (let i = 0; i < defs.length; i++) defMap[defs[i].name] = pal[i % pal.length] || '#444';
+      const imgMap: Record<string, string | undefined> = {};
+      for (let i = 0; i < defs.length; i++) {
+        defMap[defs[i].name] = pal[i % pal.length] || '#444';
+        imgMap[defs[i].name] = defs[i].image;
+      }
       const pe = design.placed_entities ?? {} as any;
       const doorTiles = new Set<string>();
-      if (pe.exit_door) {
-        for (let dy = -1; dy <= 1; dy++) doorTiles.add(pe.exit_door[0] + ',' + (pe.exit_door[1] + dy));
-      }
-      if (pe.entry_door) {
-        for (let dy = -1; dy <= 1; dy++) doorTiles.add(pe.entry_door[0] + ',' + (pe.entry_door[1] + dy));
-      }
+      if (pe.exit_door) for (let dy = -1; dy <= 1; dy++) doorTiles.add(pe.exit_door[0] + ',' + (pe.exit_door[1] + dy));
+      if (pe.entry_door) for (let dy = -1; dy <= 1; dy++) doorTiles.add(pe.entry_door[0] + ',' + (pe.entry_door[1] + dy));
       const floorColor = pal[Math.min(1, pal.length - 1)] || '#333';
+      const floorImg = defs.length > 1 ? defs[1].image : undefined;
       for (let y = 0; y < tiles.length; y++) {
         for (let x = 0; x < tiles[y].length; x++) {
-          if (doorTiles.has(x + ',' + y)) {
-            drawTile(rox + x, roy + y, floorColor);
-          } else {
-            drawTile(rox + x, roy + y, defMap[tiles[y][x]] || '#333');
-          }
+          const tname = tiles[y][x];
+          if (doorTiles.has(x + ',' + y)) drawTile(rox + x, roy + y, floorColor, floorImg);
+          else drawTile(rox + x, roy + y, defMap[tname] || '#333', imgMap[tname]);
         }
       }
-    } else if (md.tiles) {
-      // Start/store — use overridden size if set
-      const isStart = r.node_idx === 0;
-      const storeR = md.regions.find((rr: any) => rr.node_idx > levels.length);
-      const isStore = r.node_idx === storeR?.node_idx;
-      const effW = isStart ? (campaign.overworld.start_room_size?.[0] || r.w) : isStore ? (campaign.overworld.store_room_size?.[0] || r.w) : r.w;
-      const effH = isStart ? (campaign.overworld.start_room_size?.[1] || r.h) : isStore ? (campaign.overworld.store_room_size?.[1] || r.h) : r.h;
-
-      // Get wall/floor colors — from tile_source, backend tile defs, or fallback
-      const tileSource = isStart ? campaign.overworld.start_tile_source : isStore ? campaign.overworld.store_tile_source : undefined;
-      let wallCol: string, floorCol: string;
-      if (tileSource) {
-        const m2 = tileSource.match(/^level_(\d+)$/);
-        const lv = m2 ? levels[parseInt(m2[1])] : null;
-        wallCol = lv?.palette?.[0] || '#444';
-        floorCol = lv?.palette?.[1] || '#555';
-      } else {
-        // Sample colors from the backend tiles
-        const sampleWall = Object.values(md.tile_defs).find((d: any) => !d.walkable);
-        const sampleFloor = Object.values(md.tile_defs).find((d: any) => d.walkable);
-        wallCol = isStart ? ((sampleWall as any)?.color || '#3a2a1a') : '#5d4e37';
-        floorCol = isStart ? ((sampleFloor as any)?.color || '#4a3a2a') : '#6d5e47';
-      }
-
-      // Draw as a clean tile grid at the effective size
-      if (effW !== r.w || effH !== r.h || tileSource) {
-        // Resized or tile_source set — draw as wall/floor grid
-        for (let y = 0; y < effH; y++) {
-          for (let x = 0; x < effW; x++) {
-            const isWall = x === 0 || x === effW - 1 || y === 0 || y === effH - 1;
-            drawTile(rox + x, roy + y, isWall ? wallCol : floorCol);
-          }
-        }
-      } else {
-        // Original size, no tile_source — use backend tiles
-        for (let y = 0; y < r.h; y++) {
-          for (let x = 0; x < r.w; x++) {
-            const gy = r.oy + y, gx = r.ox + x;
-            if (md.tiles[gy]?.[gx]) {
-              const def = md.tile_defs[md.tiles[gy][gx]];
-              if (def && def.color !== '#000000') drawTile(rox + x, roy + y, def.color);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Redraw start/store with tile_source palette if configured
-  for (const r of md.regions) {
-    const isStart = r.node_idx === 0;
-    const storeReg = md.regions.find((rr: any) => rr.node_idx > levels.length);
-    const isStore = r.node_idx === storeReg?.node_idx;
-    const tileSource = isStart ? campaign.overworld.start_tile_source : isStore ? campaign.overworld.store_tile_source : undefined;
-    if (!tileSource) continue;
-    const m2 = tileSource.match(/^level_(\d+)$/);
-    if (!m2) continue;
-    const idx = parseInt(m2[1]);
-    const lv = levels[idx];
-    if (!lv?.palette || lv.palette.length < 2) continue;
-    const wallCol = lv.palette[0], floorCol = lv.palette[1];
-    const p = regionPos(r);
-    const gap = Math.max(0.5, tz * 0.08);
-    for (let y = 0; y < r.h; y++) {
-      for (let x = 0; x < r.w; x++) {
-        const gy = r.oy + y, gx = r.ox + x;
-        if (!md.tiles[gy]?.[gx]) continue;
-        const tileName = md.tiles[gy][gx];
-        const def = md.tile_defs[tileName];
-        if (!def) continue;
-        if (tileName === 'store_merchant') continue; // keep merchant tile
-        const col = def.walkable ? floorCol : wallCol;
-        ctx.fillStyle = col;
-        ctx.fillRect(baseOx + (p.ox + x) * tz + gap / 2, baseOy + (p.oy + y) * tz + gap / 2, tz - gap, tz - gap);
-      }
-    }
-  }
-
-  // Draw room tiles BEFORE hallways so hallway floors carve through room walls
-  const rooms = campaign.overworld.rooms || campaign.overworld.fork_chambers || [];
-  const connections = campaign.overworld.connections || [];
-  // (resolveCenter and roomHandlesMap need connections, defined below after resolveRegion)
-  // We pre-draw room tiles here, handles come later
-  {
-    // Temporary resolveCenter for room handles (needed to know doorway positions)
-    const tmpResolveCenter = (id: string): { ox: number; oy: number } | null => {
-      const room = rooms.find(r => r.id === id);
-      if (room) {
-        const p = state.regionOverrides[id as any] || { ox: 0, oy: -20 };
-        return { ox: p.ox + (room.w || ROOM_W) / 2, oy: p.oy + (room.h || ROOM_H) / 2 };
-      }
-      for (const r of md.regions) {
-        const nid = r.node_idx === 0 ? 'start' : r.node_idx > levels.length ? 'store' : `level_${r.node_idx - 1}`;
-        if (nid === id) {
-          const p = state.regionOverrides[r.node_idx] || { ox: r.ox, oy: r.oy };
-          return { ox: p.ox + r.w / 2, oy: p.oy + r.h / 2 };
-        }
-      }
-      return null;
-    };
-    for (const room of rooms) {
-      const pos = state.regionOverrides[room.id as any] || { ox: 0, oy: -20 };
-      const rw = room.w || ROOM_W, rh = room.h || ROOM_H;
-      const fx = baseOx + pos.ox * tz;
-      const fy = baseOy + pos.oy * tz;
-      // Use tile_source palette if set, otherwise default purple
-      let wallColor = '#2a1a4e';
-      let floorColor = '#3d2a6e';
-      if (room.tile_source) {
-        const m2 = room.tile_source.match(/^level_(\d+)$/);
+    } else {
+      // Room/store/start: draw as wall/floor tile grid with optional sprites
+      let wallCol = '#333', floorCol = '#555';
+      let wallImg: string | undefined, floorImg: string | undefined;
+      if (br.tile_source) {
+        const m2 = br.tile_source.match(/^level_(\d+)$/);
         if (m2) {
-          const idx = parseInt(m2[1]);
-          const lv = levels[idx];
+          const srcIdx = parseInt(m2[1]);
+          const lv = levels[srcIdx];
           if (lv?.palette && lv.palette.length >= 2) {
-            wallColor = lv.palette[0] || wallColor;
-            floorColor = lv.palette[1] || floorColor;
+            wallCol = lv.palette[0]; floorCol = lv.palette[1];
           }
+          const srcDefs = designs[srcIdx]?.tile_defs || [];
+          wallImg = srcDefs[0]?.image;
+          floorImg = srcDefs.length > 1 ? srcDefs[1]?.image : undefined;
         }
+      } else if (br.type === 'room') {
+        wallCol = '#2a1a4e'; floorCol = '#3d2a6e';
+      } else if (br.type === 'store') {
+        wallCol = '#5d4e37'; floorCol = '#6d5e47';
+      } else if (br.type === 'start') {
+        wallCol = '#3a2a1a'; floorCol = '#4a3a2a';
       }
-      const gap = Math.max(0.5, tz * 0.08);
-      const roomDoorHandles = computeRoomHandles(room, pos, connections, tmpResolveCenter);
-      const doorTiles = new Set<string>();
-      for (const h of roomDoorHandles) {
-        if (!h.connKey) continue;
-        doorTiles.add(`${h.lx},${h.ly}`);
-        if (h.lx === 0 || h.lx === rw - 1) { doorTiles.add(`${h.lx},${h.ly - 1}`); doorTiles.add(`${h.lx},${h.ly + 1}`); }
-        else { doorTiles.add(`${h.lx - 1},${h.ly}`); doorTiles.add(`${h.lx + 1},${h.ly}`); }
-      }
-      for (let ry = 0; ry < rh; ry++) {
-        for (let rx = 0; rx < rw; rx++) {
-          const isWall = rx === 0 || rx === rw - 1 || ry === 0 || ry === rh - 1;
-          const isDoor = doorTiles.has(`${rx},${ry}`);
-          ctx.fillStyle = (isWall && !isDoor) ? wallColor : floorColor;
-          ctx.fillRect(fx + rx * tz + gap / 2, fy + ry * tz + gap / 2, tz - gap, tz - gap);
+      for (let y = 0; y < rh; y++) {
+        for (let x = 0; x < rw; x++) {
+          const isWall = x === 0 || x === rw - 1 || y === 0 || y === rh - 1;
+          drawTile(rox + x, roy + y, isWall ? wallCol : floorCol, isWall ? wallImg : floorImg);
         }
       }
     }
   }
-
   // Draw hallways
-  const storeRegion = md.regions.find(r => r.node_idx > levels.length);
+  const connections = campaign.overworld.connections || [];
+  const rooms = campaign.overworld.rooms || campaign.overworld.fork_chambers || [];
 
-  // Build virtual region lookup: resolves any node ID to a region-like object
+  // Resolve any node ID to a region object from builder_regions
   const resolveRegion = (id: string | number): any | null => {
     const s = String(id);
-    // Rooms (formerly fork chambers)
-    const room = rooms.find(r => r.id === s);
-    if (room) {
-      const pos = state.regionOverrides[s as any] || { ox: 0, oy: -20 };
-      return { node_idx: s, ox: pos.ox, oy: pos.oy, w: room.w || ROOM_W, h: room.h || ROOM_H, _isRoom: true, _room: room };
+    // Look up in builder_regions first
+    const br2 = builderRegions.find(r => r.id === s);
+    if (br2) {
+      return { node_idx: s, ox: br2.ox, oy: br2.oy, w: br2.w, h: br2.h, _isRoom: br2.type === 'room', _builderRegion: br2 };
     }
-    // Regular regions
-    let nodeIdx: number | null = null;
-    if (s === 'start') nodeIdx = 0;
-    else if (s === 'store' || s === 'end') nodeIdx = storeRegion?.node_idx ?? null;
-    else { const m = s.match(/level_(\d+)/); nodeIdx = m ? parseInt(m[1]) + 1 : null; }
-    if (nodeIdx == null) return null;
-    return md.regions.find(r => r.node_idx === nodeIdx) || null;
+    // Handle 'end' as alias for 'store'
+    if (s === 'end') {
+      const store = builderRegions.find(r => r.type === 'store');
+      if (store) return { node_idx: store.id, ox: store.ox, oy: store.oy, w: store.w, h: store.h, _builderRegion: store };
+    }
+    // Legacy fallback to md.regions
+    if (md?.regions) {
+      const storeReg = md.regions.find((r: any) => r.node_idx > levels.length);
+      let nodeIdx: number | null = null;
+      if (s === 'start') nodeIdx = 0;
+      else if (s === 'store') nodeIdx = (storeReg?.node_idx as any) ?? null;
+      else { const m = s.match(/level_(\d+)/); nodeIdx = m ? parseInt(m[1]) + 1 : null; }
+      if (nodeIdx != null) return md.regions.find((r: any) => r.node_idx === nodeIdx) || null;
+    }
+    return null;
   };
 
   // Build cache key from connections + region positions (only recompute A* when these change)
@@ -310,11 +293,20 @@ export function drawOverworld(
     const p = reg._isRoom ? { ox: reg.ox, oy: reg.oy } : regionPos(reg);
     return { ox: p.ox + reg.w / 2, oy: p.oy + reg.h / 2 };
   };
-  // Pre-computed room handles
+  // Pre-computed handles for all non-level regions (rooms, store, start)
   const roomHandlesMap = new Map<string, RoomHandle[]>();
-  for (const room of rooms) {
-    const rp = state.regionOverrides[room.id as any] || { ox: 0, oy: -20 };
-    roomHandlesMap.set(room.id, computeRoomHandles(room, rp, connections, resolveCenter));
+  for (const br of builderRegions) {
+    if (br.type === 'level') continue;
+    const fakeRoom = { id: br.id, name: '', w: br.w, h: br.h };
+    const rp = { ox: br.ox, oy: br.oy };
+    roomHandlesMap.set(br.id, computeRoomHandles(fakeRoom, rp, connections, resolveCenter));
+  }
+  // Legacy: also add from old rooms array if no builder_regions
+  if (builderRegions.length === 0) {
+    for (const room of rooms) {
+      const rp = state.regionOverrides[room.id as any] || { ox: 0, oy: -20 };
+      roomHandlesMap.set(room.id, computeRoomHandles(room, rp, connections, resolveCenter));
+    }
   }
 
   const cacheKey = cacheKeyParts.join('|');
@@ -340,14 +332,16 @@ export function drawOverworld(
 
     // Helper: get door position for connection endpoint
     const getDoorForConn = (region: any, connKey: string, type: 'exit' | 'entry'): number[] | null => {
-      if (region._isRoom) {
-        const handles = roomHandlesMap.get(region._room.id);
-        // Find the handle matching this connection
+      const brType = region._builderRegion?.type;
+      if (region._isRoom || brType === 'room' || brType === 'store' || brType === 'start') {
+        const rid = region._builderRegion?.id || region._room?.id || region.node_idx;
+        const handles = roomHandlesMap.get(String(rid));
         const h = handles?.find(h => h.connKey === connKey && h.type === type);
         if (h) return [h.lx, h.ly];
-        // Fall back to a free handle of the right type
         const free = handles?.find(h => h.connKey === null && h.type === type);
-        return free ? [free.lx, free.ly] : [type === 'exit' ? region.w - 1 : 0, Math.floor(region.h / 2)];
+        if (free) return [free.lx, free.ly];
+        // Fallback: edge center
+        return [type === 'exit' ? region.w - 1 : 0, Math.floor(region.h / 2)];
       }
       return getDoorPos(region, type, designs);
     };
@@ -428,17 +422,24 @@ export function drawOverworld(
     const ra = resolveRegion(a), rb = resolveRegion(b);
     if (!ra || !rb) continue;
 
-    // Palette blend
-    const aLevelIdx = typeof ra.node_idx === 'number' ? ra.node_idx - 1 : -1;
-    const bLevelIdx = typeof rb.node_idx === 'number' ? rb.node_idx - 1 : -1;
-    const palA = levels[aLevelIdx]?.palette || levels[0]?.palette || ['#444', '#333'];
-    const palB = levels[bLevelIdx]?.palette || levels[0]?.palette || ['#444', '#333'];
+    // Palette + sprite blend between connected levels
+    const aLi = ra._builderRegion?.level_idx ?? (typeof ra.node_idx === 'number' ? ra.node_idx - 1 : -1);
+    const bLi = rb._builderRegion?.level_idx ?? (typeof rb.node_idx === 'number' ? rb.node_idx - 1 : -1);
+    const palA = levels[aLi]?.palette || levels[0]?.palette || ['#444', '#333'];
+    const palB = levels[bLi]?.palette || levels[0]?.palette || ['#444', '#333'];
     const wallA = palA[0] || '#222', wallB = palB[0] || '#222';
     const floorA = palA[Math.min(1, palA.length - 1)] || '#333';
     const floorB = palB[Math.min(1, palB.length - 1)] || '#333';
+    // Get tile sprites from each level's defs
+    const defsA = designs[aLi]?.tile_defs || [];
+    const defsB = designs[bLi]?.tile_defs || [];
+    const wallImgA = defsA[0]?.image;
+    const wallImgB = defsB[0]?.image;
+    const floorImgsA = defsA.filter((_: any, i: number) => i > 0).map((d: any) => d.image).filter(Boolean);
+    const floorImgsB = defsB.filter((_: any, i: number) => i > 0).map((d: any) => d.image).filter(Boolean);
 
     // Organic corridor
-    const seed = ((aLevelIdx + 1) * 31 + (bLevelIdx + 1) * 17) | 0;
+    const seed = ((aLi + 1) * 31 + (bLi + 1) * 17) | 0;
     const srand = (i: number) => { let v = Math.sin(seed + i * 127.1) * 43758.5453; return v - Math.floor(v); };
     const floorSet = new Set<string>();
     const wallSet = new Set<string>();
@@ -492,7 +493,20 @@ export function drawOverworld(
         for (let rx = 0; rx < rrw; rx++)
           roomInterior.add((rp.ox + rx) + ',' + (rp.oy + ry));
     }
-    // Draw walls (skip tiles inside rooms)
+    // Seeded random for picking sprites
+    const pickRand = (hash: number) => { let v = Math.sin(seed + hash * 73.1) * 43758.5453; return v - Math.floor(v); };
+
+    // Short blend zone: A tiles for first 40%, B tiles for last 40%, mix only in middle 20%
+    const blendStart = 0.4, blendEnd = 0.6;
+    const pickSide = (t: number, hash: number): boolean => {
+      if (t < blendStart) return false; // use A
+      if (t > blendEnd) return true;    // use B
+      // Middle 20%: probabilistic blend
+      const blendT = (t - blendStart) / (blendEnd - blendStart);
+      return pickRand(hash) < blendT;
+    };
+
+    // Draw walls (skip tiles inside rooms/levels)
     for (const wk of wallSet) {
       if (roomInterior.has(wk)) continue;
       const [wx, wy] = wk.split(',').map(Number);
@@ -500,7 +514,9 @@ export function drawOverworld(
       for (let pi = 0; pi < path.length; pi += 5) {
         if (Math.abs(path[pi][0] - wx) + Math.abs(path[pi][1] - wy) < Math.abs(path[best][0] - wx) + Math.abs(path[best][1] - wy)) best = pi;
       }
-      drawTile(wx, wy, lerpColor(wallA, wallB, best / (path.length - 1 || 1)));
+      const t = best / (path.length - 1 || 1);
+      const useB = pickSide(t, wx * 31 + wy * 17);
+      drawTile(wx, wy, useB ? wallB : wallA, useB ? wallImgB : wallImgA);
     }
     // Draw floors (these CAN overwrite room walls for doorway connections)
     for (const fk of floorSet) {
@@ -509,7 +525,11 @@ export function drawOverworld(
       for (let pi = 0; pi < path.length; pi += 5) {
         if (Math.abs(path[pi][0] - fx) + Math.abs(path[pi][1] - fy) < Math.abs(path[best][0] - fx) + Math.abs(path[best][1] - fy)) best = pi;
       }
-      drawTile(fx, fy, lerpColor(floorA, floorB, best / (path.length - 1 || 1)));
+      const t = best / (path.length - 1 || 1);
+      const useB = pickSide(t, fx * 31 + fy * 17);
+      const pool = useB ? floorImgsB : floorImgsA;
+      const floorImg = pool.length > 0 ? pool[Math.floor(pickRand(fx * 13 + fy * 7) * pool.length)] : undefined;
+      drawTile(fx, fy, useB ? floorB : floorA, floorImg);
     }
     } catch (err) { console.error('Hallway render error for', a, '->', b, err); }
   }
@@ -537,7 +557,7 @@ export function drawOverworld(
   };
 
   for (const r of md.regions) {
-    const nid = nodeIdFor(r.node_idx);
+    const nid = typeof r.node_idx === 'string' ? r.node_idx : nodeIdFor(r.node_idx);
     const { ox: rox, oy: roy } = regionPos(r);
     // Exit handle — only show if NOT connected
     if (!connectedExits.has(nid)) {
@@ -619,13 +639,14 @@ export function drawOverworld(
 
   // Labels and selection highlights
   for (const r of md.regions) {
-    const levelsIdx = r.node_idx - 1;
-    const override = state.regionOverrides[r.node_idx];
-    const rox = override ? override.ox : r.ox;
-    const roy = override ? override.oy : r.oy;
+    const levelsIdx = typeof r.node_idx === 'number' ? r.node_idx - 1 : -1;
+    // Use position directly (builder_regions is the source of truth)
+    const rox = r.ox;
+    const roy = r.oy;
 
-    // Labels (skip start room — it has its own title text)
-    if (r.node_idx !== 0) {
+    // Labels (skip start room and generic rooms)
+    const brType = (r as any)._builderRegion?.type;
+    if (r.node_idx !== 0 && brType !== 'room') {
       const lv = levels[levelsIdx] || { name: levelsIdx >= levels.length ? 'Store' : `Node ${r.node_idx}` };
       ctx.fillStyle = '#fff';
       ctx.font = `bold ${Math.max(10, 12 * zoom)}px system-ui`;
@@ -640,7 +661,7 @@ export function drawOverworld(
     // Selection + resize handles
     if (selectedNode === r.node_idx) {
       const isStart = r.node_idx === 0;
-      const isStore = r.node_idx > levels.length;
+      const isStore = typeof r.node_idx === 'number' && r.node_idx > levels.length;
       // Use overridden size if available
       const effW = isStart ? (campaign.overworld.start_room_size?.[0] || r.w) : isStore ? (campaign.overworld.store_room_size?.[0] || r.w) : r.w;
       const effH = isStart ? (campaign.overworld.start_room_size?.[1] || r.h) : isStore ? (campaign.overworld.store_room_size?.[1] || r.h) : r.h;
@@ -732,6 +753,9 @@ export function drawOverworld(
   }
 }
 
+// Overworld tile image cache (keyed by base64 — shared across frames)
+const owTileImageCache = new Map<string, HTMLImageElement>();
+
 // Room default dimensions (shared with hit testing)
 const ROOM_W = 10, ROOM_H = 8;
 
@@ -742,26 +766,45 @@ export function hitTestRegion(
   state: OwCanvasState,
   campaign?: BundledCampaign,
 ): number | string | null {
-  const md = state.mapData;
-  if (!md?.regions) return null;
+  // Use builder_regions directly for hit testing (always up-to-date)
+  const br = campaign?.overworld.builder_regions;
+  const md = (state as any)._renderedMd || state.mapData;
+  const levels = campaign?.overworld.levels || [];
+  const gridW = br && br.length > 0
+    ? Math.max(...br.map(r => r.ox + r.w)) + 20
+    : md ? md.width : 60;
+  const gridH = br && br.length > 0
+    ? Math.max(...br.map(r => r.oy + r.h)) + 20
+    : md ? md.height : 36;
   const tz = 4 * state.zoom;
-  const mapW = md.width * tz;
-  const mapH = md.height * tz;
-  const baseOx = (vpW - mapW) / 2 + state.panX;
-  const baseOy = (vpH - mapH) / 2 + state.panY;
+  const baseOx = (vpW - gridW * tz) / 2 + state.panX;
+  const baseOy = (vpH - gridH * tz) / 2 + state.panY;
 
+  if (br && br.length > 0) {
+    for (const region of br) {
+      const rx = baseOx + region.ox * tz;
+      const ry = baseOy + region.oy * tz;
+      if (mx >= rx && mx <= rx + region.w * tz && my >= ry && my <= ry + region.h * tz) {
+        // Return node_idx compatible with the md shim
+        if (region.type === 'start') return 0;
+        if (region.type === 'store') return levels.length + 1;
+        if (region.type === 'level') return (region.level_idx ?? 0) + 1;
+        return region.id; // room string ID
+      }
+    }
+    return null;
+  }
+
+  // Legacy fallback
+  if (!md?.regions) return null;
   for (const r of md.regions) {
-    const override = state.regionOverrides[r.node_idx];
-    const rox = override ? override.ox : r.ox;
-    const roy = override ? override.oy : r.oy;
-    const rx = baseOx + rox * tz;
-    const ry = baseOy + roy * tz;
+    const rx = baseOx + r.ox * tz;
+    const ry = baseOy + r.oy * tz;
     if (mx >= rx && mx <= rx + r.w * tz && my >= ry && my <= ry + r.h * tz) {
       return r.node_idx;
     }
   }
 
-  // Check rooms
   if (campaign) {
     const allRooms = campaign.overworld.rooms || campaign.overworld.fork_chambers || [];
     for (const room of allRooms) {
@@ -784,20 +827,56 @@ export function hitTestHandle(
   campaign: BundledCampaign,
   state: OwCanvasState,
 ): { type: 'exit' | 'entry'; nodeIdx: number | string; sx: number; sy: number } | null {
-  const md = state.mapData;
-  if (!md?.regions) return null;
+  const br = campaign.overworld.builder_regions || [];
   const designs = campaign.designs || [];
+  const levels = campaign.overworld.levels || [];
   const tz = 4 * state.zoom;
-  const mapW = md.width * tz;
-  const mapH = md.height * tz;
-  const baseOx = (vpW - mapW) / 2 + state.panX;
-  const baseOy = (vpH - mapH) / 2 + state.panY;
-  const hitR = Math.max(8, tz * 1.5);
+  const gridW = br.length > 0 ? Math.max(...br.map(r => r.ox + r.w)) + 20 : 60;
+  const gridH = br.length > 0 ? Math.max(...br.map(r => r.oy + r.h)) + 20 : 36;
+  const baseOx = (vpW - gridW * tz) / 2 + state.panX;
+  const baseOy = (vpH - gridH * tz) / 2 + state.panY;
+  // Hot dog hit area: wider along the wall edge
+  const hitW = Math.max(6, tz * 1.5);  // along wall
+  const hitH = Math.max(4, tz * 0.5);  // perpendicular
 
+  // Check builder_regions handles
+  if (br.length > 0) {
+    for (const region of br) {
+      const rox = region.ox, roy = region.oy;
+      const rw = region.w, rh = region.h;
+
+      // Get door positions
+      const fakeR = { node_idx: region.type === 'start' ? 0 : region.type === 'store' ? levels.length + 1 : region.type === 'level' ? (region.level_idx ?? 0) + 1 : region.id, ox: rox, oy: roy, w: rw, h: rh, _builderRegion: region };
+      const exitDoor = getDoorPos(fakeR, 'exit', designs);
+      const entryDoor = getDoorPos(fakeR, 'entry', designs);
+
+      const nodeIdx = region.type === 'start' ? 0 : region.type === 'store' ? levels.length + 1 : region.type === 'level' ? (region.level_idx ?? 0) + 1 : region.id;
+
+      if (exitDoor) {
+        const hx = baseOx + (rox + exitDoor[0]) * tz + tz / 2;
+        const hy = baseOy + (roy + exitDoor[1]) * tz + tz / 2;
+        if (Math.abs(mx - hx) < hitW && Math.abs(my - hy) < hitW) {
+          return { type: 'exit', nodeIdx, sx: hx, sy: hy };
+        }
+      }
+      if (entryDoor) {
+        const hx = baseOx + (rox + entryDoor[0]) * tz + tz / 2;
+        const hy = baseOy + (roy + entryDoor[1]) * tz + tz / 2;
+        if (Math.abs(mx - hx) < hitW && Math.abs(my - hy) < hitW) {
+          return { type: 'entry', nodeIdx, sx: hx, sy: hy };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Legacy fallback
+  const md = (state as any)._renderedMd || state.mapData;
+  if (!md?.regions) return null;
+  const hitR = Math.max(8, tz * 1.5);
   for (const r of md.regions) {
-    const o = state.regionOverrides[r.node_idx];
-    const rox = o ? o.ox : r.ox;
-    const roy = o ? o.oy : r.oy;
+    const rox = r.ox;
+    const roy = r.oy;
 
     const exitDoor = getDoorPos(r, 'exit', designs);
     if (exitDoor) {

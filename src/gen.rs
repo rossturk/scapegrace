@@ -249,6 +249,9 @@ pub struct OverworldResult {
     /// Overworld region offsets (designer-dragged level positions)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ow_region_offsets: Option<serde_json::Value>,
+    /// Builder-owned region layout (single source of truth for positions, sizes, tile sources)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder_regions: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1062,11 +1065,6 @@ fn build_overworld_inner(result: OverworldResult, ow_font: String) -> Result<cra
     store_stock.push(crate::game::StoreSlot {
         name: "Vitality Charm".into(), description: "+15 max HP (permanent)".into(),
         item_type: "max_hp".into(), price: 100, stock: 1, value: 15,
-    });
-    // Scout Map: reveals the entire next level
-    store_stock.push(crate::game::StoreSlot {
-        name: "Scout Map".into(), description: "Reveals entire map on next level".into(),
-        item_type: "scout_map".into(), price: 40, stock: 2, value: 1,
     });
     // Antidote: immune to damage tiles for entire level
     store_stock.push(crate::game::StoreSlot {

@@ -108,12 +108,14 @@ async function genItemSprite(design: Phase2Result, type: 'weapon' | 'armor') {
   if (!item) return;
   const typeLabel = type === 'weapon' ? 'weapon' : 'armor/shield';
   showToast(`Generating ${type} sprite...`, 'info');
-  const b64 = await generateImage({
+  const raw = await generateImage({
     prompt: `2D pixel art sprite of a roguelike game ${typeLabel} called "${item.name}". ${item.description || ''}. Top-down view, 32x32 pixel art, single item centered on pure solid BLACK background. No text.`,
     width: 64,
     height: 64,
   });
-  if (b64) {
+  if (raw) {
+    const { processSprite } = await import('../../canvas/sprite-processing');
+    const b64 = await processSprite(raw);
     updateDesign(d => { (d[type] as any).image = b64; });
     showToast('Sprite generated!', 'success');
   }

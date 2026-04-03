@@ -89,6 +89,19 @@ export interface OverworldResult {
   node_positions?: Record<string, NodePosition>;
   ow_region_offsets?: Record<string, RegionOffset>;
   terrain_seed?: number;
+  /** Builder-owned region layout. Single source of truth for all positions and sizes. */
+  builder_regions?: BuilderRegion[];
+}
+
+export interface BuilderRegion {
+  id: string;          // "start", "store", "level_0", "level_1", "room_abc123", etc.
+  type: 'start' | 'store' | 'level' | 'room';
+  ox: number;          // tile X position
+  oy: number;          // tile Y position
+  w: number;           // tile width
+  h: number;           // tile height
+  level_idx?: number;  // for type=level: index into overworld.levels / designs
+  tile_source?: string; // level_N to use that level's tiles (for rooms/store/start)
 }
 
 export interface OverworldNode {

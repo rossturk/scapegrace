@@ -28,11 +28,15 @@ export async function loadPack() {
 
 export async function savePack() {
   if (!pack.value) return;
+  // Debug: check if builder_regions exists before save
+  const c0 = pack.value.campaigns?.[0];
+  console.log('savePack: builder_regions in pack.value:', c0?.overworld?.builder_regions ? c0.overworld.builder_regions.length : 'NONE');
   // Export WYSIWYG overworld maps before saving
   const { exportOverworldMap } = await import('../canvas/overworld-export');
   const { owState } = await import('../components/campaign/overworld-canvas');
   for (const campaign of pack.value.campaigns) {
-    if (owState.mapData && owState.mapCampaignId === campaign.id) {
+    if (campaign.overworld.builder_regions && campaign.overworld.builder_regions.length > 0) {
+      owState.hallwayCacheKey = null; // force rebuild with current positions
       const exported = exportOverworldMap(campaign, owState);
       if (exported) campaign.prebuilt_overworld_map = exported;
     }
@@ -97,9 +101,9 @@ export function updatePack(updater: (p: BundledPack) => void) {
 export function updateCampaign(updater: (c: BundledCampaign) => void) {
   const p = pack.value;
   const id = selectedCampaignId.value;
-  if (!p || !id) return;
+  if (!p || !id) { console.warn('updateCampaign: no pack or no selectedCampaignId', !!p, id); return; }
   const c = p.campaigns.find(c => c.id === id);
-  if (!c) return;
+  if (!c) { console.warn('updateCampaign: campaign not found', id); return; }
   updater(c);
   pack.value = { ...p };
   packVersion.value++;
