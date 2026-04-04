@@ -10,7 +10,7 @@ use macroquad::prelude::*;
 use ::rand::Rng;
 use std::sync::mpsc;
 
-const TILE: f32 = 24.0;
+const TILE: f32 = 32.0;
 
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
