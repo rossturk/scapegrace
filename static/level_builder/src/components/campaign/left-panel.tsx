@@ -209,7 +209,7 @@ function MonstersTab({ campaign }: Props) {
               <>
                 <img
                   src={`data:image/png;base64,${monster.image}`}
-                  style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;"
+                  style="width:128px;height:128px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;"
                 />
                 <button
                   class="ai-btn"
@@ -259,8 +259,8 @@ async function genMonsterSprite(campaign: BundledCampaign, idx: number) {
   showToast('Generating sprite...', 'info');
   const raw = await generateImage({
     prompt: `16x16 pixel art sprite: ${monster.description || monster.name}. Single creature on solid BLACK background, centered, clean pixel art style.`,
-    width: 64,
-    height: 64,
+    width: 256,
+    height: 256,
   });
   if (raw) {
     const { processSprite } = await import('../../canvas/sprite-processing');

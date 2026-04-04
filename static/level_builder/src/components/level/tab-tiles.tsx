@@ -76,7 +76,7 @@ export function TabTiles({ design, palette }: Props) {
             <div class="flex gap-8 items-center">
               {td.image ? (
                 <>
-                  <img src={`data:image/png;base64,${td.image}`} style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;" />
+                  <img src={`data:image/png;base64,${td.image}`} style="width:128px;height:128px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;" />
                   <button class="ai-btn" onClick={() => genTileImage(i, td.name, col)} style="font-size:11px;">&#10024; Regen</button>
                   <button style="font-size:10px;padding:2px 6px;" onClick={() => updateDesign(d => { delete (d.tile_defs[i] as any).image; })}>Clear</button>
                 </>
@@ -112,8 +112,8 @@ async function genTileImage(tileIdx: number, name: string, color: string) {
       `Bright and saturated, NOT dark or muddy. Minimal detail — just enough to suggest the material. ` +
       `Perfectly seamless and tileable in all directions. Uniform texture with NO focal point, NO objects, NO borders, NO text. ` +
       `Think classic SNES/GBA RPG tile. Fill the ENTIRE image with the texture edge to edge.`,
-    width: 64,
-    height: 64,
+    width: 256,
+    height: 256,
   });
   if (raw) {
     const { blendWithColor } = await import('../../canvas/sprite-processing');

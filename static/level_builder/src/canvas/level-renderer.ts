@@ -47,18 +47,22 @@ export async function drawLevelMap(
   const cellH = canvas.height / rows;
   const ctx = canvas.getContext('2d')!;
 
-  // Build color/char/image maps
-  const nameToColor: Record<string, string> = {};
-  const nameToChar: Record<string, string> = {};
+  // Build color/char/image maps keyed by mechanical ID (t0, t1, ...)
+  // Also index by creative name for backward compat with old prebuilt maps
+  const idToColor: Record<string, string> = {};
+  const idToChar: Record<string, string> = {};
   for (let i = 0; i < tileDefs.length; i++) {
+    const id = `t${i}`;
     const name = tileDefs[i].name;
-    nameToColor[name] = palette[i % palette.length] || (i === 0 ? '#444' : '#333');
-    if (tileDefs[i].char) nameToChar[name] = tileDefs[i].char;
-    if (tileDefs[i].image) loadImage('tile_' + name, tileDefs[i].image!);
+    const color = palette[i % palette.length] || (i === 0 ? '#444' : '#333');
+    idToColor[id] = color;
+    idToColor[name] = color; // also index by creative name for old maps
+    if (tileDefs[i].char) { idToChar[id] = tileDefs[i].char; idToChar[name] = tileDefs[i].char; }
+    if (tileDefs[i].image) { loadImage('tile_' + id, tileDefs[i].image!); loadImage('tile_' + name, tileDefs[i].image!); }
   }
-  nameToColor['wall'] = nameToColor['wall'] || '#444';
-  nameToColor['locked_door'] = '#aa6622';
-  nameToChar['locked_door'] = '\u{1F512}';
+  idToColor['t0'] = idToColor['t0'] || '#444';
+  idToColor['locked_door'] = '#aa6622';
+  idToChar['locked_door'] = '\u{1F512}';
 
   // Background
   ctx.fillStyle = '#000';
@@ -72,9 +76,9 @@ export async function drawLevelMap(
       if (img?.complete && img.naturalWidth > 0) {
         ctx.drawImage(img, c * cellW, r * cellH, cellW, cellH);
       } else {
-        ctx.fillStyle = nameToColor[name] || '#222';
+        ctx.fillStyle = idToColor[name] || '#222';
         ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
-        const ch = nameToChar[name];
+        const ch = idToChar[name];
         if (ch && cellW >= 6) {
           ctx.fillStyle = 'rgba(255,255,255,0.3)';
           ctx.font = `${Math.min(cellW, cellH) * 0.7}px monospace`;
@@ -93,13 +97,20 @@ export async function drawLevelMap(
     ctx.fillRect(px * cellW + 2, py * cellH + 2, cellW - 4, cellH - 4);
   }
 
+  // Build set of walkable tile IDs (index > 0 = walkable, plus creative name aliases)
+  const walkableTiles = new Set<string>();
+  for (let i = 1; i < tileDefs.length; i++) {
+    walkableTiles.add(`t${i}`);
+    walkableTiles.add(tileDefs[i].name);
+  }
+
+  const isWalkable = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < cols && y < rows && walkableTiles.has(tiles[y][x]);
+
   // Boss room tint (suggested position, before placed)
   const pe = placedEntities;
   if (mapData.boss_position && !(pe?.boss)) {
     const [bx, by] = mapData.boss_position;
-    const wallName = tileDefs[0]?.name || 'wall';
-    const isWalkable = (x: number, y: number) =>
-      x >= 0 && y >= 0 && x < cols && y < rows && tiles[y][x] !== wallName && tiles[y][x] !== 'locked_door';
     const isChokepoint = (x: number, y: number) => {
       const n = !isWalkable(x, y - 1), s = !isWalkable(x, y + 1);
       const e = !isWalkable(x + 1, y), w = !isWalkable(x - 1, y);

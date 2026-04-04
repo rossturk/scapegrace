@@ -75,7 +75,8 @@ export function findEdgeTileFromDesign(
   const tiles = design?.prebuilt_map?.tiles;
   if (tiles) {
     const defs = design.tile_defs || [];
-    const wallName = defs[0]?.name || 'wall';
+    const walkableSet = new Set<string>();
+    for (let i = 1; i < defs.length; i++) { walkableSet.add(`t${i}`); walkableSet.add(defs[i].name); }
     const rows = tiles.length, cols = tiles[0]?.length || w;
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;
@@ -83,10 +84,10 @@ export function findEdgeTileFromDesign(
     for (let x = 0; x < cols; x++) { edgeTiles.push([x, 0]); edgeTiles.push([x, rows - 1]); }
     for (let y = 1; y < rows - 1; y++) { edgeTiles.push([0, y]); edgeTiles.push([cols - 1, y]); }
     for (const [lx, ly] of edgeTiles) {
-      if (tiles[ly][lx] === wallName) {
+      if (!walkableSet.has(tiles[ly][lx])) {
         const hasAdj = [[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dx, dy]) => {
           const nx = lx + dx, ny = ly + dy;
-          return nx >= 0 && ny >= 0 && nx < cols && ny < rows && tiles[ny][nx] !== wallName;
+          return nx >= 0 && ny >= 0 && nx < cols && ny < rows && walkableSet.has(tiles[ny][nx]);
         });
         if (hasAdj) {
           const wx = ox + lx, wy = oy + ly;

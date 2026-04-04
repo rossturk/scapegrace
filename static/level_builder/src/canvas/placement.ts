@@ -29,7 +29,7 @@ function buildOccupied(pe: PlacedEntities, mapData: MapData): Set<string> {
 // Edge wall tile adjacent to walkable, nearest to target position
 function findDoorPosition(
   mapData: MapData,
-  wallName: string,
+  walkable: Set<string>,
   target: [number, number],
 ): [number, number] | null {
   const tiles = mapData.tiles;
@@ -40,11 +40,10 @@ function findDoorPosition(
 
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
-      if (tiles[y][x] !== wallName) continue;
+      if (walkable.has(tiles[y][x])) continue; // skip walkable tiles, we want walls
       const onEdge = x === 0 || x === cols - 1 || y === 0 || y === rows - 1;
       const adj = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]].some(([ax, ay]) =>
-        ax >= 0 && ay >= 0 && ax < cols && ay < rows &&
-        tiles[ay][ax] !== wallName && tiles[ay][ax] !== 'locked_door'
+        ax >= 0 && ay >= 0 && ax < cols && ay < rows && walkable.has(tiles[ay][ax])
       );
       if (!adj) continue;
       const d = Math.abs(x - target[0]) + Math.abs(y - target[1]);
@@ -56,6 +55,16 @@ function findDoorPosition(
 }
 
 // Place a single tray item intelligently
+function buildWalkableSet(design: Phase2Result): Set<string> {
+  const defs = design.tile_defs || [];
+  const walkable = new Set<string>();
+  for (let i = 1; i < defs.length; i++) {
+    walkable.add(`t${i}`);
+    walkable.add(defs[i].name);
+  }
+  return walkable;
+}
+
 export function autoPlaceItem(
   item: TrayItem,
   mapData: MapData,
@@ -65,23 +74,22 @@ export function autoPlaceItem(
   const tiles = mapData.tiles;
   const rows = tiles.length;
   const cols = tiles[0].length;
-  const defs = design.tile_defs || [];
-  const wallName = defs[0]?.name || 'wall';
+  const walkable = buildWalkableSet(design);
   const occupied = buildOccupied(pe, mapData);
 
   const isOpen = (x: number, y: number) =>
     x >= 0 && y >= 0 && x < cols && y < rows &&
-    tiles[y][x] !== wallName && tiles[y][x] !== 'locked_door' && !occupied.has(x + ',' + y);
+    walkable.has(tiles[y][x]) && !occupied.has(x + ',' + y);
 
   if (item.type === 'exit_door') {
     const bp = pe.boss || mapData.boss_position || [Math.floor(cols / 2), Math.floor(rows / 2)];
-    pe.exit_door = findDoorPosition(mapData, wallName, bp as [number, number]);
+    pe.exit_door = findDoorPosition(mapData, walkable, bp as [number, number]);
     return !!pe.exit_door;
   }
 
   if (item.type === 'entry_door') {
     const ps = mapData.player_start || [Math.floor(cols / 2), Math.floor(rows / 2)];
-    pe.entry_door = findDoorPosition(mapData, wallName, ps);
+    pe.entry_door = findDoorPosition(mapData, walkable, ps);
     return !!pe.entry_door;
   }
 
@@ -137,13 +145,12 @@ export function autoPlaceAll(
   const tiles = mapData.tiles;
   const rows = tiles.length;
   const cols = tiles[0].length;
-  const defs = design.tile_defs || [];
-  const wallName = defs[0]?.name || 'wall';
+  const walkable = buildWalkableSet(design);
   const occupied = buildOccupied(pe, mapData);
 
   const isOpen = (x: number, y: number) =>
     x >= 0 && y >= 0 && x < cols && y < rows &&
-    tiles[y][x] !== wallName && tiles[y][x] !== 'locked_door' && !occupied.has(x + ',' + y);
+    walkable.has(tiles[y][x]) && !occupied.has(x + ',' + y);
 
   let placed = 0;
 
@@ -170,16 +177,16 @@ export function autoPlaceAll(
     }
   }
 
-  // 2. Build walkable list and shuffle
-  const walkable: [number, number][] = [];
+  // 2. Build open-tile list and shuffle
+  const openTiles: [number, number][] = [];
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
-      if (isOpen(x, y)) walkable.push([x, y]);
+      if (isOpen(x, y)) openTiles.push([x, y]);
     }
   }
-  for (let i = walkable.length - 1; i > 0; i--) {
+  for (let i = openTiles.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [walkable[i], walkable[j]] = [walkable[j], walkable[i]];
+    [openTiles[i], openTiles[j]] = [openTiles[j], openTiles[i]];
   }
 
   let wi = 0;
@@ -190,14 +197,14 @@ export function autoPlaceAll(
 
     if (t.type === 'exit_door') {
       const bp = pe.boss || mapData.boss_position || [Math.floor(cols / 2), Math.floor(rows / 2)];
-      pe.exit_door = findDoorPosition(mapData, wallName, bp as [number, number]);
+      pe.exit_door = findDoorPosition(mapData, walkable, bp as [number, number]);
       if (pe.exit_door) placed++;
       continue;
     }
 
     if (t.type === 'entry_door') {
       const ps = mapData.player_start || [Math.floor(cols / 2), Math.floor(rows / 2)];
-      pe.entry_door = findDoorPosition(mapData, wallName, ps);
+      pe.entry_door = findDoorPosition(mapData, walkable, ps);
       if (pe.entry_door) placed++;
       continue;
     }
@@ -210,8 +217,8 @@ export function autoPlaceAll(
       continue;
     }
 
-    if (wi >= walkable.length) break;
-    const [rx, ry] = walkable[wi++];
+    if (wi >= openTiles.length) break;
+    const [rx, ry] = openTiles[wi++];
     if (t.type === 'monster') pe.monsters.push({ name: t.name, x: rx, y: ry });
     else if (t.type === 'item') pe.items.push({ name: t.name, item_type: t.item_type, x: rx, y: ry });
     else if (t.type === 'trap') pe.traps.push({ name: t.name, x: rx, y: ry });

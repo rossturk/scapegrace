@@ -70,9 +70,27 @@ export function cropToContent(b64: string): Promise<string> {
   });
 }
 
-export async function processSprite(rawB64: string): Promise<string> {
+export function downscale(b64: string, size: number = 16): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const ctx = c.getContext('2d')!;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, size, size);
+      resolve(c.toDataURL('image/png').split(',')[1]);
+    };
+    img.onerror = () => resolve(b64);
+    img.src = 'data:image/png;base64,' + b64;
+  });
+}
+
+export async function processSprite(rawB64: string, size: number = 16): Promise<string> {
   const transparent = await removeBlackBackground(rawB64);
-  return cropToContent(transparent);
+  const cropped = await cropToContent(transparent);
+  return downscale(cropped, size);
 }
 
 export function blendWithColor(b64: string, hexColor: string, strength: number): Promise<string> {
@@ -87,7 +105,8 @@ export function blendWithColor(b64: string, hexColor: string, strength: number):
       ctx.globalAlpha = strength;
       ctx.fillStyle = hexColor;
       ctx.fillRect(0, 0, c.width, c.height);
-      resolve(c.toDataURL('image/png').split(',')[1]);
+      const blended = c.toDataURL('image/png').split(',')[1];
+      downscale(blended).then(resolve);
     };
     img.onerror = () => resolve(b64);
     img.src = 'data:image/png;base64,' + b64;

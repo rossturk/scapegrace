@@ -163,8 +163,8 @@ function ItemSpritesTab() {
     showToast('Generating sprite...', 'info');
     const raw = await generateImage({
       prompt: `16x16 pixel art sprite: ${desc}. Single item on solid BLACK background, centered, clean pixel art style.`,
-      width: 64,
-      height: 64,
+      width: 256,
+      height: 256,
     });
     if (raw) {
       const { processSprite } = await import('../canvas/sprite-processing');
@@ -219,7 +219,7 @@ function ItemSpritesTab() {
                 <>
                   <img
                     src={`data:image/png;base64,${sprites[st.key]}`}
-                    style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;"
+                    style="width:128px;height:128px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;"
                   />
                   <button class="ai-btn" onClick={() => genSprite(st.key)} style="font-size:11px;">
                     &#10024; Regen

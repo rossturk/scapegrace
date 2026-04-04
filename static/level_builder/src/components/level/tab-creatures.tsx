@@ -36,7 +36,7 @@ export function TabCreatures({ design }: Props) {
           <>
             <img
               src={`data:image/png;base64,${boss.image}`}
-              style="width:64px;height:64px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;"
+              style="width:128px;height:128px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;"
             />
             <button class="ai-btn" onClick={() => genBossSprite(design)} style="font-size:10px;">&#10024; Regen</button>
             <button style="font-size:9px;padding:2px 4px;" onClick={() => updateDesign(d => { delete (d.boss as any).image; })}>Clear</button>
@@ -55,13 +55,13 @@ async function genBossSprite(design: Phase2Result) {
   if (!b) return;
   showToast('Generating boss sprite...', 'info');
   const raw = await generateImage({
-    prompt: `2D pixel art sprite of a roguelike game boss monster called "${b.name}". ${b.description || ''}. Top-down view, 64x64 pixel art, single large creature centered on pure solid BLACK background. No text.`,
-    width: 128,
-    height: 128,
+    prompt: `2D pixel art sprite of a roguelike game boss monster called "${b.name}". ${b.description || ''}. Top-down view, 16x16 pixel art, single large creature centered on pure solid BLACK background. No text.`,
+    width: 256,
+    height: 256,
   });
   if (raw) {
     const { processSprite } = await import('../../canvas/sprite-processing');
-    const b64 = await processSprite(raw);
+    const b64 = await processSprite(raw, 32);
     updateDesign(d => { d.boss.image = b64; });
     showToast('Boss sprite generated!', 'success');
   }

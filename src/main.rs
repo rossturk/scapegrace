@@ -10,7 +10,7 @@ use macroquad::prelude::*;
 use ::rand::Rng;
 use std::sync::mpsc;
 
-const TILE: f32 = 24.0;
+const TILE: f32 = 16.0;
 
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -847,7 +847,7 @@ async fn main() {
                                 });
                                 // Check for WYSIWYG unified map
                                 if campaign.prebuilt_overworld_map.is_some() {
-                                    match gen::build_unified_level(campaign) {
+                                    match gen::build_unified_level(campaign, &pack_item_sprites) {
                                         Ok((level, start)) => {
                                             state.level = level;
                                             let resume_walkable = resuming && {
@@ -1078,7 +1078,7 @@ async fn main() {
                                 });
                                 // Check for WYSIWYG unified map
                                 if campaign.prebuilt_overworld_map.is_some() {
-                                    match gen::build_unified_level(campaign) {
+                                    match gen::build_unified_level(campaign, &pack_item_sprites) {
                                         Ok((level, start)) => {
                                             state.level = level;
                                             state.player.x = start[0];
@@ -1504,13 +1504,21 @@ async fn main() {
                                 for item in &state.level.items {
                                     if !item_textures.contains_key(&item.name) {
                                         if let Some(b64) = &item.image {
-                                            if let Some(bytes) = decode_base64(b64) {
-                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                    let tex = Texture2D::from_image(&img);
-                                                    tex.set_filter(FilterMode::Nearest);
-                                                    item_textures.insert(item.name.clone(), tex);
+                                            match decode_base64(b64) {
+                                                Some(bytes) => {
+                                                    match Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
+                                                        Ok(img) => {
+                                                            let tex = Texture2D::from_image(&img);
+                                                            tex.set_filter(FilterMode::Nearest);
+                                                            item_textures.insert(item.name.clone(), tex);
+                                                        }
+                                                        Err(e) => eprintln!("[item-tex] PNG decode failed for '{}' ({}): {} ({} bytes)", item.name, item.item_type, e, bytes.len()),
+                                                    }
                                                 }
+                                                None => eprintln!("[item-tex] base64 decode failed for '{}' ({}) ({} chars)", item.name, item.item_type, b64.len()),
                                             }
+                                        } else {
+                                            eprintln!("[item-tex] no image for '{}' ({})", item.name, item.item_type);
                                         }
                                     }
                                 }
@@ -1706,7 +1714,7 @@ async fn main() {
                         format!("MAP  zoom:{:.0}%  Drag=pan  Scroll=zoom  Shift+Tab=exit",
                             teleport_zoom * 100.0)
                     };
-                    draw_text(&status, 10.0, sh - 8.0, 16.0, YELLOW);
+                    draw_text(&status, 10.0, sh - 34.0, 16.0, YELLOW);
 
                     // Scroll wheel zoom
                     let (_sx, scroll_y) = mouse_wheel();

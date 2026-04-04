@@ -34,24 +34,25 @@ struct BspNode {
 }
 
 
+/// Returns (wall_id, floor_id, thematic_ids) — mechanical IDs, not creative names.
 fn classify_tiles(tile_defs: &HashMap<String, TileDefRaw>) -> (String, String, Vec<String>) {
     let mut wall = None;
     let mut floor = None;
     let mut thematic = Vec::new();
 
-    for (_ch, td) in tile_defs {
+    for (id, td) in tile_defs {
         if !td.walkable && wall.is_none() {
-            wall = Some(td.name.clone());
+            wall = Some(id.clone());
         } else if td.walkable && floor.is_none() {
-            floor = Some(td.name.clone());
+            floor = Some(id.clone());
         } else if td.walkable {
-            thematic.push(td.name.clone());
+            thematic.push(id.clone());
         }
     }
 
     (
-        wall.unwrap_or_else(|| "wall".into()),
-        floor.unwrap_or_else(|| "floor".into()),
+        wall.unwrap_or_else(|| "t0".into()),
+        floor.unwrap_or_else(|| "t1".into()),
         thematic,
     )
 }
@@ -425,8 +426,8 @@ pub fn generate_map_with_options(tile_defs: &HashMap<String, TileDefRaw>, skip_l
     'outer: for y in boss_room.y..boss_room.y + boss_room.h - 1 {
         for x in boss_room.x..boss_room.x + boss_room.w - 1 {
             let all_walkable = (0..2).all(|dy| (0..2).all(|dx| {
-                let name = &grid[(y + dy) as usize][(x + dx) as usize];
-                tile_defs.values().any(|td| td.name == *name && td.walkable)
+                let cell_id = &grid[(y + dy) as usize][(x + dx) as usize];
+                tile_defs.get(cell_id.as_str()).map_or(false, |td| td.walkable)
             }));
             if all_walkable {
                 boss_pos = [x, y];
@@ -435,9 +436,9 @@ pub fn generate_map_with_options(tile_defs: &HashMap<String, TileDefRaw>, skip_l
         }
     }
 
-    // Build tile_def_map for flood fill
-    let tile_def_map: HashMap<String, crate::game::TileDef> = tile_defs.values().map(|td| {
-        (td.name.clone(), crate::game::TileDef {
+    // Build tile_def_map for flood fill (keyed by mechanical ID)
+    let tile_def_map: HashMap<String, crate::game::TileDef> = tile_defs.iter().map(|(id, td)| {
+        (id.clone(), crate::game::TileDef {
             name: td.name.clone(),
             color: td.color.clone(),
             walkable: td.walkable,
@@ -514,21 +515,28 @@ pub fn place_exit_door(
     let height = grid.len() as i32;
     let width = grid[0].len() as i32;
 
-    let wall_name = tile_defs.values()
-        .find(|d| !d.walkable)
-        .map(|d| d.name.clone())
-        .unwrap_or_else(|| "wall".into());
+    let wall_id = tile_defs.iter()
+        .find(|(_, d)| !d.walkable)
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| "t0".into());
+
+    // Helper: check if a grid cell is walkable by looking up its ID in tile_defs
+    let is_walkable = |gx: i32, gy: i32| -> bool {
+        if gx < 0 || gy < 0 || gx >= width || gy >= height { return false; }
+        let cell = &grid[gy as usize][gx as usize];
+        tile_defs.get(cell.as_str()).map_or(false, |d| d.walkable)
+    };
 
     // Candidates: wall tiles on the target edge of the boss room that are adjacent to a floor tile inside
     let mut candidates: Vec<[i32; 2]> = Vec::new();
 
     match exit_direction {
         "e" => {
-            let x = rx + rw; // one tile east of the room
+            let x = rx + rw;
             if x < width {
                 for y in ry..ry + rh {
-                    if y >= 0 && y < height && grid[y as usize][x as usize] == wall_name
-                        && x - 1 >= 0 && tile_defs.values().any(|d| d.walkable && d.name == grid[y as usize][(x-1) as usize]) {
+                    if y >= 0 && y < height && grid[y as usize][x as usize] == wall_id
+                        && is_walkable(x - 1, y) {
                         candidates.push([x, y]);
                     }
                 }
@@ -538,8 +546,8 @@ pub fn place_exit_door(
             let x = rx - 1;
             if x >= 0 {
                 for y in ry..ry + rh {
-                    if y >= 0 && y < height && grid[y as usize][x as usize] == wall_name
-                        && x + 1 < width && tile_defs.values().any(|d| d.walkable && d.name == grid[y as usize][(x+1) as usize]) {
+                    if y >= 0 && y < height && grid[y as usize][x as usize] == wall_id
+                        && is_walkable(x + 1, y) {
                         candidates.push([x, y]);
                     }
                 }
@@ -549,8 +557,8 @@ pub fn place_exit_door(
             let y = ry + rh;
             if y < height {
                 for x in rx..rx + rw {
-                    if x >= 0 && x < width && grid[y as usize][x as usize] == wall_name
-                        && y - 1 >= 0 && tile_defs.values().any(|d| d.walkable && d.name == grid[(y-1) as usize][x as usize]) {
+                    if x >= 0 && x < width && grid[y as usize][x as usize] == wall_id
+                        && is_walkable(x, y - 1) {
                         candidates.push([x, y]);
                     }
                 }
@@ -560,8 +568,8 @@ pub fn place_exit_door(
             let y = ry - 1;
             if y >= 0 {
                 for x in rx..rx + rw {
-                    if x >= 0 && x < width && grid[y as usize][x as usize] == wall_name
-                        && y + 1 < height && tile_defs.values().any(|d| d.walkable && d.name == grid[(y+1) as usize][x as usize]) {
+                    if x >= 0 && x < width && grid[y as usize][x as usize] == wall_id
+                        && is_walkable(x, y + 1) {
                         candidates.push([x, y]);
                     }
                 }

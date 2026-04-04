@@ -689,13 +689,13 @@ pub fn clean_llm_content(mut content: String) -> String {
 
 /// Build full tile_defs from slim LLM output + palette colors.
 /// First entry = wall (not walkable), rest = walkable. Colors assigned from palette.
+/// Keys are mechanical IDs: "t0" (wall), "t1" (floor), "t2"... (thematic).
 pub fn expand_tile_defs(slim: &[TileDefSlim], palette: &[String]) -> HashMap<String, TileDefRaw> {
-    let chars = ["#", ".", "~", "*", "+", "^"];
     let mut defs = HashMap::new();
     for (i, td) in slim.iter().enumerate() {
-        let ch = chars.get(i).unwrap_or(&"?");
+        let id = format!("t{}", i);
         let color = palette.get(i).cloned().unwrap_or_else(|| "#888888".into());
-        defs.insert(ch.to_string(), TileDefRaw {
+        defs.insert(id, TileDefRaw {
             name: td.name.clone(),
             color,
             walkable: i > 0, // first entry is wall
@@ -705,8 +705,8 @@ pub fn expand_tile_defs(slim: &[TileDefSlim], palette: &[String]) -> HashMap<Str
     }
     // Ensure at least a wall and floor exist
     if defs.is_empty() {
-        defs.insert("#".into(), TileDefRaw { name: "wall".into(), color: palette.first().cloned().unwrap_or("#444".into()), walkable: false, char: None, image: None });
-        defs.insert(".".into(), TileDefRaw { name: "floor".into(), color: palette.get(1).cloned().unwrap_or("#888".into()), walkable: true, char: None, image: None });
+        defs.insert("t0".into(), TileDefRaw { name: "wall".into(), color: palette.first().cloned().unwrap_or("#444".into()), walkable: false, char: None, image: None });
+        defs.insert("t1".into(), TileDefRaw { name: "floor".into(), color: palette.get(1).cloned().unwrap_or("#888".into()), walkable: true, char: None, image: None });
     }
     defs
 }
@@ -1350,11 +1350,11 @@ fn assemble_level_with_settings(
     let mut tile_defs: HashMap<String, TileDef> = HashMap::new();
     let mut thematic_count = 0u32;
     let total_tile_types = p1.tile_defs.len();
-    for (_ch, raw) in &p1.tile_defs {
+    for (id, raw) in &p1.tile_defs {
         thematic_count += 1;
         // Make the last walkable thematic tile a damage tile if enabled
         let is_last_thematic = thematic_count == total_tile_types as u32 && raw.walkable && damage_tiles_enabled;
-        tile_defs.insert(raw.name.clone(), TileDef {
+        tile_defs.insert(id.clone(), TileDef {
             name: raw.name.clone(),
             color: raw.color.clone(),
             walkable: raw.walkable,
@@ -1363,8 +1363,8 @@ fn assemble_level_with_settings(
             image: raw.image.clone(),
         });
     }
-    if !tile_defs.contains_key("wall") {
-        tile_defs.insert("wall".into(), TileDef {
+    if !tile_defs.contains_key("t0") {
+        tile_defs.insert("t0".into(), TileDef {
             name: "wall".into(), color: "#444".into(), walkable: false, char_display: String::new(), damage: 0, image: None,
         });
     }
@@ -1708,7 +1708,7 @@ fn assemble_level_with_settings(
                 itms.push(Item {
                     id: format!("key_{}", floor), name: "Key".into(),
                     x: key_pos[0], y: key_pos[1], item_type: "key".into(), value: 0,
-                    description: "Unlocks a locked door.".into(), image: None,
+                    description: "Unlocks a locked door.".into(), image: item_sprites.get("key").cloned(),
                 });
             }
         }
@@ -2079,16 +2079,20 @@ pub fn generate_overworld_map(
 
                     if !tile_defs.contains_key(&prefixed) {
                         let palette = &levels[ni].palette;
-                        let def_idx = design.tile_defs.iter().position(|d| d.name == *tname);
+                        // tname is a mechanical ID like "t0", "t1" — extract index
+                        let def_idx = tname.strip_prefix('t')
+                            .and_then(|s| s.parse::<usize>().ok());
                         let color = def_idx
                             .and_then(|i| palette.get(i % palette.len()))
                             .cloned()
                             .unwrap_or_else(|| "#444444".into());
-                        let walkable = design.tile_defs.first()
-                            .map(|first| first.name != *tname)
-                            .unwrap_or(false);
-                        tile_defs.insert(prefixed.clone(), TileDef {
-                            name: prefixed,
+                        let walkable = def_idx.map_or(false, |i| i > 0); // t0 = wall, rest walkable
+                        let creative_name = def_idx
+                            .and_then(|i| design.tile_defs.get(i))
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| tname.clone());
+                        tile_defs.insert(prefixed, TileDef {
+                            name: creative_name,
                             color,
                             walkable,
                             char_display: String::new(),
@@ -2266,6 +2270,7 @@ pub fn generate_overworld_map(
 /// The entire campaign becomes one continuous tilemap with all entities placed.
 pub fn build_unified_level(
     campaign: &BundledCampaign,
+    item_sprites: &std::collections::HashMap<String, String>,
 ) -> Result<(Level, [i32; 2]), String> {
     let map_val = campaign.prebuilt_overworld_map.as_ref()
         .ok_or("No prebuilt_overworld_map in campaign")?;
@@ -2293,12 +2298,13 @@ pub fn build_unified_level(
     }
     if tiles.is_empty() { return Err("Empty tile grid".into()); }
 
-    // Parse tile defs
+    // Parse tile defs (keyed by mechanical ID, name is creative label)
     let mut tile_defs: HashMap<String, TileDef> = HashMap::new();
     if let Some(defs) = map_val.get("tile_defs").and_then(|v| v.as_object()) {
-        for (name, def) in defs {
-            tile_defs.insert(name.clone(), TileDef {
-                name: name.clone(),
+        for (id, def) in defs {
+            let creative_name = def.get("name").and_then(|v| v.as_str()).unwrap_or(id.as_str()).to_string();
+            tile_defs.insert(id.clone(), TileDef {
+                name: creative_name,
                 color: def.get("color").and_then(|v| v.as_str()).unwrap_or("#333").to_string(),
                 walkable: def.get("walkable").and_then(|v| v.as_bool()).unwrap_or(false),
                 char_display: String::new(),
@@ -2317,7 +2323,8 @@ pub fn build_unified_level(
     let regions: Vec<serde_json::Value> = map_val.get("regions")
         .and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
-    // Build entities from each level region's design
+    // Build entities directly from designer-placed data (no level rebuilding).
+    // Tiles and doors are already in the exported grid. Engine only scales stats.
     let mut all_monsters: Vec<Monster> = Vec::new();
     let mut all_items: Vec<Item> = Vec::new();
     let mut all_traps: Vec<Trap> = Vec::new();
@@ -2325,12 +2332,14 @@ pub fn build_unified_level(
     let settings = &campaign.settings;
     let campaign_monsters = campaign.monster_templates.as_deref();
 
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+
     for region in &regions {
         let node_id = region.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
         let region_ox = region.get("ox").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let region_oy = region.get("oy").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
-        // Only level nodes have designs with entities
         if !node_id.starts_with("level_") { continue; }
         let level_idx: usize = match node_id.strip_prefix("level_").and_then(|s| s.parse().ok()) {
             Some(i) => i,
@@ -2340,69 +2349,122 @@ pub fn build_unified_level(
             Some(d) => d,
             None => continue,
         };
-        let ow_levels = &campaign.overworld.levels;
-        let ow_level = match ow_levels.get(level_idx) {
+        let ow_level = match campaign.overworld.levels.get(level_idx) {
             Some(l) => l,
             None => continue,
         };
-
-        // Build the level to get properly scaled entities
-        let config = LevelConfig {
-            title: ow_level.name.clone(),
-            font: ow_level.font.clone().unwrap_or_default(),
-            description: ow_level.description.clone(),
-            theme: ow_level.theme.clone(),
-            palette: ow_level.palette.clone().unwrap_or_default(),
-            budget: ow_level.budget,
-            floor: (level_idx + 1) as i32,
-            campaign_tier: 0,
+        let placed = match &design.placed_entities {
+            Some(pe) => pe,
+            None => continue,
         };
-        let item_sprites = &campaign.prebuilt_overworld_map.as_ref()
-            .map(|_| HashMap::new()).unwrap_or_default();
-        if let Ok((level, _start, _rem)) = build_level_from_design_with_settings(
-            &config, design, settings, campaign_monsters, item_sprites,
-        ) {
-            // Copy monsters with region offset
-            for mut m in level.monsters {
-                m.x += region_ox;
-                m.y += region_oy;
-                // Also offset boss body tiles
-                for body in &mut m.boss_body {
-                    body.0 += region_ox;
-                    body.1 += region_oy;
-                }
-                all_monsters.push(m);
+
+        let floor = (level_idx + 1) as i32;
+        let budget = ow_level.budget;
+        let level_num = floor as u8;
+        let traps_enabled = level_num >= settings.traps_from_level;
+
+        // Scaling factors (same as assemble_level_with_settings)
+        let hp_per_point = 1.0 + floor as f32 * 0.2;
+        let atk_scale = 2 + floor / 2;
+        let def_scale = (floor / 2).max(0);
+
+        // Boss
+        let boss_cost = (budget * 20 / 100).max(10);
+        let boss_hp = (boss_cost as f32 * hp_per_point).round() as i32;
+        let boss_pos = placed.boss.unwrap_or([30, 18]);
+        let (bx, by) = (boss_pos[0], boss_pos[1]);
+        let find_image = |name: &str| -> Option<String> {
+            if let Some(cm) = campaign_monsters {
+                cm.iter().find(|t| t.name == name).and_then(|t| t.image.clone())
+            } else {
+                design.monster_types.iter().find(|t| t.name == name).and_then(|t| t.image.clone())
             }
-            // Copy items with region offset
-            for mut item in level.items {
-                item.x += region_ox;
-                item.y += region_oy;
-                all_items.push(item);
-            }
-            // Copy traps with region offset
-            for mut trap in level.traps {
-                trap.x += region_ox;
-                trap.y += region_oy;
-                all_traps.push(trap);
-            }
-            // Copy special tiles (exit doors, locked doors) from built level into unified grid
-            for y in 0..level.height {
-                for x in 0..level.width {
-                    let tile_name = &level.tiles[y as usize][x as usize];
-                    if tile_name == "exit_door_locked" || tile_name == "exit_door" || tile_name == "locked_door" {
-                        let gx = (region_ox + x) as usize;
-                        let gy = (region_oy + y) as usize;
-                        if gy < tiles.len() && gx < tiles[gy].len() {
-                            tiles[gy][gx] = tile_name.clone();
-                        }
-                    }
-                }
-            }
-            // Merge tile defs from this level (overwrite with images, damage, etc.)
-            for (name, def) in level.tile_defs {
-                tile_defs.insert(name, def);
+        };
+        all_monsters.push(Monster {
+            id: format!("boss_{}", floor),
+            name: design.boss.name.clone(),
+            x: bx + region_ox, y: by + region_oy,
+            hp: boss_hp, max_hp: boss_hp,
+            attack: atk_scale + boss_cost / 15, defense: def_scale,
+            xp_value: boss_cost + floor * 5,
+            description: design.boss.description.clone().unwrap_or_default(),
+            is_boss: true,
+            boss_enraged_turns: 0, boss_has_seen_player: false,
+            boss_attacked_this_turn: false,
+            boss_body: vec![
+                (bx + region_ox, by + region_oy), (bx + 1 + region_ox, by + region_oy),
+                (bx + region_ox, by + 1 + region_oy), (bx + 1 + region_ox, by + 1 + region_oy),
+            ],
+            boss_flee_budget: 0, boss_flee_cooldown: 0,
+            image: design.boss.image.clone(),
+        });
+
+        // Monsters
+        let mon_count = placed.monsters.len().max(1) as i32;
+        let mon_budget_each = (budget - boss_cost) / (mon_count + 2);
+        for (i, pm) in placed.monsters.iter().enumerate() {
+            let mon_cost = mon_budget_each.max(5);
+            let mon_hp = (mon_cost as f32 * (0.8 + floor as f32 * 0.15)).round() as i32;
+            all_monsters.push(Monster {
+                id: format!("m_{}_{}", floor, i),
+                name: pm.name.clone(),
+                x: pm.x + region_ox, y: pm.y + region_oy,
+                hp: mon_hp, max_hp: mon_hp,
+                attack: atk_scale, defense: def_scale,
+                xp_value: mon_cost + floor * 2,
+                description: String::new(),
+                is_boss: false,
+                boss_enraged_turns: 0, boss_has_seen_player: false,
+                boss_attacked_this_turn: false, boss_body: vec![],
+                boss_flee_budget: 0, boss_flee_cooldown: 0,
+                image: find_image(&pm.name),
+            });
+        }
+
+        // Items
+        for (i, pi) in placed.items.iter().enumerate() {
+            let value = pi.value.unwrap_or_else(|| match pi.item_type.as_str() {
+                "weapon" => floor + 3,
+                "armor" => floor + 1,
+                "gold" => rng.gen_range(5..=15) + floor * 2,
+                _ => 0,
+            });
+            let item_image = pi.image.clone()
+                .or_else(|| match pi.item_type.as_str() {
+                    "weapon" => design.weapon.image.clone(),
+                    "armor" => design.armor.image.clone(),
+                    _ => None,
+                })
+                .or_else(|| item_sprites.get(&pi.item_type).cloned());
+            all_items.push(Item {
+                id: format!("pi_{}_{}", floor, i),
+                name: pi.name.clone(),
+                x: pi.x + region_ox, y: pi.y + region_oy,
+                item_type: pi.item_type.clone(),
+                value,
+                description: String::new(),
+                image: item_image,
+            });
+        }
+
+        // Traps
+        if traps_enabled {
+            for pt in &placed.traps {
+                let trap_image = design.traps.as_ref().and_then(|traps|
+                    traps.iter().find(|t| t.name.as_deref() == Some(&pt.name)).and_then(|t| t.image.clone())
+                );
+                all_traps.push(Trap {
+                    x: pt.x + region_ox, y: pt.y + region_oy,
+                    damage: 3 + floor,
+                    name: pt.name.clone(),
+                    triggered: false,
+                    image: trap_image,
+                });
             }
         }
+
+        eprintln!("  {}: boss + {} monsters + {} items + {} traps (designer-placed, stats only)",
+            node_id, placed.monsters.len(), placed.items.len(), placed.traps.len());
     }
 
     // Build per-region music scales

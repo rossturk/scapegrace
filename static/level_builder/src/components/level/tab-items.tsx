@@ -88,7 +88,7 @@ function ItemEditor({ item, onChangeName, onChangeDesc, onGenSprite, onClearSpri
       <div class="flex gap-8 items-center" style="margin-top:6px;">
         {item.image ? (
           <>
-            <img src={`data:image/png;base64,${item.image}`} style="width:48px;height:48px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;" />
+            <img src={`data:image/png;base64,${item.image}`} style="width:128px;height:128px;border-radius:4px;border:1px solid var(--border);image-rendering:pixelated;" />
             <button class="ai-btn" onClick={onGenSprite} style="font-size:11px;">&#10024; Regen</button>
             <button style="font-size:10px;padding:2px 6px;" onClick={onClearSprite}>Clear</button>
           </>
@@ -109,9 +109,9 @@ async function genItemSprite(design: Phase2Result, type: 'weapon' | 'armor') {
   const typeLabel = type === 'weapon' ? 'weapon' : 'armor/shield';
   showToast(`Generating ${type} sprite...`, 'info');
   const raw = await generateImage({
-    prompt: `2D pixel art sprite of a roguelike game ${typeLabel} called "${item.name}". ${item.description || ''}. Top-down view, 32x32 pixel art, single item centered on pure solid BLACK background. No text.`,
-    width: 64,
-    height: 64,
+    prompt: `2D pixel art sprite of a roguelike game ${typeLabel} called "${item.name}". ${item.description || ''}. Top-down view, 16x16 pixel art, single item centered on pure solid BLACK background. No text.`,
+    width: 256,
+    height: 256,
   });
   if (raw) {
     const { processSprite } = await import('../../canvas/sprite-processing');
