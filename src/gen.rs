@@ -252,6 +252,9 @@ pub struct OverworldResult {
     /// Builder-owned region layout (single source of truth for positions, sizes, tile sources)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builder_regions: Option<serde_json::Value>,
+    /// Placed signposts on the overworld (references campaign.signposts by index)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed_signposts: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -302,9 +305,22 @@ pub struct BundledCampaign {
     /// Campaign-level monster templates. If present, used instead of per-level monster_types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monster_templates: Option<Vec<MonsterTemplateRaw>>,
+    /// Campaign-level signpost definitions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signposts: Option<Vec<SignpostDef>>,
     /// Pre-built overworld tile grid from the level builder (WYSIWYG)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prebuilt_overworld_map: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SignpostDef {
+    pub title: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_font: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description_font: Option<String>,
 }
 
 /// Per-campaign difficulty settings. Controls when mechanics appear within a campaign.
@@ -1731,7 +1747,7 @@ fn assemble_level_with_settings(
     }
 
     let level = Level {
-        width, height, tiles, tile_defs, monsters, items, traps,
+        width, height, tiles, tile_defs, monsters, items, signposts: vec![], traps,
         title: p1.title.clone(),
         description: p1.description.clone(),
         font: p1.font.clone().expect("font was set from overworld config"),
@@ -2486,6 +2502,24 @@ pub fn build_unified_level(
         region_scales.push((region_ox, region_oy, region_w, region_h, scale));
     }
 
+    // Parse signposts from exported map
+    let sign_sprite = item_sprites.get("sign").cloned();
+    let mut signposts: Vec<Signpost> = Vec::new();
+    if let Some(signs) = map_val.get("signposts").and_then(|v| v.as_array()) {
+        for s in signs {
+            signposts.push(Signpost {
+                title: s.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                description: s.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                title_font: s.get("title_font").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                description_font: s.get("description_font").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                x: s.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as i32,
+                y: s.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as i32,
+                read: false,
+                image: sign_sprite.clone(),
+            });
+        }
+    }
+
     let level = Level {
         width,
         height,
@@ -2493,6 +2527,7 @@ pub fn build_unified_level(
         tile_defs,
         monsters: all_monsters,
         items: all_items,
+        signposts,
         traps: all_traps,
         title: campaign.overworld.name.clone(),
         description: campaign.overworld.description.clone(),

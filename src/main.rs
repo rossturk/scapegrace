@@ -179,6 +179,73 @@ fn item_color(item_type: &str) -> Color {
     }
 }
 
+/// Decode a base64 sprite string into a nearest-filtered Texture2D.
+fn decode_sprite_texture(b64: &str) -> Option<Texture2D> {
+    decode_base64(b64).and_then(|bytes|
+        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
+            let t = Texture2D::from_image(&img);
+            t.set_filter(FilterMode::Nearest);
+            t
+        })
+    )
+}
+
+/// Load all textures (tiles, monsters, items, traps) from a level into the provided maps.
+fn load_level_textures(
+    level: &game::Level,
+    tile_textures: &mut std::collections::HashMap<String, Texture2D>,
+    monster_textures: &mut std::collections::HashMap<String, Texture2D>,
+    item_textures: &mut std::collections::HashMap<String, Texture2D>,
+) {
+    tile_textures.clear();
+    for (name, def) in &level.tile_defs {
+        if let Some(ref b64) = def.image {
+            if let Some(tex) = decode_sprite_texture(b64) {
+                tile_textures.insert(name.clone(), tex);
+            }
+        }
+    }
+    monster_textures.clear();
+    for mon in &level.monsters {
+        if !monster_textures.contains_key(&mon.name) {
+            if let Some(ref b64) = mon.image {
+                if let Some(tex) = decode_sprite_texture(b64) {
+                    monster_textures.insert(mon.name.clone(), tex);
+                }
+            }
+        }
+    }
+    item_textures.clear();
+    for item in &level.items {
+        if !item_textures.contains_key(&item.name) {
+            if let Some(ref b64) = item.image {
+                if let Some(tex) = decode_sprite_texture(b64) {
+                    item_textures.insert(item.name.clone(), tex);
+                }
+            }
+        }
+    }
+    for trap in &level.traps {
+        if !item_textures.contains_key(&trap.name) {
+            if let Some(ref b64) = &trap.image {
+                if let Some(tex) = decode_sprite_texture(b64) {
+                    item_textures.insert(trap.name.clone(), tex);
+                }
+            }
+        }
+    }
+    // Sign sprite (shared across all signposts)
+    if !item_textures.contains_key("__sign__") {
+        if let Some(sign) = level.signposts.first() {
+            if let Some(ref b64) = sign.image {
+                if let Some(tex) = decode_sprite_texture(b64) {
+                    item_textures.insert("__sign__".to_string(), tex);
+                }
+            }
+        }
+    }
+}
+
 fn config_dir() -> std::path::PathBuf {
     let base = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -493,11 +560,11 @@ async fn main() {
     let mut confetti: Vec<Confetti> = vec![];
     let mut title_font: Option<Font> = None;
     let mut tile_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
-    let mut current_zoom: f32 = 1.5;
-    let mut target_zoom: f32 = 1.5;
-    let mut last_player_pos: (i32, i32) = (0, 0);
+    let current_zoom: f32 = 3.0;
     let mut monster_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
     let mut item_textures: std::collections::HashMap<String, Texture2D> = std::collections::HashMap::new();
+    let mut active_signpost: Option<usize> = None;
+    let mut signpost_fonts: std::collections::HashMap<String, Font> = std::collections::HashMap::new();
     let mut overworld_font: Option<Font> = None;
     let mut desc_font: Option<Font> = None;
     let mut label_font: Option<Font> = None;
@@ -875,66 +942,17 @@ async fn main() {
                                             } else {
                                                 state.log("Your task: find and defeat the boss.", "#666");
                                             }
-                                            tile_textures.clear();
-                                            for (name, def) in &state.level.tile_defs {
-                                                if let Some(ref b64) = def.image {
-                                                    if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                            let t = Texture2D::from_image(&img);
-                                                            t.set_filter(FilterMode::Nearest);
-                                                            t
-                                                        })
-                                                    ) {
-                                                        tile_textures.insert(name.clone(), tex);
-                                                    }
-                                                }
-                                            }
-                                            // Load monster textures
-                                            monster_textures.clear();
-                                            for mon in &state.level.monsters {
-                                                if !monster_textures.contains_key(&mon.name) {
-                                                    if let Some(ref b64) = mon.image {
-                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                                let t = Texture2D::from_image(&img);
-                                                                t.set_filter(FilterMode::Nearest);
-                                                                t
-                                                            })
-                                                        ) {
-                                                            monster_textures.insert(mon.name.clone(), tex);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            // Load item textures
-                                            item_textures.clear();
-                                            for item in &state.level.items {
-                                                if !item_textures.contains_key(&item.name) {
-                                                    if let Some(ref b64) = item.image {
-                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                                let t = Texture2D::from_image(&img);
-                                                                t.set_filter(FilterMode::Nearest);
-                                                                t
-                                                            })
-                                                        ) {
-                                                            item_textures.insert(item.name.clone(), tex);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            // Load trap textures
-                                            for trap in &state.level.traps {
-                                                if !item_textures.contains_key(&trap.name) {
-                                                    if let Some(ref b64) = &trap.image {
-                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                                let t = Texture2D::from_image(&img);
-                                                                t.set_filter(FilterMode::Nearest);
-                                                                t
-                                                            })
-                                                        ) {
-                                                            item_textures.insert(trap.name.clone(), tex);
+                                            load_level_textures(&state.level, &mut tile_textures, &mut monster_textures, &mut item_textures);
+                                            // Preload signpost fonts
+                                            for sign in &state.level.signposts {
+                                                for fname in [&sign.title_font, &sign.description_font] {
+                                                    if let Some(f) = fname {
+                                                        if !f.is_empty() && !signpost_fonts.contains_key(f) {
+                                                            if let Some(bytes) = fetch_google_font(f) {
+                                                                if let Ok(font) = load_ttf_font_from_bytes(&bytes) {
+                                                                    signpost_fonts.insert(f.clone(), font);
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1098,66 +1116,17 @@ async fn main() {
                                                 state.log("Your task: find and defeat the boss.", "#666");
                                             }
                                             // Load tile textures
-                                            tile_textures.clear();
-                                            for (name, def) in &state.level.tile_defs {
-                                                if let Some(ref b64) = def.image {
-                                                    if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                        Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                            let t = Texture2D::from_image(&img);
-                                                            t.set_filter(FilterMode::Nearest);
-                                                            t
-                                                        })
-                                                    ) {
-                                                        tile_textures.insert(name.clone(), tex);
-                                                    }
-                                                }
-                                            }
-                                            // Load monster textures
-                                            monster_textures.clear();
-                                            for mon in &state.level.monsters {
-                                                if !monster_textures.contains_key(&mon.name) {
-                                                    if let Some(ref b64) = mon.image {
-                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                                let t = Texture2D::from_image(&img);
-                                                                t.set_filter(FilterMode::Nearest);
-                                                                t
-                                                            })
-                                                        ) {
-                                                            monster_textures.insert(mon.name.clone(), tex);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            // Load item textures
-                                            item_textures.clear();
-                                            for item in &state.level.items {
-                                                if !item_textures.contains_key(&item.name) {
-                                                    if let Some(ref b64) = item.image {
-                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                                let t = Texture2D::from_image(&img);
-                                                                t.set_filter(FilterMode::Nearest);
-                                                                t
-                                                            })
-                                                        ) {
-                                                            item_textures.insert(item.name.clone(), tex);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            // Load trap textures
-                                            for trap in &state.level.traps {
-                                                if !item_textures.contains_key(&trap.name) {
-                                                    if let Some(ref b64) = &trap.image {
-                                                        if let Some(tex) = decode_base64(b64).and_then(|bytes|
-                                                            Image::from_file_with_format(&bytes, Some(ImageFormat::Png)).ok().map(|img| {
-                                                                let t = Texture2D::from_image(&img);
-                                                                t.set_filter(FilterMode::Nearest);
-                                                                t
-                                                            })
-                                                        ) {
-                                                            item_textures.insert(trap.name.clone(), tex);
+                                            load_level_textures(&state.level, &mut tile_textures, &mut monster_textures, &mut item_textures);
+                                            // Preload signpost fonts
+                                            for sign in &state.level.signposts {
+                                                for fname in [&sign.title_font, &sign.description_font] {
+                                                    if let Some(f) = fname {
+                                                        if !f.is_empty() && !signpost_fonts.contains_key(f) {
+                                                            if let Some(bytes) = fetch_google_font(f) {
+                                                                if let Ok(font) = load_ttf_font_from_bytes(&bytes) {
+                                                                    signpost_fonts.insert(f.clone(), font);
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1473,68 +1442,7 @@ async fn main() {
                                     level_snapshot = Some((snap_node, level.clone(), start));
                                 }
                                 state.level = level;
-                                // Load tile textures from base64 images
-                                tile_textures = std::collections::HashMap::new();
-                                for (name, def) in &state.level.tile_defs {
-                                    if let Some(b64) = &def.image {
-                                        if let Some(bytes) = decode_base64(b64) {
-                                            if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                let tex = Texture2D::from_image(&img);
-                                                tex.set_filter(FilterMode::Nearest);
-                                                tile_textures.insert(name.clone(), tex);
-                                            }
-                                        }
-                                    }
-                                }
-                                monster_textures = std::collections::HashMap::new();
-                                for mon in &state.level.monsters {
-                                    if !monster_textures.contains_key(&mon.name) {
-                                        if let Some(b64) = &mon.image {
-                                            if let Some(bytes) = decode_base64(b64) {
-                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                    let tex = Texture2D::from_image(&img);
-                                                    tex.set_filter(FilterMode::Nearest);
-                                                    monster_textures.insert(mon.name.clone(), tex);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                item_textures = std::collections::HashMap::new();
-                                for item in &state.level.items {
-                                    if !item_textures.contains_key(&item.name) {
-                                        if let Some(b64) = &item.image {
-                                            match decode_base64(b64) {
-                                                Some(bytes) => {
-                                                    match Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                        Ok(img) => {
-                                                            let tex = Texture2D::from_image(&img);
-                                                            tex.set_filter(FilterMode::Nearest);
-                                                            item_textures.insert(item.name.clone(), tex);
-                                                        }
-                                                        Err(e) => eprintln!("[item-tex] PNG decode failed for '{}' ({}): {} ({} bytes)", item.name, item.item_type, e, bytes.len()),
-                                                    }
-                                                }
-                                                None => eprintln!("[item-tex] base64 decode failed for '{}' ({}) ({} chars)", item.name, item.item_type, b64.len()),
-                                            }
-                                        } else {
-                                            eprintln!("[item-tex] no image for '{}' ({})", item.name, item.item_type);
-                                        }
-                                    }
-                                }
-                                for trap in &state.level.traps {
-                                    if !item_textures.contains_key(&trap.name) {
-                                        if let Some(b64) = &trap.image {
-                                            if let Some(bytes) = decode_base64(b64) {
-                                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                                    let tex = Texture2D::from_image(&img);
-                                                    tex.set_filter(FilterMode::Nearest);
-                                                    item_textures.insert(trap.name.clone(), tex);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                load_level_textures(&state.level, &mut tile_textures, &mut monster_textures, &mut item_textures);
                                 state.player.x = start[0];
                                 state.player.y = start[1];
                                 state.game_over = false;
@@ -1776,8 +1684,14 @@ async fn main() {
                     if let Some(s) = &sfx { s.stop_boss_drone(); }
                     screen = Screen::Playing;
                 }
-                handle_playing_input(&mut state, &mut screen, &mut confetti, &sfx,
-                    &mut game_hold_time, &mut game_last_fire);
+                if active_signpost.is_some() {
+                    if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Space) {
+                        active_signpost = None;
+                    }
+                } else {
+                    handle_playing_input(&mut state, &mut screen, &mut confetti, &sfx,
+                        &mut game_hold_time, &mut game_last_fire, &mut active_signpost);
+                }
                 // Update boss drone volume based on distance to nearest living boss
                 if let Some(s) = &sfx {
                     let dist = state.level.monsters.iter()
@@ -1790,42 +1704,106 @@ async fn main() {
                         .fold(f32::MAX, f32::min);
                     s.update_boss_drone(dist);
                 }
-                // Step zoom: only recalculate target on player move, only boss triggers zoom
-                {
-                    let cur_pos = (state.player.x, state.player.y);
-                    if cur_pos != last_player_pos {
-                        last_player_pos = cur_pos;
-                        let px = state.player.x as f32;
-                        let py = state.player.y as f32;
-                        let near_range = 6.0_f32;
-                        let mut boss_dist = f32::MAX;
-                        for mon in &state.level.monsters {
-                            if !mon.is_boss || !mon.is_alive() { continue; }
-                            let d = ((mon.x as f32 - px).powi(2) + (mon.y as f32 - py).powi(2)).sqrt();
-                            if d < boss_dist { boss_dist = d; }
-                        }
-                        target_zoom = if boss_dist <= near_range { 3.0 } else if boss_dist <= near_range + 3.0 {
-                            let t = (boss_dist - near_range) / 3.0;
-                            3.0 - t * 1.5
-                        } else { 1.5 };
-                    }
-                    current_zoom = target_zoom; // instant snap per step
-                }
                 // Load textures for newly dropped items (e.g. monster loot)
                 for item in &state.level.items {
                     if !item_textures.contains_key(&item.name) {
                         if let Some(b64) = &item.image {
-                            if let Some(bytes) = decode_base64(b64) {
-                                if let Ok(img) = Image::from_file_with_format(&bytes, Some(ImageFormat::Png)) {
-                                    let tex = Texture2D::from_image(&img);
-                                    tex.set_filter(FilterMode::Nearest);
-                                    item_textures.insert(item.name.clone(), tex);
-                                }
+                            if let Some(tex) = decode_sprite_texture(b64) {
+                                item_textures.insert(item.name.clone(), tex);
                             }
                         }
                     }
                 }
                 render_game(&state, &ui_font, title_font.as_ref(), &tile_textures, &monster_textures, &item_textures, current_zoom, (0.0, 0.0));
+
+                // Signpost modal overlay
+                if let Some(si) = active_signpost {
+                    if let Some(sign) = state.level.signposts.get(si) {
+                        // Load signpost fonts on demand
+                        if let Some(ref fname) = sign.title_font {
+                            if !fname.is_empty() && !signpost_fonts.contains_key(fname) {
+                                if let Some(bytes) = fetch_google_font(fname) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { signpost_fonts.insert(fname.clone(), f); }
+                                }
+                            }
+                        }
+                        if let Some(ref fname) = sign.description_font {
+                            if !fname.is_empty() && !signpost_fonts.contains_key(fname) {
+                                if let Some(bytes) = fetch_google_font(fname) {
+                                    if let Ok(f) = load_ttf_font_from_bytes(&bytes) { signpost_fonts.insert(fname.clone(), f); }
+                                }
+                            }
+                        }
+                        let sign_title_font = sign.title_font.as_ref().and_then(|f| signpost_fonts.get(f)).unwrap_or(&ui_font_bold);
+                        let sign_desc_font = sign.description_font.as_ref().and_then(|f| signpost_fonts.get(f)).unwrap_or(&ui_font);
+
+                        let sw = screen_width();
+                        let sh = screen_height();
+                        let title_size = 48u16;
+                        let desc_size = 28u16;
+                        let hint_size = 14u16;
+                        let padding = 30.0f32;
+                        let line_h = desc_size as f32 * 1.4;
+                        let max_w = (sw * 0.6).min(600.0);
+
+                        // Measure title
+                        let tp = measure_text(&sign.title, Some(sign_title_font), title_size, 1.0);
+
+                        // Word-wrap description and measure
+                        let mut lines: Vec<String> = Vec::new();
+                        for paragraph in sign.description.split('\n') {
+                            let words: Vec<&str> = paragraph.split_whitespace().collect();
+                            let mut cur = String::new();
+                            for w in &words {
+                                let test = if cur.is_empty() { w.to_string() } else { format!("{} {}", cur, w) };
+                                if measure_text(&test, Some(sign_desc_font), desc_size, 1.0).width > max_w && !cur.is_empty() {
+                                    lines.push(cur);
+                                    cur = w.to_string();
+                                } else {
+                                    cur = test;
+                                }
+                            }
+                            if !cur.is_empty() { lines.push(cur); }
+                        }
+                        let mut max_line_w = tp.width;
+                        for line in &lines {
+                            let lw = measure_text(line, Some(sign_desc_font), desc_size, 1.0).width;
+                            if lw > max_line_w { max_line_w = lw; }
+                        }
+
+                        let hint = "Press ENTER to dismiss";
+
+                        // Compute panel size to fit content
+                        let pw = (max_line_w + padding * 2.0).max(200.0).min(sw * 0.8);
+                        let text_h = title_size as f32 + 20.0 + lines.len() as f32 * line_h + 30.0 + hint_size as f32;
+                        let ph = text_h + padding * 2.0;
+                        let px = (sw - pw) / 2.0;
+                        let py = (sh - ph) / 2.0;
+
+                        // Draw
+                        draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.6));
+                        draw_rectangle(px, py, pw, ph, Color::new(0.15, 0.12, 0.08, 0.95));
+                        draw_rectangle_lines(px, py, pw, ph, 2.0, Color::new(0.6, 0.5, 0.3, 1.0));
+
+                        // Title — centered
+                        draw_text_ex(&sign.title, px + (pw - tp.width) / 2.0, py + padding + title_size as f32,
+                            TextParams { font: Some(sign_title_font), font_size: title_size, color: Color::new(0.9, 0.8, 0.6, 1.0), ..Default::default() });
+
+                        // Description — centered lines
+                        let mut dy = py + padding + title_size as f32 + 20.0 + desc_size as f32;
+                        for line in &lines {
+                            let lw = measure_text(line, Some(sign_desc_font), desc_size, 1.0).width;
+                            draw_text_ex(line, px + (pw - lw) / 2.0, dy,
+                                TextParams { font: Some(sign_desc_font), font_size: desc_size, color: WHITE, ..Default::default() });
+                            dy += line_h;
+                        }
+
+                        // Dismiss hint — centered
+                        let hp = measure_text(hint, Some(&ui_font), hint_size, 1.0);
+                        draw_text_ex(hint, px + (pw - hp.width) / 2.0, py + ph - padding * 0.5,
+                            TextParams { font: Some(&ui_font), font_size: hint_size, color: Color::new(0.5, 0.5, 0.5, 1.0), ..Default::default() });
+                    }
+                }
             }
 
             Screen::Dead => {
@@ -2020,6 +1998,7 @@ fn handle_playing_input(
     sfx: &Option<sfx::Sfx>,
     hold_time: &mut f64,
     last_fire: &mut f64,
+    active_signpost: &mut Option<usize>,
 ) {
     let sc = state.level.scale_at(state.player.x, state.player.y).to_vec();
     if is_key_pressed(KeyCode::C) {
@@ -2077,6 +2056,9 @@ fn handle_playing_input(
             if let Some(s) = sfx { s.confirm(); }
             *screen = Screen::Store;
             return;
+        }
+        if let Some(sign_idx) = result["signpost"].as_u64() {
+            *active_signpost = Some(sign_idx as usize);
         }
         if moved || combat {
             if state.player.speed_turns > 0 {
@@ -3384,6 +3366,28 @@ fn render_game(state: &GameState, ui_font: &Font, title_font: Option<&Font>, til
             draw_rectangle(cx - half, cy - half, half * 2.0, half * 2.0, trap_fill);
             draw_line(cx - half + 3.0, cy - half + 3.0, cx + half - 3.0, cy + half - 3.0, 2.0, trap_line);
             draw_line(cx + half - 3.0, cy - half + 3.0, cx - half + 3.0, cy + half - 3.0, 2.0, trap_line);
+        }
+    }
+
+    // Signposts
+    for sign in &state.level.signposts {
+        if !state.level.visible.contains(&(sign.x, sign.y)) { continue; }
+        let sx = map_left + (sign.x - camera_x) as f32 * tz;
+        let sy = mid_top + (sign.y - camera_y) as f32 * tz;
+        if sy + tz < mid_top || sy > mid_top + mid_height || sx + tz > map_width { continue; }
+        let tint = if sign.read { Color::new(0.5, 0.5, 0.5, 0.7) } else { WHITE };
+        if let Some(tex) = item_textures.get("__sign__") {
+            let size = tz * 0.85;
+            let ox = sx + (tz - size) / 2.0;
+            let oy = sy + (tz - size) / 2.0;
+            draw_texture_ex(tex, ox, oy, tint,
+                DrawTextureParams { dest_size: Some(Vec2::new(size, size)), ..Default::default() });
+        } else {
+            let cx = sx + tz / 2.0;
+            let cy = sy + tz / 2.0;
+            let r = tz * 0.35;
+            let c = if sign.read { Color::new(0.3, 0.5, 0.2, 0.5) } else { Color::new(0.53, 0.8, 0.27, 1.0) };
+            draw_poly(cx, cy, 4, r, 45.0, c);
         }
     }
 

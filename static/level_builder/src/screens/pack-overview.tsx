@@ -150,6 +150,7 @@ const SPRITE_TYPES = [
   { key: 'bomb', defaultName: 'Bomb', prompt: 'a round bomb with a lit fuse' },
   { key: 'gold', defaultName: 'Gold', prompt: 'a pile of gold coins' },
   { key: 'key', defaultName: 'Key', prompt: 'an ornate dungeon key' },
+  { key: 'sign', defaultName: 'Sign', prompt: 'a wooden signpost in a dungeon' },
 ];
 
 function ItemSpritesTab() {

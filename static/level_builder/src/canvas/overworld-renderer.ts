@@ -405,6 +405,47 @@ export function drawOverworld(
     ctx.setLineDash([]);
   }
 
+  // Placed signposts
+  const placedSigns = campaign.overworld.placed_signposts || [];
+  const signDefs = campaign.signposts || [];
+  const signSprite = (globalThis as any).__packItemSprites?.['sign'] as string | undefined;
+  for (const ps of placedSigns) {
+    const def = signDefs[ps.signpost_idx];
+    if (!def) continue;
+    const px = baseOx + ps.x * tz;
+    const py = baseOy + ps.y * tz;
+    if (signSprite) {
+      const img = owTileImageCache.get('__sign_sprite__');
+      if (img?.complete && img.naturalWidth > 0) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, px, py, tz, tz);
+        ctx.imageSmoothingEnabled = true;
+      } else if (!img) {
+        const newImg = new Image();
+        newImg.src = `data:image/png;base64,${signSprite}`;
+        owTileImageCache.set('__sign_sprite__', newImg);
+      }
+    } else {
+      const cx = px + tz / 2;
+      const cy = py + tz / 2;
+      const r = Math.max(2, tz * 0.4);
+      ctx.fillStyle = '#88cc44';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = Math.max(0.5, tz * 0.1);
+      ctx.stroke();
+    }
+    if (tz >= 6) {
+      ctx.fillStyle = '#fff';
+      ctx.font = `${Math.max(6, tz * 0.7)}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(def.title, px + tz / 2, py + tz + 2);
+    }
+  }
+
   // Labels and selection highlights
   for (const r of md.regions) {
     const levelsIdx = typeof r.node_idx === 'number' ? r.node_idx - 1 : -1;

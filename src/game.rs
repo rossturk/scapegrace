@@ -60,6 +60,19 @@ impl Monster {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct Signpost {
+    pub title: String,
+    pub description: String,
+    pub title_font: Option<String>,
+    pub description_font: Option<String>,
+    pub x: i32,
+    pub y: i32,
+    pub read: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Item {
     pub id: String,
     pub name: String,
@@ -137,6 +150,7 @@ pub struct Level {
     pub tile_defs: std::collections::HashMap<String, TileDef>,
     pub monsters: Vec<Monster>,
     pub items: Vec<Item>,
+    pub signposts: Vec<Signpost>,
     pub traps: Vec<Trap>,
     pub title: String,
     pub description: String,
@@ -290,7 +304,7 @@ impl GameState {
             level: Level {
                 width: 60, height: 36,
                 tiles: vec![], tile_defs: Default::default(),
-                monsters: vec![], items: vec![], traps: vec![],
+                monsters: vec![], items: vec![], signposts: vec![], traps: vec![],
                 title: String::new(), description: String::new(), font: String::new(),
                 scale: vec![], victory_message: String::new(), defeat_message: String::new(),
                 revealed: HashSet::new(), visible: HashSet::new(),
@@ -492,12 +506,12 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
     if tile == "locked_door" {
         if state.player.keys > 0 {
             state.player.keys -= 1;
-            // Find the floor tile name to replace with
-            let floor_name = state.level.tile_defs.values()
-                .find(|t| t.walkable)
-                .map(|t| t.name.clone())
-                .unwrap_or_else(|| "floor".into());
-            state.level.tiles[ny as usize][nx as usize] = floor_name;
+            // Find a walkable tile ID to replace with
+            let floor_id = state.level.tile_defs.iter()
+                .find(|(_, t)| t.walkable)
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| "t1".into());
+            state.level.tiles[ny as usize][nx as usize] = floor_id;
             state.log("You unlock the door! 🔓", "#ffd700");
             // Don't move into the tile this turn — just unlock
             return serde_json::json!({"moved": false, "unlocked": true});
@@ -510,6 +524,13 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
         state.log("You approach the shopkeeper.", "#ffd700");
         return serde_json::json!({"moved": false, "store": true});
     }
+    // Check signpost collision — player reads by bumping, doesn't walk through
+    for (i, sign) in state.level.signposts.iter().enumerate() {
+        if sign.x == nx && sign.y == ny {
+            return serde_json::json!({"moved": false, "signpost": i});
+        }
+    }
+
     if let Some(td) = state.level.tile_defs.get(tile) {
         if !td.walkable {
             if tile == "exit_door_locked" {

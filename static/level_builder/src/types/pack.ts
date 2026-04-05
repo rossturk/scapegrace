@@ -26,6 +26,13 @@ export interface PackStrings {
 
 // ── Campaign ─────────────────────────────────────────────────
 
+export interface SignpostDef {
+  title: string;
+  description: string;
+  title_font?: string;
+  description_font?: string;
+}
+
 export interface BundledCampaign {
   id: string;
   overworld: OverworldResult;
@@ -33,6 +40,7 @@ export interface BundledCampaign {
   quality: CampaignQuality;
   settings: CampaignSettings;
   monster_templates?: MonsterTemplateRaw[];
+  signposts?: SignpostDef[];
   prebuilt_overworld_map?: any;
 }
 
@@ -89,6 +97,7 @@ export interface OverworldResult {
   node_positions?: Record<string, NodePosition>;
   ow_region_offsets?: Record<string, RegionOffset>;
   terrain_seed?: number;
+  placed_signposts?: PlacedSignpost[];
   /** Builder-owned region layout. Single source of truth for all positions and sizes. */
   builder_regions?: BuilderRegion[];
 }
@@ -233,6 +242,12 @@ export interface PlacedTrap {
   name: string;
   x: number;
   y: number;
+}
+
+export interface PlacedSignpost {
+  signpost_idx: number; // index into campaign.signposts
+  x: number;           // world tile X
+  y: number;           // world tile Y
 }
 
 // ── Map Generation ───────────────────────────────────────────

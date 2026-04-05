@@ -2,7 +2,7 @@
 
 import type { BundledCampaign } from '../types/pack';
 import type { OwCanvasState } from './overworld-renderer';
-import { hitTestRegion, hitTestHandle } from './overworld-renderer';
+import { hitTestRegion, hitTestHandle, computeGridBounds } from './overworld-renderer';
 
 export interface PopupInfo {
   x: number;
@@ -23,6 +23,7 @@ export interface OwInteractionCallbacks {
   onNodeResized: (nodeId: string | number, w: number, h: number) => void;
   onShowPopup: (popup: PopupInfo) => void;
   onRegionMoved: () => void;
+  onSignpostMoved?: (idx: number, x: number, y: number) => void;
   onToast: (msg: string, type: string) => void;
 }
 
@@ -33,6 +34,7 @@ export class OverworldInteraction {
   private callbacks: OwInteractionCallbacks;
   private handlers: { event: string; handler: any; options?: any }[] = [];
   private dragWaypoint: { connKey: string; wpIdx: number } | null = null;
+  private dragSignpost: { idx: number } | null = null;
   private resizing: { nodeId: string | number; originTileX: number; originTileY: number } | null = null;
 
   constructor(
@@ -53,8 +55,6 @@ export class OverworldInteraction {
     this.handlers.push({ event, handler, options });
   }
 
-  private getMd() { return (this.state as any)._renderedMd || this.state.mapData; }
-
   private getMousePos(e: MouseEvent): { mx: number; my: number } {
     const rect = this.canvas.getBoundingClientRect();
     return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
@@ -65,13 +65,13 @@ export class OverworldInteraction {
     return { vpW: rect.width, vpH: rect.height };
   }
 
+  private getBr() { return this.campaign.overworld.builder_regions || []; }
+
   private resolveNodeId(nodeIdx: number | string): string {
     if (typeof nodeIdx === 'string') return nodeIdx;
     const levels = this.campaign.overworld.levels || [];
-    const md = this.getMd();
-    const storeRegion = md?.regions?.find((r: any) => r.node_idx > levels.length);
     if (nodeIdx === 0) return 'start';
-    if (nodeIdx === storeRegion?.node_idx) return 'store';
+    if (nodeIdx > levels.length) return 'store';
     return 'level_' + (nodeIdx - 1);
   }
 
@@ -79,9 +79,7 @@ export class OverworldInteraction {
     const str = String(id);
     if (str === 'start') return 0;
     const levels = this.campaign.overworld.levels || [];
-    const md = this.getMd();
-    const storeRegion = md?.regions?.find((r: any) => r.node_idx > levels.length);
-    if (str === 'store' || str === 'end') return storeRegion?.node_idx ?? null;
+    if (str === 'store' || str === 'end') return levels.length + 1;
     const m = str.match(/level_(\d+)/);
     return m ? parseInt(m[1]) + 1 : null;
   }
@@ -89,12 +87,13 @@ export class OverworldInteraction {
   // Convert screen position to tile coordinate
   private screenToTile(mx: number, my: number): { tx: number; ty: number } | null {
     const s = this.state;
-    const md = this.getMd();
-    if (!md) return null;
+    const br = this.getBr();
+    if (br.length === 0) return null;
     const { vpW, vpH } = this.getVpSize();
     const tz = 4 * s.zoom;
-    const baseOx = (vpW - md.width * tz) / 2 + s.panX;
-    const baseOy = (vpH - md.height * tz) / 2 + s.panY;
+    const bounds = computeGridBounds(br);
+    const baseOx = (vpW - bounds.width * tz) / 2 + s.panX;
+    const baseOy = (vpH - bounds.height * tz) / 2 + s.panY;
     const tx = Math.floor((mx - baseOx) / tz);
     const ty = Math.floor((my - baseOy) / tz);
     return { tx, ty };
@@ -138,9 +137,9 @@ export class OverworldInteraction {
       } else if (nodeIdx === null) {
         const { vpW, vpH } = this.getVpSize();
         const newZoom = Math.min(5, s.zoom * 1.5);
-        const md = this.getMd();
-        const gridW = md ? md.width : 60;
-        const gridH = md ? md.height : 36;
+        const bounds = computeGridBounds(this.getBr());
+        const gridW = bounds.width;
+        const gridH = bounds.height;
         const oldTz = 4 * s.zoom, newTz = 4 * newZoom;
         const oldBaseOx = (vpW - gridW * oldTz) / 2 + s.panX;
         const oldBaseOy = (vpH - gridH * oldTz) / 2 + s.panY;
@@ -183,6 +182,16 @@ export class OverworldInteraction {
         return;
       }
 
+      // Check signpost drag (before region hit test to prevent room dragging)
+      const signIdx = this.hitTestSignpost(mx, my);
+      if (signIdx >= 0) {
+        this.dragSignpost = { idx: signIdx };
+        s.dragRegion = null; // prevent region drag
+        s.dragging = false;
+        s.lastMouse = { x: e.clientX, y: e.clientY };
+        return;
+      }
+
       const hit = hitTestRegion(mx, my, vpW, vpH, s, this.campaign);
       if (hit !== null) {
         s.dragRegion = hit as any;
@@ -217,6 +226,21 @@ export class OverworldInteraction {
           cb.onWaypointMoved(this.dragWaypoint.connKey, this.dragWaypoint.wpIdx, tile.tx, tile.ty);
           s.hallwayCacheKey = null; // invalidate
           cb.onRedraw();
+        }
+        return;
+      }
+
+      if (this.dragSignpost) {
+        const { mx, my } = this.getMousePos(e);
+        const tile = this.screenToTile(mx, my);
+        if (tile) {
+          dragMoved = true;
+          const placed = this.campaign.overworld.placed_signposts;
+          if (placed?.[this.dragSignpost.idx]) {
+            placed[this.dragSignpost.idx].x = tile.tx;
+            placed[this.dragSignpost.idx].y = tile.ty;
+            cb.onRedraw();
+          }
         }
         return;
       }
@@ -268,13 +292,6 @@ export class OverworldInteraction {
             region.oy = Math.round(region.oy);
           }
         }
-        // Also update md shim region
-        const md = this.getMd();
-        const r = md?.regions?.find((r: any) => String(r.node_idx) === String(s.dragRegion));
-        if (r) {
-          r.ox += Math.round(dx / tz);
-          r.oy += Math.round(dy / tz);
-        }
         s.hallwayCacheKey = null;
         cb.onRedraw();
       } else if (s.dragging) {
@@ -294,6 +311,17 @@ export class OverworldInteraction {
 
       if (this.dragWaypoint) {
         this.dragWaypoint = null;
+        dragMoved = true;
+        return;
+      }
+
+      if (this.dragSignpost) {
+        const placed = this.campaign.overworld.placed_signposts;
+        if (placed?.[this.dragSignpost.idx] && cb.onSignpostMoved) {
+          const ps = placed[this.dragSignpost.idx];
+          cb.onSignpostMoved(this.dragSignpost.idx, ps.x, ps.y);
+        }
+        this.dragSignpost = null;
         dragMoved = true;
         return;
       }
@@ -384,9 +412,9 @@ export class OverworldInteraction {
       cb.onShowPopup(null as any); // dismiss popup on zoom
 
       // Zoom toward cursor: find the world point under the cursor before and after zoom
-      const md = this.getMd();
-      const gridW = md ? md.width : 60;
-      const gridH = md ? md.height : 36;
+      const bounds = computeGridBounds(this.getBr());
+      const gridW = bounds.width;
+      const gridH = bounds.height;
       const oldTz = 4 * s.zoom;
       const newTz = 4 * newZoom;
       const oldBaseOx = (vpW - gridW * oldTz) / 2 + s.panX;
@@ -406,44 +434,33 @@ export class OverworldInteraction {
 
   private hitTestResizeCorner(mx: number, my: number, vpW: number, vpH: number): { nodeId: string | number; originTileX: number; originTileY: number } | null {
     const s = this.state;
-    const c = this.campaign;
-    const rooms = c.overworld.rooms || c.overworld.fork_chambers || [];
+    const br = this.getBr();
+    const levels = this.campaign.overworld.levels || [];
     const tz = 4 * s.zoom;
-    const md = this.getMd();
-    const gridW = md ? md.width : 60;
-    const gridH = md ? md.height : 36;
-    const baseOx = (vpW - gridW * tz) / 2 + s.panX;
-    const baseOy = (vpH - gridH * tz) / 2 + s.panY;
+    const bounds = computeGridBounds(br);
+    const baseOx = (vpW - bounds.width * tz) / 2 + s.panX;
+    const baseOy = (vpH - bounds.height * tz) / 2 + s.panY;
     const hitR = Math.max(8, tz * 0.8);
 
-    // Check rooms
-    for (const room of rooms) {
-      const pos = s.regionOverrides[room.id as any] || { ox: 0, oy: -20 };
-      const rw = room.w || 10, rh = room.h || 8;
-      const fx = baseOx + pos.ox * tz;
-      const fy = baseOy + pos.oy * tz;
-      if (Math.abs(mx - (fx + rw * tz)) < hitR && Math.abs(my - (fy + rh * tz)) < hitR) {
-        return { nodeId: room.id, originTileX: pos.ox, originTileY: pos.oy };
-      }
-    }
-    // Check start room and store
-    if (md?.regions) {
-      const levels = c.overworld.levels || [];
-      for (const r of md.regions) {
-        const isStart = r.node_idx === 0;
-        const isStore = r.node_idx > levels.length;
-        if (!isStart && !isStore) continue;
-        const p = s.regionOverrides[r.node_idx] || { ox: r.ox, oy: r.oy };
-        const rw = isStart ? (c.overworld.start_room_size?.[0] || r.w) : (c.overworld.store_room_size?.[0] || r.w);
-        const rh = isStart ? (c.overworld.start_room_size?.[1] || r.h) : (c.overworld.store_room_size?.[1] || r.h);
-        const fx = baseOx + p.ox * tz;
-        const fy = baseOy + p.oy * tz;
-        if (Math.abs(mx - (fx + rw * tz)) < hitR && Math.abs(my - (fy + rh * tz)) < hitR) {
-          return { nodeId: r.node_idx, originTileX: p.ox, originTileY: p.oy };
-        }
+    for (const region of br) {
+      if (region.type === 'level') continue; // only rooms, start, store are resizable
+      const fx = baseOx + region.ox * tz;
+      const fy = baseOy + region.oy * tz;
+      if (Math.abs(mx - (fx + region.w * tz)) < hitR && Math.abs(my - (fy + region.h * tz)) < hitR) {
+        const nodeId = region.type === 'start' ? 0
+          : region.type === 'store' ? levels.length + 1
+          : region.id;
+        return { nodeId, originTileX: region.ox, originTileY: region.oy };
       }
     }
     return null;
+  }
+
+  private hitTestSignpost(mx: number, my: number): number {
+    const tile = this.screenToTile(mx, my);
+    if (!tile) return -1;
+    const placed = this.campaign.overworld.placed_signposts || [];
+    return placed.findIndex(p => Math.abs(p.x - tile.tx) <= 1 && Math.abs(p.y - tile.ty) <= 1);
   }
 
   private hitTestWaypoint(mx: number, my: number): { connKey: string; wpIdx: number } | null {
@@ -463,16 +480,12 @@ export class OverworldInteraction {
   private getNodeBottomCenter(nodeIdx: number | string, vpW: number, vpH: number): { x: number; y: number; w: number } {
     const s = this.state;
     const tz = 4 * s.zoom;
-    const br = this.campaign.overworld.builder_regions || [];
+    const br = this.getBr();
     const levels = this.campaign.overworld.levels || [];
+    const bounds = computeGridBounds(br);
+    const baseOx = (vpW - bounds.width * tz) / 2 + s.panX;
+    const baseOy = (vpH - bounds.height * tz) / 2 + s.panY;
 
-    // Compute grid bounds from builder_regions
-    const gridW = br.length > 0 ? Math.max(...br.map(r => r.ox + r.w)) + 20 : 60;
-    const gridH = br.length > 0 ? Math.max(...br.map(r => r.oy + r.h)) + 20 : 36;
-    const baseOx = (vpW - gridW * tz) / 2 + s.panX;
-    const baseOy = (vpH - gridH * tz) / 2 + s.panY;
-
-    // Look up directly from builder_regions
     let dragId: string;
     if (typeof nodeIdx === 'string') {
       dragId = nodeIdx;
@@ -488,22 +501,6 @@ export class OverworldInteraction {
         y: baseOy + (region.oy + region.h) * tz,
         w: region.w * tz,
       };
-    }
-
-    // Legacy fallback
-    if (typeof nodeIdx === 'string') {
-      const rooms = this.campaign.overworld.rooms || this.campaign.overworld.fork_chambers || [];
-      const room = rooms.find(r => r.id === nodeIdx);
-      const rw = room?.w || 10, rh = room?.h || 8;
-      const pos = s.regionOverrides[nodeIdx as any] || { ox: 0, oy: -20 };
-      return { x: baseOx + (pos.ox + rw / 2) * tz, y: baseOy + (pos.oy + rh) * tz, w: rw * tz };
-    }
-    // Regular region (legacy)
-    const md = this.getMd();
-    const r = md?.regions?.find((r: any) => r.node_idx === nodeIdx);
-    if (r) {
-      const p = s.regionOverrides[r.node_idx] || { ox: r.ox, oy: r.oy };
-      return { x: baseOx + (p.ox + r.w / 2) * tz, y: baseOy + (p.oy + r.h) * tz, w: r.w * tz };
     }
     return { x: vpW / 2, y: vpH / 2, w: 100 };
   }

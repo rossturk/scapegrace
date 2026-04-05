@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import type { BundledCampaign } from '../../types/pack';
-import { drawOverworld, createOwCanvasState } from '../../canvas/overworld-renderer';
+import { drawOverworld, createOwCanvasState, computeGridBounds } from '../../canvas/overworld-renderer';
 import { OverworldInteraction, type PopupInfo } from '../../canvas/overworld-interaction';
-import { api } from '../../api/client';
 import { navigate, updateOverworld, updateCampaign } from '../../store/actions';
 import { showToast } from '../toast';
+import { pack } from '../../store/state';
+import { OverworldTray, generateOverworldTray, draggedOverworldItem } from './overworld-tray';
 
 export const owState = createOwCanvasState();
 export const selectedNode = signal<number | string | null>(null);
@@ -59,18 +60,14 @@ export function OverworldCanvas({ campaign }: Props) {
     }
   }, [campaign.id]);
 
+  // Ensure pack sprites are accessible to the renderer
+  (globalThis as any).__packItemSprites = pack.value?.item_sprites || {};
+
   const _mdv = mapDataVersion.value;
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
-
-    // Restore region overrides from saved data
-    if (campaign.overworld.ow_region_offsets && Object.keys(owState.regionOverrides).length === 0) {
-      for (const [k, v] of Object.entries(campaign.overworld.ow_region_offsets)) {
-        owState.regionOverrides[k as any] = { ox: (v as any).ox, oy: (v as any).oy };
-      }
-    }
 
     // redraw always reads the latest campaign from the ref
     const redraw = () => {
@@ -89,8 +86,10 @@ export function OverworldCanvas({ campaign }: Props) {
     _moduleRedraw = redraw;
     redraw();
 
-    if (owState.mapData && owState.zoom === 1 && owState.panX === 0 && owState.panY === 0) {
-      zoomFit(container);
+    // Auto zoom-fit on first render
+    const br = campaign.overworld.builder_regions || [];
+    if (br.length > 0 && owState.zoom === 1 && owState.panX === 0 && owState.panY === 0) {
+      zoomFit(container, campaign);
       redraw();
     }
 
@@ -103,25 +102,13 @@ export function OverworldCanvas({ campaign }: Props) {
         onOpenLevel: (levelIdx) => navigate(campaign.id, levelIdx),
         onNodeResized: (nodeId, w, h) => {
           const ow = campaignRef.current.overworld;
-          // Convert nodeId to builder_region ID
           const levels = ow.levels || [];
           let brId: string;
           if (typeof nodeId === 'string') brId = nodeId;
           else if (nodeId === 0) brId = 'start';
           else brId = nodeId > levels.length ? 'store' : `level_${nodeId - 1}`;
-          // Update builder_region directly
           const br = ow.builder_regions?.find(r => r.id === brId);
           if (br) { br.w = w; br.h = h; }
-          // Also update legacy fields
-          if (typeof nodeId === 'string') {
-            const rooms = ow.rooms || ow.fork_chambers || [];
-            const room = rooms.find(r => r.id === nodeId);
-            if (room) { room.w = w; room.h = h; }
-          } else if (nodeId === 0) {
-            ow.start_room_size = [w, h];
-          } else {
-            ow.store_room_size = [w, h];
-          }
         },
         onWaypointDeleted: (connKey, wpIdx) => {
           updateOverworld(ow => {
@@ -157,6 +144,14 @@ export function OverworldCanvas({ campaign }: Props) {
           updateOverworld(ow => {
             const liveBr = campaignRef.current.overworld.builder_regions;
             if (liveBr) ow.builder_regions = liveBr.map(r => ({ ...r }));
+          });
+        },
+        onSignpostMoved: (idx, x, y) => {
+          updateOverworld(ow => {
+            if (ow.placed_signposts?.[idx]) {
+              ow.placed_signposts[idx].x = x;
+              ow.placed_signposts[idx].y = y;
+            }
           });
         },
         onToast: showToast,
@@ -218,7 +213,9 @@ export function OverworldCanvas({ campaign }: Props) {
         if (ow.rooms) {
           ow.rooms = ow.rooms.filter(f => f.id !== nodeIdx);
         }
-        // Remove connections referencing this fork
+        if (ow.builder_regions) {
+          ow.builder_regions = ow.builder_regions.filter(r => r.id !== nodeIdx);
+        }
         if (ow.connections) {
           ow.connections = ow.connections.filter(([a, b]) => a !== nodeIdx && b !== nodeIdx);
         }
@@ -232,7 +229,16 @@ export function OverworldCanvas({ campaign }: Props) {
         updateCampaign(c => {
           c.overworld.levels.splice(levelsIdx, 1);
           c.designs.splice(levelsIdx, 1);
-          // Clean up connections referencing this level
+          if (c.overworld.builder_regions) {
+            c.overworld.builder_regions = c.overworld.builder_regions.filter(r => r.id !== levelId);
+            // Re-index remaining levels
+            for (const br of c.overworld.builder_regions) {
+              if (br.type === 'level' && br.level_idx !== undefined && br.level_idx > levelsIdx) {
+                br.level_idx--;
+                br.id = `level_${br.level_idx}`;
+              }
+            }
+          }
           if (c.overworld.connections) {
             c.overworld.connections = c.overworld.connections.filter(
               ([a, b]) => a !== levelId && b !== levelId
@@ -308,25 +314,21 @@ export function OverworldCanvas({ campaign }: Props) {
       const levelsIdx = typeof ni === 'number' ? ni - 1 : -1;
       const level = isLevel && !isStore && levelsIdx < levels.length ? levels[levelsIdx] : null;
 
-      // Size controls for rooms, start, store
-      const room = isRoom ? (campaign.overworld.rooms || campaign.overworld.fork_chambers || []).find(r => r.id === ni) : null;
+      // Size controls — read from builder_regions
+      const brId = isRoom ? String(ni) : isStart ? 'start' : 'store';
+      const brReg = campaign.overworld.builder_regions?.find(r => r.id === brId);
       const canResize = isRoom || isStart || isStore;
-      let curW = 10, curH = 8;
-      if (room) { curW = room.w || 10; curH = room.h || 8; }
-      else if (isStart) { const ss = campaign.overworld.start_room_size; curW = ss?.[0] || 40; curH = ss?.[1] || 40; }
-      else if (isStore) { const ss = campaign.overworld.store_room_size; curW = ss?.[0] || 15; curH = ss?.[1] || 10; }
+      const curW = brReg?.w || 10;
+      const curH = brReg?.h || 8;
 
       const setSize = (w: number, h: number) => {
-        if (room) {
-          updateOverworld(ow => {
-            const r = (ow.rooms || ow.fork_chambers || []).find(r => r.id === ni);
-            if (r) { r.w = w; r.h = h; }
-          });
-        } else if (isStart) {
-          updateOverworld(ow => { ow.start_room_size = [w, h]; });
-        } else if (isStore) {
-          updateOverworld(ow => { ow.store_room_size = [w, h]; });
-        }
+        updateOverworld(ow => {
+          const br2 = ow.builder_regions?.find(r => r.id === brId);
+          if (br2) { br2.w = w; br2.h = h; }
+        });
+        // Also update live ref for immediate rendering
+        const liveBr = campaignRef.current.overworld.builder_regions?.find(r => r.id === brId);
+        if (liveBr) { liveBr.w = w; liveBr.h = h; }
         owState.hallwayCacheKey = null;
         redrawRef.current?.();
       };
@@ -351,31 +353,16 @@ export function OverworldCanvas({ campaign }: Props) {
               <>
                 <span style="font-size:11px;color:#888;">Tiles</span>
                 <select style="font-size:11px;padding:2px;max-width:100px;"
-                  value={(() => {
-                    const brId2 = isRoom ? String(ni) : isStart ? 'start' : 'store';
-                    const brReg2 = campaign.overworld.builder_regions?.find(r => r.id === brId2);
-                    return brReg2?.tile_source || '';
-                  })()}
+                  value={brReg?.tile_source || ''}
                   onChange={(e) => {
                     const val = (e.target as HTMLSelectElement).value || undefined;
-                    const brId = isRoom ? String(ni) : isStart ? 'start' : 'store';
                     updateOverworld(ow => {
-                      // Update builder_region
                       const br2 = ow.builder_regions?.find(r => r.id === brId);
                       if (br2) br2.tile_source = val;
-                      // Also update legacy fields
-                      if (isRoom) {
-                        const r = (ow.rooms || ow.fork_chambers || []).find(r => r.id === ni);
-                        if (r) r.tile_source = val;
-                      } else if (isStart) {
-                        ow.start_tile_source = val;
-                      } else if (isStore) {
-                        ow.store_tile_source = val;
-                      }
                     });
                     // Also update the live campaignRef copy for immediate rendering
-                    const brReg = campaignRef.current.overworld.builder_regions?.find(r => r.id === brId);
-                    if (brReg) brReg.tile_source = val;
+                    const liveBr = campaignRef.current.overworld.builder_regions?.find(r => r.id === brId);
+                    if (liveBr) liveBr.tile_source = val;
                     owState.hallwayCacheKey = null;
                     redrawRef.current?.();
                   }}
@@ -399,50 +386,86 @@ export function OverworldCanvas({ campaign }: Props) {
     return null;
   }
 
+  const owTray = generateOverworldTray(campaign);
+
+  function screenToTile(e: MouseEvent | DragEvent): { tx: number; ty: number } | null {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const br = campaign.overworld.builder_regions || [];
+    if (br.length === 0) return null;
+    const bounds = computeGridBounds(br);
+    const tz = 4 * owState.zoom;
+    const baseOx = (rect.width - bounds.width * tz) / 2 + owState.panX;
+    const baseOy = (rect.height - bounds.height * tz) / 2 + owState.panY;
+    return { tx: Math.floor((mx - baseOx) / tz), ty: Math.floor((my - baseOy) / tz) };
+  }
+
+  function hitSignpost(e: MouseEvent): number {
+    const tile = screenToTile(e);
+    if (!tile) return -1;
+    const placed = campaign.overworld.placed_signposts || [];
+    return placed.findIndex(p => Math.abs(p.x - tile.tx) <= 1 && Math.abs(p.y - tile.ty) <= 1);
+  }
+
+  function handleCanvasDrop(e: DragEvent) {
+    e.preventDefault();
+    const item = draggedOverworldItem.value;
+    if (!item) return;
+    draggedOverworldItem.value = null;
+
+    const tile = screenToTile(e);
+    if (!tile) return;
+
+    if (item.type === 'signpost' && item.signpost_idx !== undefined) {
+      updateOverworld(ow => {
+        if (!ow.placed_signposts) ow.placed_signposts = [];
+        ow.placed_signposts.push({ signpost_idx: item.signpost_idx!, x: tile.tx, y: tile.ty });
+      });
+      showToast(`Placed "${item.name}"`, 'success');
+      redrawRef.current?.();
+    }
+  }
+
   return (
     <div ref={containerRef} class="dag-container" onClick={(e) => {
       // Dismiss popup when clicking container background (not canvas)
       if (e.target === containerRef.current) setPopup(null);
     }}>
-      <canvas ref={canvasRef} />
+      <OverworldTray items={owTray} />
+      <canvas
+        ref={canvasRef}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={handleCanvasDrop as any}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          const idx = hitSignpost(e as any);
+          if (idx >= 0) {
+            const placed = campaign.overworld.placed_signposts || [];
+            const sign = campaign.signposts?.[placed[idx].signpost_idx];
+            if (confirm(`Remove signpost "${sign?.title || 'Unknown'}"?`)) {
+              updateOverworld(ow => { ow.placed_signposts?.splice(idx, 1); });
+              redrawRef.current?.();
+            }
+          }
+        }}
+      />
       {renderPopup()}
     </div>
   );
 }
 
-async function loadMapData(campaign: BundledCampaign) {
-  if (owState.mapData && owState.mapCampaignId === campaign.id) {
-    mapDataVersion.value++;
-    return;
-  }
-  try {
-    const data = await api(`/api/overworld-map?id=${campaign.id}`);
-    if (data) {
-      owState.mapData = data;
-      owState.mapCampaignId = campaign.id;
-      owState.regionOverrides = {};
-      owState.zoom = 1;
-      owState.panX = 0;
-      owState.panY = 0;
-      mapDataVersion.value++;
-    }
-  } catch (e) {
-    console.error('Failed to load overworld map:', e);
-  }
-}
-
-export function zoomFit(container: HTMLElement) {
-  const md = owState.mapData;
-  if (!md?.regions) return;
+export function zoomFit(container: HTMLElement, campaign?: BundledCampaign) {
+  const br = campaign?.overworld.builder_regions || campaignRef.current?.overworld.builder_regions || [];
+  if (br.length === 0) return;
   const rect = container.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const r of md.regions) {
-    const o = owState.regionOverrides[r.node_idx];
-    const rx = o ? o.ox : r.ox;
-    const ry = o ? o.oy : r.oy;
-    minX = Math.min(minX, rx); minY = Math.min(minY, ry);
-    maxX = Math.max(maxX, rx + r.w); maxY = Math.max(maxY, ry + r.h);
+  for (const r of br) {
+    minX = Math.min(minX, r.ox); minY = Math.min(minY, r.oy);
+    maxX = Math.max(maxX, r.ox + r.w); maxY = Math.max(maxY, r.oy + r.h);
   }
   const totalW = (maxX - minX) || 1;
   const totalH = (maxY - minY) || 1;
@@ -452,8 +475,6 @@ export function zoomFit(container: HTMLElement) {
 }
 
 export function zoom1to1() {
-  // Match in-game overworld scale: ~13px per tile (sw/120 at 1600w)
-  // Builder base TILE = 4, so zoom = 13/4 ≈ 3.25
   owState.zoom = 3.25;
   owState.panX = 0;
   owState.panY = 0;
@@ -465,11 +486,10 @@ export function getViewCenter(): { ox: number; oy: number } {
   if (!container) return { ox: 0, oy: 0 };
   const rect = container.getBoundingClientRect();
   const tz = 4 * owState.zoom;
-  const md = owState.mapData;
-  const gridW = md ? md.width : 60;
-  const gridH = md ? md.height : 36;
-  const baseOx = (rect.width - gridW * tz) / 2 + owState.panX;
-  const baseOy = (rect.height - gridH * tz) / 2 + owState.panY;
+  const br = campaignRef.current?.overworld.builder_regions || [];
+  const bounds = computeGridBounds(br);
+  const baseOx = (rect.width - bounds.width * tz) / 2 + owState.panX;
+  const baseOy = (rect.height - bounds.height * tz) / 2 + owState.panY;
   const cx = (rect.width / 2 - baseOx) / tz;
   const cy = (rect.height / 2 - baseOy) / tz;
   return { ox: Math.round(cx), oy: Math.round(cy) };

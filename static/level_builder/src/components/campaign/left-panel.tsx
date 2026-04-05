@@ -8,6 +8,7 @@ import { generateImage, generateDescription } from '../../api/generation';
 import { loadGoogleFont } from '../../api/fonts';
 
 import type { OverworldNode } from '../../types/pack';
+import { TabSignposts } from '../level/tab-signposts';
 
 function formatNodeId(id: string, levels: OverworldNode[]): string {
   if (id === 'start') return 'Start';
@@ -35,6 +36,7 @@ export function LeftPanel({ campaign }: Props) {
   const tabs = [
     { id: 'overview', label: 'Overview' },
     { id: 'monsters', label: 'Monsters' },
+    { id: 'signposts', label: 'Signs' },
     { id: 'settings', label: 'Store & Rules' },
   ];
 
@@ -53,6 +55,7 @@ export function LeftPanel({ campaign }: Props) {
       </div>
       {tab === 'overview' && <OverviewTab campaign={campaign} />}
       {tab === 'monsters' && <MonstersTab campaign={campaign} />}
+      {tab === 'signposts' && <TabSignposts campaign={campaign} />}
       {tab === 'settings' && <SettingsTab campaign={campaign} />}
     </div>
   );
@@ -156,8 +159,6 @@ function OverviewTab({ campaign }: Props) {
         </div>
       )}
 
-      <hr class="section-divider" />
-      <p class="note" style="margin-bottom:8px;">Connections: {ow.connections?.length || 0}. Right-click a hallway to remove it. Drag exit (red) to entry (cyan) handles to connect.</p>
       <hr class="section-divider" />
       <button class="danger" onClick={async () => {
         if (confirm('Delete this campaign?')) {

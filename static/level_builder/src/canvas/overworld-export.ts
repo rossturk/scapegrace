@@ -6,6 +6,15 @@ import type { OwCanvasState } from './overworld-renderer';
 import { computeRoomHandles } from './room-handles';
 
 
+export interface ExportedSignpost {
+  title: string;
+  description: string;
+  title_font?: string;
+  description_font?: string;
+  x: number;
+  y: number;
+}
+
 export interface ExportedOverworldMap {
   width: number;
   height: number;
@@ -18,6 +27,7 @@ export interface ExportedOverworldMap {
     entry_pos?: [number, number];
     exit_pos?: [number, number];
   }[];
+  signposts?: ExportedSignpost[];
   player_pos: [number, number];
 }
 
@@ -344,11 +354,70 @@ export function exportOverworldMap(
           setTile(fx, fy, pickFloor(t, fx * 31 + fy * 17));
         }
       }
+
+      // Carve doorway openings where hallway floors meet region walls
+      // For each hallway floor tile adjacent to a region interior, check if the
+      // region tile is a wall and carve it to floor
+      for (const fk of floorSet) {
+        const [fx, fy] = fk.split(',').map(Number);
+        for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+          const nx = fx + dx, ny = fy + dy;
+          const nk = nx + ',' + ny;
+          if (!regionInterior.has(nk)) continue;
+          const cur = getTile(nx, ny);
+          const def = tileDefs[cur];
+          if (def && !def.walkable) {
+            // Find the floor tile for this region
+            const br = builderRegions.find(r =>
+              nx >= r.ox && nx < r.ox + r.w && ny >= r.oy && ny < r.oy + r.h);
+            if (br) {
+              const ts = getNodeTiles(br.id);
+              const floorId = ts.floors[0] || 'hallway_floor';
+              setTile(nx, ny, floorId);
+              // Also carve adjacent wall tiles for a 3-wide opening
+              for (const [dx2, dy2] of (dx === 0 ? [[1, 0], [-1, 0]] : [[0, 1], [0, -1]])) {
+                const ax = nx + dx2, ay = ny + dy2;
+                const ac = getTile(ax, ay);
+                const ad = tileDefs[ac];
+                if (ad && !ad.walkable) setTile(ax, ay, floorId);
+              }
+            }
+          }
+        }
+      }
     }
   }
 
-  // Doorway openings are handled per-region by computeRoomHandles (doorTiles set).
-  // No post-pass carving needed.
+  // Fill wall gaps at doorway junctions: void tiles adjacent (cardinal + diagonal)
+  // to both wall and floor tiles get filled with wall to close gaps.
+  // Iterate until stable since filling one gap may expose another.
+  let gapFilled = true;
+  while (gapFilled) {
+    gapFilled = false;
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        if (tiles[y][x] !== 'void') continue;
+        let adjWall = 0, adjFloor = 0;
+        let wallId = '';
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const n = tiles[y + dy]?.[x + dx];
+            if (!n || n === 'void') continue;
+            const nd = tileDefs[n];
+            if (nd) {
+              if (nd.walkable) adjFloor++;
+              else { adjWall++; if (!wallId) wallId = n; }
+            }
+          }
+        }
+        if (adjWall >= 1 && adjFloor >= 1 && wallId) {
+          tiles[y][x] = wallId;
+          gapFilled = true;
+        }
+      }
+    }
+  }
 
   // Build region metadata from builder_regions
   const exportRegions: ExportedOverworldMap['regions'] = [];
@@ -368,5 +437,22 @@ export function exportOverworldMap(
     Math.floor(sp.oy + sp.h / 2 - minY),
   ];
 
-  return { width, height, tiles, tile_defs: tileDefs, regions: exportRegions, player_pos: playerPos };
+  // Export signposts with adjusted coordinates
+  const signDefs = campaign.signposts || [];
+  const placedSigns = campaign.overworld.placed_signposts || [];
+  const exportedSignposts: ExportedSignpost[] = [];
+  for (const ps of placedSigns) {
+    const def = signDefs[ps.signpost_idx];
+    if (!def) continue;
+    exportedSignposts.push({
+      title: def.title,
+      description: def.description,
+      title_font: def.title_font,
+      description_font: def.description_font,
+      x: ps.x - minX,
+      y: ps.y - minY,
+    });
+  }
+
+  return { width, height, tiles, tile_defs: tileDefs, regions: exportRegions, signposts: exportedSignposts.length > 0 ? exportedSignposts : undefined, player_pos: playerPos };
 }

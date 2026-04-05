@@ -6,7 +6,9 @@ export function DAGToolbar() {
   function addLevel() {
     const name = prompt('Level name:', 'New Level');
     if (!name) return;
+    const center = getViewCenter();
     updateCampaign(c => {
+      const levelIdx = c.overworld.levels.length;
       c.overworld.levels.push({
         name,
         description: '',
@@ -24,19 +26,47 @@ export function DAGToolbar() {
         traps: [],
         mode: { root: 'C', scale: 'aeolian' },
       } as any);
+      // Add to builder_regions (source of truth for rendering/dragging)
+      if (!c.overworld.builder_regions) c.overworld.builder_regions = [];
+      c.overworld.builder_regions.push({
+        id: `level_${levelIdx}`,
+        type: 'level',
+        ox: center.ox,
+        oy: center.oy,
+        w: 20,
+        h: 15,
+        level_idx: levelIdx,
+      });
     });
+    owState.hallwayCacheKey = null;
+    triggerRedraw();
     showToast('Level added', 'success');
   }
 
   function addStore() {
+    const center = getViewCenter();
     updateOverworld(ow => {
       if (!ow.store) {
         ow.store = { healing_potions: 3, speed_potions: 1, bombs: 1 };
+        // Add to builder_regions (source of truth for rendering/dragging)
+        if (!ow.builder_regions) ow.builder_regions = [];
+        if (!ow.builder_regions.find(r => r.type === 'store')) {
+          ow.builder_regions.push({
+            id: 'store',
+            type: 'store',
+            ox: center.ox,
+            oy: center.oy,
+            w: 10,
+            h: 8,
+          });
+        }
         showToast('Store added', 'success');
       } else {
         showToast('Store already exists', 'info');
       }
     });
+    owState.hallwayCacheKey = null;
+    triggerRedraw();
   }
 
   function addRoom() {
@@ -45,10 +75,18 @@ export function DAGToolbar() {
     updateOverworld(ow => {
       if (!ow.rooms) ow.rooms = [];
       ow.rooms.push({ id, name: '' });
-      if (!ow.ow_region_offsets) ow.ow_region_offsets = {};
-      (ow.ow_region_offsets as any)[id] = { ox: center.ox, oy: center.oy };
+      if (!ow.builder_regions) ow.builder_regions = [];
+      ow.builder_regions.push({
+        id,
+        type: 'room',
+        ox: center.ox,
+        oy: center.oy,
+        w: 10,
+        h: 8,
+      });
     });
-    owState.regionOverrides[id as any] = { ox: center.ox, oy: center.oy };
+    owState.hallwayCacheKey = null;
+    triggerRedraw();
     showToast('Room added', 'success');
   }
 
@@ -66,9 +104,6 @@ export function DAGToolbar() {
       <button style="font-size:11px;padding:4px 8px;" onClick={addLevel}>+ Level</button>
       <button style="font-size:11px;padding:4px 8px;" onClick={addStore}>+ Store</button>
       <button style="font-size:11px;padding:4px 8px;" onClick={addRoom}>+ Room</button>
-      <span style="font-size:11px;color:#888;margin-left:auto;">
-        Click hallway/node for options | Drag handles to connect
-      </span>
     </div>
   );
 }

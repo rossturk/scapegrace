@@ -718,6 +718,7 @@ fn main() {
                                 terrain_seed: None,
                                 bg_prompt: None,
                                 ow_region_offsets: None, builder_regions: None,
+                                placed_signposts: None,
                                 one_way_connections: None,
                                 fork_chambers: None,
                                 rooms: None,
@@ -830,7 +831,7 @@ fn main() {
             });
 
             // Store campaign
-            let campaign = BundledCampaign { id: uuid_v4(), overworld, designs, quality, settings: CampaignSettings::default(), monster_templates: None, prebuilt_overworld_map: None };
+            let campaign = BundledCampaign { id: uuid_v4(), overworld, designs, quality, settings: CampaignSettings::default(), monster_templates: None, signposts: None, prebuilt_overworld_map: None };
             all_campaigns.push(campaign);
             campaign_ok = true;
             break;
