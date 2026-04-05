@@ -1,0 +1,37 @@
+/* ── Variables ── */
+:root {
+  --bg: #1a1a2e;
+  --panel: #16213e;
+  --card: #0f3460;
+  --text: #e8e8e8;
+  --accent: #e94560;
+  --accent2: #0f3460;
+  --border: #2a3a5e;
+  --input-bg: #0d1b36;
+  --success: #66bb6a;
+  --warning: #ffa726;
+  --gold: #ffd700;
+}
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; font-size: 14px; }
+
+/* ── Form elements ── */
+input, select, textarea, button { font-family: inherit; font-size: 13px; color: var(--text); }
+input, select, textarea { background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { resize: vertical; min-height: 50px; }
+input[type="color"] { width: 40px; height: 28px; padding: 1px 2px; cursor: pointer; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg); }
+input[type="number"] { width: 70px; }
+
+/* ── Buttons ── */
+button { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 6px 14px; cursor: pointer; transition: background .15s; }
+button:hover { background: #1a4a80; }
+button.primary { background: var(--accent); border-color: var(--accent); }
+button.primary:hover { background: #c73550; }
+button.danger { background: #8b0000; border-color: #a00; }
+button.danger:hover { background: #a00; }
+button.ai-btn { background: #2a1a4e; border-color: #5a3a8e; padding: 4px 8px; font-size: 12px; }
+button.ai-btn:hover { background: #3a2a6e; }
+button:disabled { opacity: .5; cursor: not-allowed; }

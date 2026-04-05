@@ -8,6 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 use scapegrace::fonts::FONT_NAMES;
 use scapegrace::gen::{
@@ -95,9 +96,15 @@ struct ImageResponse {
 // ── Handlers ──
 
 async fn index_handler() -> impl IntoResponse {
-    match std::fs::read_to_string("./static/level_builder.html") {
+    // Try Vite-built frontend first, fall back to legacy monolith
+    let index_path = if std::path::Path::new("./static/level_builder/dist/index.html").exists() {
+        "./static/level_builder/dist/index.html"
+    } else {
+        "./static/level_builder.html"
+    };
+    match std::fs::read_to_string(index_path) {
         Ok(html) => Html(html).into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, format!("Could not read static/level_builder.html: {}", e)).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, format!("Could not read {}: {}", index_path, e)).into_response(),
     }
 }
 
@@ -144,7 +151,13 @@ async fn create_campaign(
             bg_mode: None,
             terrain_seed: None,
             bg_prompt: None,
-            ow_region_offsets: None,
+            ow_region_offsets: None, builder_regions: None, placed_signposts: None,
+            one_way_connections: None,
+            fork_chambers: None,
+            rooms: None,
+            hallway_waypoints: None,
+            start_room_size: None,
+            store_room_size: None,
         },
         designs: vec![],
         quality: CampaignQuality {
@@ -163,6 +176,8 @@ async fn create_campaign(
         },
         settings: CampaignSettings::default(),
         monster_templates: None,
+        signposts: None,
+        prebuilt_overworld_map: None,
     };
     let val = serde_json::to_value(&campaign).unwrap();
     st.pack.campaigns.push(campaign);
@@ -469,6 +484,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(index_handler))
+        .nest_service("/assets", ServeDir::new("./static/level_builder/dist/assets"))
         .route("/api/pack", get(get_pack))
         .route("/api/pack", put(put_pack))
         .route("/api/campaigns", post(create_campaign))
@@ -482,7 +498,7 @@ async fn main() {
         .route("/api/generate-image", post(generate_image))
         .route("/api/overworld-map", get(get_overworld_map))
         .fallback(get(index_handler))
-        .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB
+        .layer(axum::extract::DefaultBodyLimit::max(200 * 1024 * 1024)) // 200MB
         .layer(CorsLayer::permissive())
         .with_state(state);
 

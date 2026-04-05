@@ -869,6 +869,48 @@ impl Sfx {
         self.play(song);
     }
 
+    pub fn door_unlock(&self, scale: &[f32]) {
+        // Heavy stone-door sound: deep rumble → ascending chime cascade
+        if scale.is_empty() { return; }
+        let mut rng = ::rand::thread_rng();
+        let mut song: Box<dyn Source<Item = f32> + Send> = Box::new(
+            silence(Duration::from_millis(1))
+        );
+        // Deep rumble: low sine sweep
+        let base = scale[0] * 0.25;
+        for i in 0..6 {
+            let freq = base + i as f32 * 3.0;
+            let note = Osc::new(freq, Waveform::Sine)
+                .take_duration(Duration::from_millis(60))
+                .amplify(0.08);
+            song = Box::new(song.then(note));
+        }
+        // Brief silence
+        song = Box::new(song.then(silence(Duration::from_millis(80))));
+        // Rising chime: 4 ascending notes from the scale
+        let n = scale.len();
+        for i in 0..4 {
+            let idx = (n / 2 + i).min(n - 1);
+            let freq = scale[idx];
+            let note = Osc::new(freq, Waveform::Sine)
+                .take_duration(Duration::from_millis(120))
+                .amplify(0.06)
+                .fade_out(Duration::from_millis(100));
+            song = Box::new(song.then(note));
+        }
+        // Final chord
+        if n >= 3 {
+            let chord = vec![scale[0], scale[n / 3], scale[2 * n / 3]];
+            song = Box::new(song.then(
+                Chord::sine(&chord)
+                    .take_duration(Duration::from_millis(300))
+                    .amplify(0.05)
+                    .fade_out(Duration::from_millis(250))
+            ));
+        }
+        self.play(song);
+    }
+
     pub fn level_up(&self, scale: &[f32]) {
         // Mozart-style celebratory piece — scalar runs, Alberti bass, trills, cadence
         // Structured as: opening flourish → melodic phrase → cadential finish
@@ -922,7 +964,7 @@ impl Sfx {
                             .amplify(vol)));
                 }
                 // Land on a triad at the top
-                let top = note_at(start_deg + rng.gen_range(5..9).min(scale.len() - 1));
+                let top = note_at(start_deg + rng.gen_range(5..9).min(scale.len().saturating_sub(1)));
                 let chord = make_major(top);
                 song = Box::new(song
                     .then(Chord::sine(&chord)

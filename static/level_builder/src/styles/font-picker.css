@@ -1,0 +1,9 @@
+/* ── Font picker ── */
+.font-picker-btn { width: 100%; text-align: left; padding: 5px 8px; font-size: 14px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.font-picker-btn:hover { border-color: var(--accent); }
+#font-picker-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.5); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.font-picker-modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; width: 400px; max-height: 500px; display: flex; flex-direction: column; overflow: hidden; }
+.font-picker-modal input { margin: 10px; font-size: 14px; padding: 8px 10px; border-radius: 6px; }
+.font-list { flex: 1; overflow-y: auto; }
+.font-option { padding: 8px 14px; font-size: 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.03); }
+.font-option:hover { background: rgba(233,69,96,.1); }

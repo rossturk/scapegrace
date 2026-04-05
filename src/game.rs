@@ -60,6 +60,19 @@ impl Monster {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct Signpost {
+    pub title: String,
+    pub description: String,
+    pub title_font: Option<String>,
+    pub description_font: Option<String>,
+    pub x: i32,
+    pub y: i32,
+    pub read: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Item {
     pub id: String,
     pub name: String,
@@ -101,8 +114,6 @@ pub struct Player {
     pub antidotes: i32,        // consumable: negates damage tile damage for 20 steps
     #[serde(default)]
     pub antidote_steps: i32,   // remaining immune steps (active effect)
-    #[serde(default)]
-    pub scout_maps: i32,       // consumable: reveals entire map on level entry
 }
 
 fn default_potion_cap() -> i32 { 10 }
@@ -120,7 +131,7 @@ impl Default for Player {
             potions: 1, keys: 0, floor: 1, facing: -std::f32::consts::FRAC_PI_2,
             bombs: 0, speed_potions: 0, speed_turns: 0,
             potion_cap: 10,
-            antidotes: 0, antidote_steps: 0, scout_maps: 0,
+            antidotes: 0, antidote_steps: 0,
         }
     }
 }
@@ -139,6 +150,7 @@ pub struct Level {
     pub tile_defs: std::collections::HashMap<String, TileDef>,
     pub monsters: Vec<Monster>,
     pub items: Vec<Item>,
+    pub signposts: Vec<Signpost>,
     pub traps: Vec<Trap>,
     pub title: String,
     pub description: String,
@@ -152,6 +164,21 @@ pub struct Level {
     pub visible: HashSet<(i32, i32)>,
     #[serde(skip)]
     pub char_marks: std::collections::HashMap<(i32, i32), f32>, // bomb scorch: pos → intensity 0.0-1.0
+    /// Per-region music scales for unified overworld (ox, oy, w, h, scale_freqs)
+    #[serde(skip)]
+    pub region_scales: Vec<(i32, i32, i32, i32, Vec<f32>)>,
+}
+
+impl Level {
+    /// Get the music scale for a position. Returns the region's scale if inside one, or the default.
+    pub fn scale_at(&self, x: i32, y: i32) -> &[f32] {
+        for (ox, oy, w, h, scale) in &self.region_scales {
+            if x >= *ox && x < ox + w && y >= *oy && y < oy + h {
+                return scale;
+            }
+        }
+        &self.scale // default (C major for overworld)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -277,11 +304,12 @@ impl GameState {
             level: Level {
                 width: 60, height: 36,
                 tiles: vec![], tile_defs: Default::default(),
-                monsters: vec![], items: vec![], traps: vec![],
+                monsters: vec![], items: vec![], signposts: vec![], traps: vec![],
                 title: String::new(), description: String::new(), font: String::new(),
                 scale: vec![], victory_message: String::new(), defeat_message: String::new(),
                 revealed: HashSet::new(), visible: HashSet::new(),
                 char_marks: Default::default(),
+                region_scales: vec![],
             },
             log: vec![],
             game_over: false,
@@ -340,20 +368,47 @@ pub fn player_attack(state: &mut GameState, monster_idx: usize) -> bool {
         maybe_drop_loot(state, monster_idx);
         if is_boss {
             state.log("THE BOSS IS SLAIN!", "#ffd700");
-            // Unlock exit door
+            let boss_x = state.level.monsters.get(monster_idx).map(|m| m.x).unwrap_or(0);
+            let boss_y = state.level.monsters.get(monster_idx).map(|m| m.y).unwrap_or(0);
+
+            // Find which region the boss is in, only unlock that region's exit doors
+            let mut region_bounds: Option<(i32, i32, i32, i32)> = None;
+            for &(ox, oy, w, h, _) in &state.level.region_scales {
+                if boss_x >= ox && boss_x < ox + w && boss_y >= oy && boss_y < oy + h {
+                    region_bounds = Some((ox, oy, w, h));
+                    break;
+                }
+            }
+
             let mut found_exit = false;
-            for row in &mut state.level.tiles {
-                for tile in row.iter_mut() {
-                    if tile == "exit_door_locked" {
-                        *tile = "exit_door".to_string();
-                        found_exit = true;
+            if let Some((rx, ry, rw, rh)) = region_bounds {
+                // Unified map: only unlock doors in this region
+                for y in ry..(ry + rh) {
+                    for x in rx..(rx + rw) {
+                        if y >= 0 && x >= 0 && (y as usize) < state.level.tiles.len() && (x as usize) < state.level.tiles[y as usize].len() {
+                            if state.level.tiles[y as usize][x as usize] == "exit_door_locked" {
+                                state.level.tiles[y as usize][x as usize] = "exit_door".to_string();
+                                found_exit = true;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: single-level mode, unlock all exit doors
+                for row in &mut state.level.tiles {
+                    for tile in row.iter_mut() {
+                        if tile == "exit_door_locked" {
+                            *tile = "exit_door".to_string();
+                            found_exit = true;
+                        }
                     }
                 }
             }
+
             if found_exit {
                 state.log("An exit door has opened!", "#44ccff");
-            } else {
-                // No exit door placed — fall back to immediate victory
+            } else if state.level.region_scales.is_empty() {
+                // No exit door and not unified map — fall back to immediate victory
                 state.victory = true;
             }
         }
@@ -451,12 +506,12 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
     if tile == "locked_door" {
         if state.player.keys > 0 {
             state.player.keys -= 1;
-            // Find the floor tile name to replace with
-            let floor_name = state.level.tile_defs.values()
-                .find(|t| t.walkable)
-                .map(|t| t.name.clone())
-                .unwrap_or_else(|| "floor".into());
-            state.level.tiles[ny as usize][nx as usize] = floor_name;
+            // Find a walkable tile ID to replace with
+            let floor_id = state.level.tile_defs.iter()
+                .find(|(_, t)| t.walkable)
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| "t1".into());
+            state.level.tiles[ny as usize][nx as usize] = floor_id;
             state.log("You unlock the door! 🔓", "#ffd700");
             // Don't move into the tile this turn — just unlock
             return serde_json::json!({"moved": false, "unlocked": true});
@@ -465,8 +520,23 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
             return serde_json::json!({"moved": false});
         }
     }
+    if tile == "store_merchant" {
+        state.log("You approach the shopkeeper.", "#ffd700");
+        return serde_json::json!({"moved": false, "store": true});
+    }
+    // Check signpost collision — player reads by bumping, doesn't walk through
+    for (i, sign) in state.level.signposts.iter().enumerate() {
+        if sign.x == nx && sign.y == ny {
+            return serde_json::json!({"moved": false, "signpost": i});
+        }
+    }
+
     if let Some(td) = state.level.tile_defs.get(tile) {
         if !td.walkable {
+            if tile == "exit_door_locked" {
+                state.log("The gate is sealed. Defeat the boss to open it.", "#aa6622");
+                return serde_json::json!({"moved": false, "gate_blocked": true});
+            }
             return serde_json::json!({"moved": false});
         }
     }
@@ -493,10 +563,17 @@ pub fn try_move(state: &mut GameState, dx: i32, dy: i32) -> serde_json::Value {
 
     // Check if player stepped on exit door
     if state.level.tiles[ny as usize][nx as usize] == "exit_door" {
-        state.log("You exit the level!", "#ffd700");
-        state.victory = true;
-        return serde_json::json!({"moved": true, "victory": true});
+        // In unified map (region_scales present), just log and continue — no victory screen
+        if !state.level.region_scales.is_empty() {
+            state.log("You pass through the gate...", "#44ccff");
+            // Make the door walkable-through (already is, since exit_door is walkable)
+        } else {
+            state.log("You exit the level!", "#ffd700");
+            state.victory = true;
+            return serde_json::json!({"moved": true, "victory": true});
+        }
     }
+
 
     let newly = reveal_around(&mut state.level, nx, ny, state.vision_radius);
 
@@ -720,19 +797,6 @@ pub fn use_antidote(state: &mut GameState) -> bool {
     state.player.antidotes -= 1;
     state.player.antidote_steps = i32::MAX / 2; // lasts the whole level
     state.log(&format!("You drink an antidote! Immune to hazards this level. ({} left)", state.player.antidotes), "#44ddaa");
-    true
-}
-
-/// Consume a scout map: reveal the entire level.
-pub fn use_scout_map(state: &mut GameState) -> bool {
-    if state.player.scout_maps <= 0 { return false; }
-    state.player.scout_maps -= 1;
-    for y in 0..state.level.height {
-        for x in 0..state.level.width {
-            state.level.revealed.insert((x, y));
-        }
-    }
-    state.log(&format!("Scout map reveals the entire level! ({} left)", state.player.scout_maps), "#ffd700");
     true
 }
 

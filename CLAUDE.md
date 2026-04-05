@@ -4,8 +4,25 @@ Hand-crafted roguelike. Rust backend, browser client. Levels designed in level b
 
 ## Dev Commands
 
-- `just builder-dev` — run level builder server (http://localhost:3001) with dev campaigns
+- `just builder-dev` — build Vite frontend + run level builder server (http://localhost:3001)
+- `just builder-vite` — Vite HMR dev server (http://localhost:5173) + Rust API (:3001)
+- `just builder-build` — build Vite frontend only
+- `just builder-legacy` — run level builder with old monolithic HTML
 - `cargo run` — run the game
+
+## Level Builder Architecture
+
+The level builder frontend lives in `static/level_builder/`:
+- **Preact + TypeScript + Vite** — component-based UI with type safety
+- **`src/types/`** — TypeScript types mirrored from Rust serde structs
+- **`src/store/`** — Preact Signals for reactive state, action functions for mutations
+- **`src/api/`** — Typed API client, font loading, AI generation endpoints
+- **`src/screens/`** — Top-level views: PackOverview, CampaignEditor, LevelEditor
+- **`src/components/`** — Reusable UI: toast, breadcrumb, font picker, enhanced inputs
+- **`src/canvas/`** — Pure TypeScript canvas renderers (no Preact dependency)
+- **`src/styles/`** — CSS split by area (base, layout, components, canvas, font-picker)
+
+The Rust backend (`src/bin/level_builder.rs`) serves the built frontend from `dist/` and handles all API endpoints.
 
 ## Architecture Principle
 
