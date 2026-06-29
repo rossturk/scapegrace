@@ -1,0 +1,24 @@
+# XcodeGen spec. Run `xcodegen generate` in this folder to produce
+# LightningTracker.xcodeproj, then open it in Xcode. (Or create an app target
+# by hand and add the LightningTracker/ sources — see ios/README.md.)
+name: LightningTracker
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  LightningTracker:
+    type: application
+    platform: iOS
+    sources:
+      - path: LightningTracker
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.LightningTracker
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: LightningTracker/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: LightningTracker/Resources/LightningTracker.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"

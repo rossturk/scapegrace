@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lightning Tracker — live demo</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+      #hud {
+        position: absolute; z-index: 1000; top: 10px; left: 10px;
+        background: rgba(20,20,30,.85); color: #eee; padding: 8px 12px;
+        border-radius: 8px; font: 13px/1.4 system-ui, sans-serif;
+      }
+      #hud b { color: #ffd35c; }
+    </style>
+  </head>
+  <body>
+    <div id="hud">⚡ <b id="count">0</b> strikes · feed <b id="status">connecting…</b></div>
+    <div id="map"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+      const map = L.map("map").setView([39.5, -98.35], 5);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "© OpenStreetMap",
+      }).addTo(map);
+
+      // RainViewer radar overlay (newest past frame).
+      fetch("https://api.rainviewer.com/public/weather-maps.json")
+        .then((r) => r.json())
+        .then((j) => {
+          const frames = (j.radar && j.radar.past) || [];
+          const last = frames[frames.length - 1];
+          if (!last) return;
+          L.tileLayer(
+            `${j.host}${last.path}/256/{z}/{x}/{y}/4/1_1.png`,
+            { opacity: 0.6, attribution: "Radar © RainViewer" },
+          ).addTo(map);
+        });
+
+      // Live strikes over the backend WebSocket.
+      let count = 0;
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onopen = () => (document.getElementById("status").textContent = "live");
+      ws.onclose = () => (document.getElementById("status").textContent = "closed");
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type !== "strike") return;
+        count++;
+        document.getElementById("count").textContent = count;
+        const m = L.circleMarker([msg.strike.lat, msg.strike.lon], {
+          radius: 4, color: "#ffd35c", fillColor: "#fff3b0", fillOpacity: 1,
+          weight: 1,
+        }).addTo(map);
+        // Fade and remove after a minute so the map breathes.
+        setTimeout(() => map.removeLayer(m), 60_000);
+      };
+    </script>
+  </body>
+</html>
