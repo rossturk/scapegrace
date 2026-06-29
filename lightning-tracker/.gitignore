@@ -1,0 +1,13 @@
+# Node
+node_modules/
+backend/dist/
+backend/devices.json
+backend/.env
+*.log
+
+# Xcode
+ios/*.xcodeproj
+ios/*.xcworkspace
+ios/DerivedData/
+ios/build/
+.DS_Store
